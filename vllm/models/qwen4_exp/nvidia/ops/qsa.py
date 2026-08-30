@@ -1412,6 +1412,8 @@ def qsa_prims_ts_workspace_size(
     q: torch.Tensor,
     k_cache: torch.Tensor,
     max_seq_len: int,
+    *,
+    out_dtype: torch.dtype | None = None,
 ) -> int:
     """Return byte workspace required for a causal Q1/Q2/Q4 launch."""
 
@@ -1432,6 +1434,8 @@ def qsa_prims_ts_workspace_size(
         raise ValueError("QSA PrimTS expects K [P,Hkv,N,D]")
     if head_dim != k_cache.shape[3]:
         raise ValueError("QSA PrimTS query and cache head dimensions must match")
+    if out_dtype is None:
+        out_dtype = q.dtype
     return get_workspace_size(
         batch_size=batch_size,
         num_qo_heads=num_qo_heads,
@@ -1443,7 +1447,7 @@ def qsa_prims_ts_workspace_size(
         seq_len_q=seq_len_q,
         q_dtype=q.dtype,
         kv_dtype=k_cache.dtype,
-        out_dtype=q.dtype,
+        out_dtype=out_dtype,
         mask_type="causal",
         device=q.device,
     )
@@ -1610,7 +1614,7 @@ def qsa_sparse_paged_attention(
     bmm1_scale: float | None = None,
     bmm2_scale: float = 1.0,
 ) -> torch.Tensor:
-    """Run sparse GQA directly over paged BF16 K/V caches."""
+    """Run sparse GQA directly over paged BF16 or FP8-E4M3 K/V caches."""
 
     if not q.is_cuda or not HAS_TRITON:
         raise RuntimeError("paged QSA sparse attention requires CUDA and Triton")
@@ -1628,7 +1632,10 @@ def qsa_sparse_paged_attention(
         raise ValueError("QSA sparse attention requires valid grouped-query heads")
     head_dim = q.shape[2]
     assert head_dim >= 16 and (head_dim & (head_dim - 1)) == 0
-    assert q.dtype == k_cache.dtype == v_cache.dtype == torch.bfloat16
+    if q.dtype != k_cache.dtype or q.dtype != v_cache.dtype:
+        raise ValueError("QSA sparse attention requires matching Q/K/V dtypes")
+    if q.dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+        raise ValueError("QSA sparse attention supports BF16 and FP8-E4M3 Q/K/V")
     assert logical_indices.dtype == block_table.dtype == torch.int32
     assert token_to_req.dtype == torch.int32
     assert q.device == k_cache.device == v_cache.device
@@ -1673,6 +1680,10 @@ def qsa_sparse_paged_attention(
         block_n, target_splits, partial_warps = 64, 4, 2
     else:
         block_n, target_splits, partial_warps = 64, 1, 2
+    if q.dtype == torch.float8_e4m3fn:
+        # Triton's FP8 dot requires K >= 32 for the P@V MMA. BF16 retains the
+        # tuned BLOCK_N=16 low-grid profiles above.
+        block_n = max(block_n, 32)
 
     num_tiles = triton.cdiv(logical_indices.shape[1], block_n)
     # Avoid empty splits when the selection width is smaller than the profile.
