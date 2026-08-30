@@ -301,14 +301,18 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         query_for_attention = query[:num_tokens]
         bmm1_scale = self.scale
         bmm2_scale = 1.0
+        fp8_query_buffer: torch.Tensor | None = None
         if is_quantized_kv_cache(self.kv_cache_dtype):
             if kv_cache.dtype != torch.uint8:
                 raise ValueError("FP8 QSA cache storage must use encoded uint8 bytes")
             kv_cache = kv_cache.view(current_platform.fp8_dtype())
-            query_buffer = getattr(layer, "_qsa_fp8_query_buffer", None)
-            if query_buffer is None or query_buffer.shape[0] < num_tokens:
+            fp8_query_buffer = getattr(layer, "_qsa_fp8_query_buffer", None)
+            if (
+                fp8_query_buffer is None
+                or fp8_query_buffer.shape[0] < num_tokens
+            ):
                 raise RuntimeError("QSA owner did not provide its FP8 query buffer")
-            query_for_attention = query_buffer[:num_tokens]
+            query_for_attention = fp8_query_buffer[:num_tokens]
             custom_ops.scaled_fp8_quant(
                 query[:num_tokens].view(num_tokens, -1),
                 scale=layer._q_scale,
@@ -379,8 +383,9 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 else:
                     # The FP8 quantizer already wrote the live prefix into the
                     # owner's max-token buffer. Keep inert rows deterministic.
-                    query_buffer[num_tokens:route_capacity].zero_()
-                    query_for_attention = query_buffer[:route_capacity]
+                    assert fp8_query_buffer is not None
+                    fp8_query_buffer[num_tokens:route_capacity].zero_()
+                    query_for_attention = fp8_query_buffer[:route_capacity]
                 prims_output = staged_output[:route_capacity]
             else:
                 prims_output = output[:num_tokens]
