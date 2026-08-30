@@ -113,6 +113,52 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         if self.kv_cache_dtype not in ("auto", "bfloat16"):
             raise NotImplementedError("Qwen4Exp QSA requires a BF16 main KV cache")
         self.supports_quant_query_input = False
+        from .ops.qsa import has_qsa_prims_ts_attention
+
+        self.use_qsa_prims_ts = (
+            current_platform.is_device_capability_family(100)
+            and has_qsa_prims_ts_attention()
+        )
+
+    def _get_qsa_prims_ts_workspace(
+        self,
+        layer: torch.nn.Module,
+        query: torch.Tensor,
+        key_cache: torch.Tensor,
+        max_seq_len: int,
+    ) -> torch.Tensor:
+        from .ops.qsa import qsa_prims_ts_workspace_size
+
+        required_bytes = qsa_prims_ts_workspace_size(
+            query,
+            key_cache,
+            max_seq_len,
+        )
+        workspace = getattr(layer, "_qsa_prims_ts_workspace", None)
+        workspace_key = (
+            query.device,
+            query.shape[0],
+            key_cache.shape[2],
+            required_bytes,
+        )
+        previous_key = getattr(layer, "_qsa_prims_ts_workspace_key", None)
+        if (
+            workspace is None
+            or workspace.device != query.device
+            or workspace.numel() < required_bytes
+        ):
+            workspace = torch.zeros(
+                required_bytes,
+                dtype=torch.uint8,
+                device=query.device,
+            )
+            layer._qsa_prims_ts_workspace = workspace
+        elif previous_key != workspace_key:
+            # Workspace sections depend on the semantic launch key. Re-zero
+            # only when switching shapes; stable graph replays avoid this op.
+            workspace.zero_()
+        layer._qsa_prims_ts_workspace_key = workspace_key
+        return workspace
 
     def forward_qsa(
         self,
@@ -124,6 +170,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         attn_metadata: FlashAttentionMetadata,
         output: torch.Tensor,
         token_to_req: torch.Tensor,
+        logical_positions: torch.Tensor,
         output_scale: torch.Tensor | None = None,
         output_block_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -145,11 +192,60 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             raise RuntimeError("QSA owner did not provide its top-k buffer")
         logical_indices = topk_buffer[:num_tokens]
         token_to_req = token_to_req[:num_tokens]
+        logical_positions = logical_positions[:num_tokens]
         key_cache, value_cache = kv_cache.transpose(1, 2).split(self.head_size, dim=-1)
         key_cache = canonicalize_singleton_dim_strides(key_cache)
         value_cache = canonicalize_singleton_dim_strides(value_cache)
         if key_cache.dtype != torch.bfloat16 or query.dtype != torch.bfloat16:
             raise NotImplementedError("Qwen4Exp QSA requires BF16 Q/K/V")
+
+        if self.use_qsa_prims_ts:
+            from .ops.qsa import (
+                qsa_build_page4_paged_metadata,
+                qsa_prims_ts_paged_attention,
+            )
+
+            page_capacity = (logical_indices.shape[1] + 3) // 4
+            indptr_buffer = getattr(layer, "qsa_paged_kv_indptr_buffer", None)
+            indices_buffer = getattr(layer, "qsa_paged_kv_indices_buffer", None)
+            seq_lens_buffer = getattr(layer, "qsa_seq_lens_buffer", None)
+            if (
+                indptr_buffer is None
+                or indices_buffer is None
+                or seq_lens_buffer is None
+            ):
+                raise RuntimeError("QSA owner did not provide PrimTS metadata buffers")
+            paged_kv_indptr = indptr_buffer[: num_tokens + 1]
+            paged_kv_indices = indices_buffer[: num_tokens * page_capacity]
+            seq_lens = seq_lens_buffer[:num_tokens]
+            qsa_build_page4_paged_metadata(
+                logical_indices,
+                attn_metadata.block_table,
+                token_to_req,
+                logical_positions,
+                key_cache.shape[2],
+                paged_kv_indptr=paged_kv_indptr,
+                paged_kv_indices=paged_kv_indices,
+                seq_lens=seq_lens,
+            )
+            workspace = self._get_qsa_prims_ts_workspace(
+                layer,
+                query[:num_tokens],
+                key_cache,
+                logical_indices.shape[1],
+            )
+            qsa_prims_ts_paged_attention(
+                query[:num_tokens],
+                key_cache,
+                value_cache,
+                workspace,
+                paged_kv_indptr,
+                paged_kv_indices,
+                seq_lens,
+                logical_indices.shape[1],
+                output[:num_tokens],
+            )
+            return output
 
         from .ops.qsa import qsa_sparse_paged_attention
 
@@ -319,6 +415,27 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             ),
             persistent=False,
         )
+        self._qsa_prims_ts_workspace: torch.Tensor | None = None
+        self._qsa_prims_ts_workspace_key: tuple[torch.device, int, int, int] | None = (
+            None
+        )
+        if self.impl.use_qsa_prims_ts:
+            page_capacity = (self.indexer.output_width + 3) // 4
+            self.register_buffer(
+                "qsa_paged_kv_indptr_buffer",
+                torch.empty(max_tokens + 1, dtype=torch.int32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "qsa_paged_kv_indices_buffer",
+                torch.empty(max_tokens * page_capacity, dtype=torch.int32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "qsa_seq_lens_buffer",
+                torch.empty(max_tokens, dtype=torch.int32),
+                persistent=False,
+            )
 
         static_context = vllm_config.compilation_config.static_forward_context
         if self.layer_name in static_context:
@@ -391,6 +508,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             main_metadata,
             output,
             token_to_req=side_metadata.token_to_req,
+            logical_positions=side_metadata.logical_positions,
         )
 
     def forward(

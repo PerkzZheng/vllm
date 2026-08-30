@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from functools import lru_cache
+from inspect import signature
 
 import torch
 
@@ -14,6 +17,7 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
 _QSA_SEMANTIC_PAGE_SIZE = 4
+_QSAPrimsTSAPIs = tuple[Callable[..., int], Callable[..., torch.Tensor]]
 
 
 @triton.jit
@@ -263,14 +267,10 @@ def _build_qsa_page4_paged_metadata_kernel(
     locator = physical_page * subpages_per_storage_page + subpage
     locator_live = table_entry_live & (physical_page >= 0)
 
-    # CUDA-graph padding rows have logical_position=-1. Give them one legal
-    # placeholder page/length so the native decode scheduler's positive-length
-    # contract is preserved; the attention owner zeros those output rows.
-    output_locator = tl.where(
-        locator_live,
-        locator,
-        tl.where((~active) & (page_ranks == 0), 0, -1),
-    )
+    # CUDA-graph padding rows have logical_position=-1. Their positive dummy
+    # length preserves the decode scheduler contract while locator -1 selects
+    # PrimTS's TMA out-of-bounds zero page, producing an inert output row.
+    output_locator = tl.where(locator_live, locator, -1)
     tl.store(
         paged_kv_indices_ptr + row * PAGE_CAPACITY + page_ranks,
         output_locator,
@@ -948,6 +948,101 @@ def qsa_build_page4_paged_metadata(
         num_warps=4,
     )
     return paged_kv_indptr, paged_kv_indices, seq_lens
+
+
+@lru_cache
+def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
+    """Resolve the page-4 capable FlashInfer API without a hard dependency."""
+
+    try:
+        from flashinfer.decode import (
+            get_prims_ts_batch_decode_workspace_size,
+            prims_ts_batch_decode_with_kv_cache,
+        )
+    except (AttributeError, ImportError):
+        return None
+    try:
+        workspace_parameters = signature(
+            get_prims_ts_batch_decode_workspace_size
+        ).parameters
+    except (TypeError, ValueError):
+        return None
+    if "storage_page_size" not in workspace_parameters:
+        return None
+    return (
+        get_prims_ts_batch_decode_workspace_size,
+        prims_ts_batch_decode_with_kv_cache,
+    )
+
+
+def has_qsa_prims_ts_attention() -> bool:
+    """Return whether FlashInfer exposes encoded page-4 PrimTS decode."""
+
+    return _qsa_prims_ts_apis() is not None
+
+
+def qsa_prims_ts_workspace_size(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    max_seq_len: int,
+) -> int:
+    """Return byte workspace required for one flattened causal QSA launch."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
+    get_workspace_size, _ = apis
+    if q.ndim != 3 or k_cache.ndim != 4:
+        raise ValueError("QSA PrimTS expects Q [R,Hq,D] and K [P,Hkv,N,D]")
+    if q.shape[2] != k_cache.shape[3]:
+        raise ValueError("QSA PrimTS query and cache head dimensions must match")
+    return get_workspace_size(
+        batch_size=q.shape[0],
+        num_qo_heads=q.shape[1],
+        num_kv_heads=k_cache.shape[1],
+        head_dim=q.shape[2],
+        page_size=_QSA_SEMANTIC_PAGE_SIZE,
+        storage_page_size=k_cache.shape[2],
+        max_seq_len=max_seq_len,
+        q_dtype=q.dtype,
+        kv_dtype=k_cache.dtype,
+        out_dtype=q.dtype,
+        mask_type="causal",
+        device=q.device,
+    )
+
+
+def qsa_prims_ts_paged_attention(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    workspace_buffer: torch.Tensor,
+    paged_kv_indptr: torch.Tensor,
+    paged_kv_indices: torch.Tensor,
+    seq_lens: torch.Tensor,
+    max_seq_len: int,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    """Run flattened SQ=1 QSA through the existing PrimTS CSR interface."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
+    _, run_attention = apis
+    return run_attention(
+        q,
+        (k_cache, v_cache),
+        workspace_buffer,
+        paged_kv_indptr,
+        paged_kv_indices,
+        seq_lens,
+        max_seq_len,
+        bmm1_scale=q.shape[-1] ** -0.5,
+        out=out,
+        out_dtype=out.dtype,
+        mask_type="causal",
+        page_size=_QSA_SEMANTIC_PAGE_SIZE,
+    )
 
 
 def qsa_select_paged_tokens(
