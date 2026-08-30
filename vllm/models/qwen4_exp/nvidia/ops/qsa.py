@@ -13,6 +13,7 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 
 _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
+_QSA_SEMANTIC_PAGE_SIZE = 4
 
 
 @triton.jit
@@ -187,6 +188,99 @@ def _expand_qsa_indices_kernel(
         tl.where(valid, token, -1),
         mask=(row < rows) & (columns < OUTPUT_WIDTH),
     )
+
+
+@triton.jit
+def _build_qsa_page4_paged_metadata_kernel(
+    logical_indices_ptr,
+    block_table_ptr,
+    token_to_req_ptr,
+    logical_positions_ptr,
+    paged_kv_indptr_ptr,
+    paged_kv_indices_ptr,
+    seq_lens_ptr,
+    stride_indices_row,
+    stride_indices_column,
+    stride_table_req,
+    stride_table_page,
+    rows,
+    num_requests,
+    TOKEN_TOPK: tl.constexpr,
+    PAGE_TABLE_WIDTH: tl.constexpr,
+    SEMANTIC_PAGE_SIZE: tl.constexpr,
+    STORAGE_PAGE_SIZE: tl.constexpr,
+    PAGE_CAPACITY: tl.constexpr,
+    BLOCK_PAGES: tl.constexpr,
+) -> None:
+    """Convert one compact QSA token row into one fixed-capacity CSR row."""
+
+    row = tl.program_id(0)
+    page_ranks = tl.arange(0, BLOCK_PAGES)
+    request = tl.load(token_to_req_ptr + row)
+    logical_position = tl.load(logical_positions_ptr + row)
+    active = (
+        (row < rows)
+        & (logical_position >= 0)
+        & (request >= 0)
+        & (request < num_requests)
+    )
+    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
+
+    visible_tokens = tl.maximum(logical_position + 1, 0)
+    complete_pages = tl.minimum(
+        visible_tokens // SEMANTIC_PAGE_SIZE,
+        TOKEN_TOPK // SEMANTIC_PAGE_SIZE,
+    )
+    tail_tokens = visible_tokens % SEMANTIC_PAGE_SIZE
+    compact_length = complete_pages * SEMANTIC_PAGE_SIZE + tail_tokens
+    live_pages = complete_pages + (tail_tokens > 0)
+
+    # Every four-token group begins at column 4 * page_rank. This includes the
+    # optional causal tail, which the index expansion appends after all selected
+    # complete groups. Only one token ID per semantic page is read here.
+    token_columns = page_ranks * SEMANTIC_PAGE_SIZE
+    page_live = active & (page_ranks < live_pages)
+    logical_token = tl.load(
+        logical_indices_ptr
+        + row * stride_indices_row
+        + token_columns * stride_indices_column,
+        mask=page_live & (page_ranks < PAGE_CAPACITY),
+        other=-1,
+    )
+    logical_storage_page = tl.maximum(logical_token, 0) // STORAGE_PAGE_SIZE
+    table_entry_live = (
+        page_live & (logical_token >= 0) & (logical_storage_page < PAGE_TABLE_WIDTH)
+    )
+    physical_page = tl.load(
+        block_table_ptr
+        + safe_request * stride_table_req
+        + tl.minimum(logical_storage_page, PAGE_TABLE_WIDTH - 1) * stride_table_page,
+        mask=table_entry_live,
+        other=-1,
+    )
+    subpage = (tl.maximum(logical_token, 0) % STORAGE_PAGE_SIZE) // SEMANTIC_PAGE_SIZE
+    subpages_per_storage_page: tl.constexpr = STORAGE_PAGE_SIZE // SEMANTIC_PAGE_SIZE
+    locator = physical_page * subpages_per_storage_page + subpage
+    locator_live = table_entry_live & (physical_page >= 0)
+
+    # CUDA-graph padding rows have logical_position=-1. Give them one legal
+    # placeholder page/length so the native decode scheduler's positive-length
+    # contract is preserved; the attention owner zeros those output rows.
+    output_locator = tl.where(
+        locator_live,
+        locator,
+        tl.where((~active) & (page_ranks == 0), 0, -1),
+    )
+    tl.store(
+        paged_kv_indices_ptr + row * PAGE_CAPACITY + page_ranks,
+        output_locator,
+        mask=(row < rows) & (page_ranks < PAGE_CAPACITY),
+    )
+    if row < rows:
+        tl.store(paged_kv_indptr_ptr + row, row * PAGE_CAPACITY)
+        tl.store(seq_lens_ptr + row, tl.maximum(compact_length, 1))
+        if row == rows - 1:
+            tl.store(paged_kv_indptr_ptr + rows, rows * PAGE_CAPACITY)
 
 
 @triton.jit
@@ -738,6 +832,122 @@ def expand_qsa_block_indices_cuda(
         num_warps=4,
     )
     return out
+
+
+def qsa_build_page4_paged_metadata(
+    logical_indices: torch.Tensor,
+    block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    logical_positions: torch.Tensor,
+    storage_page_size: int,
+    *,
+    paged_kv_indptr: torch.Tensor | None = None,
+    paged_kv_indices: torch.Tensor | None = None,
+    seq_lens: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build native page-4 CSR metadata for flattened SQ=1 QSA rows.
+
+    ``logical_indices`` keeps the existing fixed-width indexer interface. The
+    expansion format places each selected four-token group consecutively and
+    appends the zero-to-three-token causal tail. This adapter samples column
+    ``4 * page_rank`` and encodes its physical cache page and four-token
+    subpage into the existing ``paged_kv_indices`` input.
+
+    Every query token becomes an independent CSR row with capacity
+    ``token_topk / 4 + 1``. The returned indices tensor is flattened, and the
+    row offsets therefore advance by that fixed capacity. Runtime ``seq_lens``
+    select only the live prefix, including an optional tail page.
+    """
+
+    if not logical_indices.is_cuda or not HAS_TRITON:
+        raise RuntimeError("QSA page-4 metadata requires CUDA and Triton")
+    if logical_indices.ndim != 2 or logical_indices.dtype != torch.int32:
+        raise ValueError("QSA logical indices must be a rank-two int32 tensor")
+    rows, output_width = logical_indices.shape
+    token_topk = output_width - (_QSA_SEMANTIC_PAGE_SIZE - 1)
+    if token_topk <= 0 or token_topk % _QSA_SEMANTIC_PAGE_SIZE:
+        raise ValueError(
+            "QSA index width must be token_topk + 3 with token_topk divisible by 4"
+        )
+    if block_table.ndim != 2 or block_table.dtype != torch.int32:
+        raise ValueError("QSA block table must be a rank-two int32 tensor")
+    if not all(block_table.shape):
+        raise ValueError("QSA block table must be nonempty")
+    if token_to_req.shape != (rows,) or token_to_req.dtype != torch.int32:
+        raise ValueError("QSA request mapping must be int32 with one entry per row")
+    if logical_positions.shape != (rows,) or logical_positions.dtype not in (
+        torch.int32,
+        torch.int64,
+    ):
+        raise ValueError("QSA logical positions must be int32/int64 per-row values")
+    if (
+        not isinstance(storage_page_size, int)
+        or isinstance(storage_page_size, bool)
+        or storage_page_size < _QSA_SEMANTIC_PAGE_SIZE
+        or storage_page_size % _QSA_SEMANTIC_PAGE_SIZE
+    ):
+        raise ValueError("QSA storage page size must be a positive multiple of four")
+    tensors = (block_table, token_to_req, logical_positions)
+    if any(tensor.device != logical_indices.device for tensor in tensors):
+        raise ValueError("QSA page-4 metadata inputs must share one CUDA device")
+    if logical_indices.stride(1) != 1 or block_table.stride(1) != 1:
+        raise ValueError("QSA indices and block-table rows must be contiguous")
+    if token_to_req.stride(0) != 1 or logical_positions.stride(0) != 1:
+        raise ValueError("QSA per-row metadata must be contiguous")
+
+    page_capacity = token_topk // _QSA_SEMANTIC_PAGE_SIZE + 1
+    expected_shapes = (
+        (rows + 1,),
+        (rows * page_capacity,),
+        (rows,),
+    )
+    outputs = [paged_kv_indptr, paged_kv_indices, seq_lens]
+    for output_index, (output, shape) in enumerate(zip(outputs, expected_shapes)):
+        if output is None:
+            outputs[output_index] = torch.empty(
+                shape, dtype=torch.int32, device=logical_indices.device
+            )
+        elif (
+            output.shape != shape
+            or output.dtype != torch.int32
+            or output.device != logical_indices.device
+            or not output.is_contiguous()
+        ):
+            raise ValueError(
+                "QSA page-4 output buffers must be contiguous int32 tensors "
+                f"with shapes {expected_shapes}"
+            )
+    paged_kv_indptr, paged_kv_indices, seq_lens = outputs
+    assert paged_kv_indptr is not None
+    assert paged_kv_indices is not None
+    assert seq_lens is not None
+    if not rows:
+        paged_kv_indptr.zero_()
+        return paged_kv_indptr, paged_kv_indices, seq_lens
+
+    _build_qsa_page4_paged_metadata_kernel[(rows,)](
+        logical_indices,
+        block_table,
+        token_to_req,
+        logical_positions,
+        paged_kv_indptr,
+        paged_kv_indices,
+        seq_lens,
+        logical_indices.stride(0),
+        logical_indices.stride(1),
+        block_table.stride(0),
+        block_table.stride(1),
+        rows,
+        block_table.shape[0],
+        TOKEN_TOPK=token_topk,
+        PAGE_TABLE_WIDTH=block_table.shape[1],
+        SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
+        STORAGE_PAGE_SIZE=storage_page_size,
+        PAGE_CAPACITY=page_capacity,
+        BLOCK_PAGES=triton.next_power_of_2(page_capacity),
+        num_warps=4,
+    )
+    return paged_kv_indptr, paged_kv_indices, seq_lens
 
 
 def qsa_select_paged_tokens(
