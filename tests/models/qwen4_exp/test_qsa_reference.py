@@ -1150,6 +1150,55 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     assert layer._qsa_prims_ts_workspace is calls["workspace"]
 
 
+def test_qsa_prims_ts_workspace_reuse_does_not_record_shape_memsets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
+
+    def fake_workspace_size(
+        query: torch.Tensor,
+        _key_cache: torch.Tensor,
+        _max_seq_len: int,
+        *,
+        out_dtype: torch.dtype,
+    ) -> int:
+        assert out_dtype == torch.bfloat16
+        return 128 if query.shape[0] <= 3 else 256
+
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_workspace_size", fake_workspace_size)
+    impl = Qwen4ExpQSAFlashAttentionImpl.__new__(Qwen4ExpQSAFlashAttentionImpl)
+    layer = SimpleNamespace(_qsa_prims_ts_workspace=None)
+    key_cache = torch.empty(1, 1, 16, 256, dtype=torch.bfloat16)
+
+    first = impl._get_qsa_prims_ts_workspace(
+        layer,
+        torch.empty(2, 6, 256, dtype=torch.bfloat16),
+        key_cache,
+        2051,
+        torch.bfloat16,
+    )
+    first.fill_(0xA5)
+    second = impl._get_qsa_prims_ts_workspace(
+        layer,
+        torch.empty(3, 6, 256, dtype=torch.bfloat16),
+        key_cache,
+        2051,
+        torch.bfloat16,
+    )
+
+    assert second.data_ptr() == first.data_ptr()
+    assert torch.all(second == 0xA5)
+
+    larger = impl._get_qsa_prims_ts_workspace(
+        layer,
+        torch.empty(4, 6, 256, dtype=torch.bfloat16),
+        key_cache,
+        2051,
+        torch.bfloat16,
+    )
+    assert larger.numel() == 256
+
+
 def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

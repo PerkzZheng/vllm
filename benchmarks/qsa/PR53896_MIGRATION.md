@@ -179,3 +179,65 @@ truncations than BF16 Triton. This rules out an aggregate FP8 accuracy drop in
 the native baseline, although the 30-item AIME result remains statistically
 noisy. Raw artifacts and the server log are under
 `qsa_accuracy/pr53896/triton-fp8-mtp0/`.
+
+## PrimTS FP8/MTP=0 serving diagnosis
+
+The full PrimTS FP8 accuracy row is not yet qualified. Two full GSM8K attempts
+were stopped rather than recording partial scores: after an initially fast
+64-request warmup, continuous batching repeatedly spent ten-second logging
+windows producing zero or only a few tokens. The server did not report a CUDA
+error, and completed requests remained numerically valid. Logs and incomplete
+artifacts are retained under `qsa_accuracy/pr53896/prims-ts-fp8-mtp0/`.
+
+The failure is not reproduced by a single attention launch. The new
+`benchmark_qsa_capture.py` diagnostic replays saved model tensors, current
+PR-53896 metadata, cold L2, and CUDA graphs. On GB300/TP=2 it measured:
+
+| Captured workload | PrimTS | metadata + PrimTS | Triton | Result |
+|---|---:|---:|---:|---|
+| one row, 768 visible tokens | 64.07 us | 66.17 us | 13.87 us | exact saved PrimTS output |
+| 64 real rows, positions 703--766 | 56.13 us | 57.66 us | 42.89 us | max difference 0.015625 vs Triton |
+| 767-row real prefill prefix | 200.47 us | 201.56 us | 408.69 us | max difference 0.0625 vs Triton |
+| one real row + 63 inert graph rows | 49.02 us | 50.97 us | 43.49 us | exact live-row output |
+
+Thirty-two consecutive PrimTS launches captured in one CUDA graph were also
+stable (28.11 us per warm-cache attention call). These controls rule out the
+real top-k order, variable causal lengths, inert graph padding, and ordinary
+single-device graph replay as the source of the multi-second stalls.
+
+The serving evidence instead points to exact-batch specialization during
+continuous mixed prefill/decode. PrimTS includes `batch_size` in its semantic
+compile key. Startup compiled 51 capture sizes independently, taking 12.56
+seconds per size on the first process. A 64-request warmup has one stable shape
+and reached 1,318 generated tokens/s after first-use compilation. The full
+1,319-request evaluation continuously replaces finished requests with prompt
+chunks, producing shapes outside the decode capture list (which stops at 512).
+Those shapes enter the same process-local CuTeDSL compile path; the JIT monitor
+deduplicates warnings by kernel name, so later specializations do not produce
+one warning per batch value. This explains the alternating zero-throughput
+windows and short fast intervals and is the current best-supported root cause.
+
+Two controls support that conclusion:
+
+- Eager TP=2 finished 2,048 FP8 PrimTS tokens correctly but needed 64.72
+  seconds (31.6 tokens/s), showing that falling off the compiled model path has
+  the same throughput scale as the stalled intervals.
+- A server restricted to one 64-row CUDA-graph bucket completed 24,395 tokens
+  across 64 GSM8K requests in 71.71 seconds including first-use warmup. Its
+  steady generation interval reached 2,430.5 tokens/s and had no stalls. The
+  64-question diagnostic scored 46/64 with 18 max-512 truncations; it is a
+  serving-performance control, not a replacement accuracy result.
+
+The vLLM workspace owner now follows the standalone FlashInfer contract and
+allocates uninitialized output-only scratch. It no longer records a complete
+workspace memset whenever the semantic shape changes. This removes avoidable
+graph/eager traffic but is not by itself claimed to solve exact-batch JIT.
+
+The production fix should separate the compiled batch *capacity* from the live
+row count: select a small set of PrimTS capacity buckets, pass the live count to
+the kernel, and make rows in `[live, capacity)` inert without reading Q/K/V.
+An alternative vLLM adapter can stage Q, metadata, and O through bucket-sized
+buffers, but that adds copies and large per-layer buffers. Until dynamic
+capacity is implemented, a safe integration fallback is native Triton for
+unwarmed mixed-prefill shapes while retaining PrimTS for qualified decode
+buckets. Full PrimTS FP8 GSM8K/GPQA/AIME remains blocked on this fix.

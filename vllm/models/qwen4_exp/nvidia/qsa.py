@@ -210,33 +210,21 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             out_dtype=out_dtype,
         )
         workspace = getattr(layer, "_qsa_prims_ts_workspace", None)
-        seq_len_q = query.shape[1] if query.ndim == 4 else 1
-        workspace_key = (
-            query.device,
-            query.shape[0],
-            seq_len_q,
-            key_cache.shape[2],
-            query.dtype,
-            out_dtype,
-            required_bytes,
-        )
-        previous_key = getattr(layer, "_qsa_prims_ts_workspace_key", None)
         if (
             workspace is None
             or workspace.device != query.device
             or workspace.numel() < required_bytes
         ):
-            workspace = torch.zeros(
+            # The standalone PrimTS interface treats this buffer as output-only
+            # scratch: the main kernel overwrites live partials before the
+            # reducer consumes them.  Do not record a full-buffer memset into
+            # every vLLM CUDA graph merely because its static batch shape differs.
+            workspace = torch.empty(
                 required_bytes,
                 dtype=torch.uint8,
                 device=query.device,
             )
             layer._qsa_prims_ts_workspace = workspace
-        elif previous_key != workspace_key:
-            # Workspace sections depend on the semantic launch key. Re-zero
-            # only when switching shapes; stable graph replays avoid this op.
-            workspace.zero_()
-        layer._qsa_prims_ts_workspace_key = workspace_key
         return workspace
 
     def _get_qsa_grouped_bitset_workspace(
@@ -619,9 +607,6 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 persistent=False,
             )
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
-        self._qsa_prims_ts_workspace_key: (
-            tuple[torch.device, int, int, int, torch.dtype, torch.dtype, int] | None
-        ) = None
         self._qsa_grouped_bitset_workspace: torch.Tensor | None = None
         if self.impl.use_qsa_prims_ts:
             page_capacity = (self.indexer.output_width + 3) // 4
