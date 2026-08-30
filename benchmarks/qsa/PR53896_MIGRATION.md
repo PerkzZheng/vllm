@@ -4,14 +4,15 @@
 
 - vLLM base: `13c80fb30ab835cbe387c01c4611970b7c3373e1`, the fetched
   `refs/pull/53896/head` on 2026-08-30.
-- Source integration: local branch `qsa-prims-ts-integration` at
-  `c4ba907`, with each production port commit carrying its original
-  `Cherry-picked-from` revision.
+- Source integration: local branch `qsa-prims-ts-pr53896`; the FP8 accuracy
+  gate used implementation revision `8dd467f74`. Each production port commit
+  carries its original `Cherry-picked-from` revision.
 - FlashInfer kernel branch: `qsa-page4-prims-ts` at `8fa4396a`.
-- Accuracy model: `Qwen/Qwen3.8-Flash-Next` revision `de4b8e4`. The model
-  config identifies the implementation as `qwen4_exp`, uses 24 Q heads, two
-  KV heads, head dimension 256, indexer budget 2048, compression ratio four,
-  and one hybrid MTP layer.
+- Accuracy model: [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/main)
+  revision `de4b8e4`, staged locally as `models/Qwen3.8-Flash-Next-de4b8e4`.
+  The model config identifies the implementation as `qwen4_exp`, uses 24 Q
+  heads, two KV heads, head dimension 256, indexer budget 2048, compression
+  ratio four, and one hybrid MTP layer.
 
 PR 53896 renamed the implementation from `qwen3_8_flash_next` to
 `qwen4_exp`. The port therefore maps the local NVIDIA changes onto
@@ -248,5 +249,44 @@ power-of-two capacities. Each QSA owner keeps graph-stable Q/O and request
 metadata staging buffers; padded rows receive position `-1`, request zero, and
 zero Q, reusing the already-qualified inert-row metadata path. Exact bucket
 sizes stay zero-copy. A three-live-row/four-capacity owner smoke passes on CPU.
-This implementation still needs a fresh TP2 graph server run, continuous-batch
-throughput validation, and the full FP8 accuracy matrix before it is qualified.
+
+A fresh TP=2 FP8 server on job 619973 validated the bucket reuse behavior. The
+first 51-shape PrimTS capture pass fell from about 10 minutes 40 seconds before
+the fix to 156 seconds; later capture passes reused the compiled buckets. A
+256-question GSM8K refill control at concurrency 64 and max output 512
+completed all requests with zero API errors: 96,401 completion tokens in
+135.26 seconds, including first-use runtime compilation. Steady generation
+windows recovered to 1.3--1.9k tokens/s instead of repeatedly remaining at
+zero. The control artifact is
+`qsa_accuracy/pr53896/prims-ts-fp8-mtp0/bucketed-refill256x512.json`.
+
+The refill control is evidence for serving progress and is not used as an
+accuracy result.
+
+## PrimTS FP8-E4M3/MTP=0 accuracy gate
+
+The full bucketed PrimTS matrix completed on the same TP=2 server with vLLM
+`8dd467f74`, FlashInfer `8fa4396a`, CUTLASS DSL 4.7.1, model revision
+`de4b8e4`, greedy sampling, and seed 42. Prompts, token limits, concurrency,
+and task order match the native-Triton FP8 reference.
+
+| Task | FP8 Triton | FP8 PrimTS | PrimTS truncations | PrimTS errors |
+|---|---:|---:|---:|---:|
+| GSM8K, 5-shot | 1288/1319 (97.65%) | 1287/1319 (97.57%) | 6 | 0 |
+| GPQA-Diamond | 151/198 (76.26%) | 154/198 (77.78%) | 39 | 0 |
+| AIME 2026 | 19/30 (63.33%) | 18/30 (60.00%) | 12 | 0 |
+
+Across all three tasks, PrimTS has 1,459 correct answers versus 1,458 for
+Triton, 57 truncations versus 63, and zero request errors in either run. The
+item-level audit found 11/15/3 prediction changes and 5/5/2 regressions versus
+4/8/1 improvements on GSM8K/GPQA/AIME, respectively. Raw generation hashes
+changed for 1,020/164/20 items. The mixed directions and essentially identical
+aggregate score are consistent with autoregressive sensitivity to the
+numerically different attention implementation, not a systematic FP8 accuracy
+drop. PrimTS FP8-E4M3/MTP=0 therefore passes the model-level accuracy gate.
+
+The PrimTS evaluator wall times were 410.10/526.86/239.53 seconds for
+GSM8K/GPQA/AIME. These include model serving and occupancy-dependent tails and
+are not accepted kernel-performance measurements. Raw outputs are under
+`qsa_accuracy/pr53896/prims-ts-fp8-mtp0/`; the matching server log is
+`server-bucketed-r1.log` in that directory.
