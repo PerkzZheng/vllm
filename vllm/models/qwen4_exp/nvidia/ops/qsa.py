@@ -564,6 +564,8 @@ def _qsa_sparse_paged_gqa_splitk_kernel(
     num_rows,
     num_cache_blocks,
     num_requests,
+    bmm1_scale,
+    bmm2_scale,
     TOPK: tl.constexpr,
     PAGE_SIZE: tl.constexpr,
     PAGE_TABLE_WIDTH: tl.constexpr,
@@ -597,7 +599,7 @@ def _qsa_sparse_paged_gqa_splitk_kernel(
     max_value = tl.full((BLOCK_M,), -1.0e20, dtype=tl.float32)
     normalizer = tl.zeros((BLOCK_M,), dtype=tl.float32)
     accumulator = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
-    softmax_scale_log2: tl.constexpr = (HEAD_DIM**-0.5) * 1.4426950408889634
+    softmax_scale_log2 = bmm1_scale * 1.4426950408889634
 
     # Dynamic bounds avoid padded main-loop iterations for uneven splits.
     split_tile_start = split_id * NUM_TILES // NUM_SPLITS
@@ -669,6 +671,7 @@ def _qsa_sparse_paged_gqa_splitk_kernel(
         accumulator / tl.maximum(normalizer[:, None], 1.0e-20),
         0.0,
     )
+    normalized_output *= bmm2_scale
     output_mask = head_offsets[:, None] < GROUP_SIZE
     if NUM_SPLITS == 1:
         tl.store(
@@ -1457,8 +1460,11 @@ def qsa_prims_ts_group_size(
         raise ValueError("QSA grouping policy expects Q [R,Hq,D] and K [P,Hkv,N,D]")
     if not q.is_cuda or q.device != k_cache.device:
         raise ValueError("QSA grouping policy expects Q and K on one CUDA device")
-    if q.dtype != torch.bfloat16 or k_cache.dtype != torch.bfloat16:
-        raise ValueError("QSA grouping policy currently requires BF16 Q and K")
+    if q.dtype != k_cache.dtype or q.dtype not in (
+        torch.bfloat16,
+        torch.float8_e4m3fn,
+    ):
+        raise ValueError("QSA grouping policy requires matching BF16 or FP8 Q/K")
     if q.shape[2] != k_cache.shape[3]:
         raise ValueError("QSA grouping policy requires matching head dimensions")
 
@@ -1487,6 +1493,9 @@ def qsa_prims_ts_paged_attention(
     seq_lens: torch.Tensor,
     max_seq_len: int,
     out: torch.Tensor,
+    *,
+    bmm1_scale: float | None = None,
+    bmm2_scale: float = 1.0,
 ) -> torch.Tensor:
     """Run Q1/Q2/Q4 QSA through the existing PrimTS CSR interface."""
 
@@ -1511,7 +1520,8 @@ def qsa_prims_ts_paged_attention(
         seq_lens,
         max_seq_len,
         seq_len_q=seq_len_q,
-        bmm1_scale=q.shape[-1] ** -0.5,
+        bmm1_scale=q.shape[-1] ** -0.5 if bmm1_scale is None else bmm1_scale,
+        bmm2_scale=bmm2_scale,
         out=out,
         out_dtype=out.dtype,
         mask_type="causal",
@@ -1596,6 +1606,9 @@ def qsa_sparse_paged_attention(
     block_table: torch.Tensor,
     token_to_req: torch.Tensor,
     out: torch.Tensor | None = None,
+    *,
+    bmm1_scale: float | None = None,
+    bmm2_scale: float = 1.0,
 ) -> torch.Tensor:
     """Run sparse GQA directly over paged BF16 K/V caches."""
 
@@ -1628,10 +1641,20 @@ def qsa_sparse_paged_attention(
         out = torch.empty_like(q)
     if out.shape != q.shape:
         raise ValueError("QSA sparse output must match its query")
-    assert out.dtype == q.dtype and out.device == q.device
+    output_dtype_supported = out.dtype == q.dtype or (
+        q.dtype == torch.float8_e4m3fn
+        and out.dtype in (torch.float16, torch.bfloat16)
+    )
+    if not output_dtype_supported or out.device != q.device:
+        raise ValueError(
+            "QSA sparse output must use the query dtype, or FP16/BF16 for FP8 "
+            "inputs, and reside on the query device"
+        )
     assert out.stride(2) == 1
     if not q.shape[0]:
         return out
+    if bmm1_scale is None:
+        bmm1_scale = head_dim**-0.5
 
     group_size = q.shape[1] // k_cache.shape[2]
     block_m = triton.next_power_of_2(group_size)
@@ -1698,6 +1721,8 @@ def qsa_sparse_paged_attention(
         q.shape[0],
         k_cache.shape[0],
         block_table.shape[0],
+        bmm1_scale,
+        bmm2_scale,
         TOPK=logical_indices.shape[1],
         PAGE_SIZE=k_cache.shape[1],
         PAGE_TABLE_WIDTH=block_table.shape[1],

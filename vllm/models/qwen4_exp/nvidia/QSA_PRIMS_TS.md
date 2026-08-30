@@ -202,6 +202,91 @@ the previous replay, but adjacent groups can still reuse the same physical K/V
 lines through L2 during one kernel execution; consequently this logical rate
 can exceed GB300's roughly 8-TB/s physical HBM limit.
 
+#### BF16/FP8 TP1/TP2 audit
+
+The latest dtype comparison uses the same SM103 GB300, 258-MiB cold-L2
+eviction, CUDA graphs, 10 warmups, and 100 timed replays. Prefill replays the
+full layer-3 8K route dump. Decode uses causal randomized routes at the two
+page-boundary tails, and every row below reports the tail with the worse
+`Triton / PrimTS E2E` ratio. FP8 means E4M3 Q/K/V, values scaled by 0.25, and
+FP16 output. The selected framework policy is Q1 for SQ1 and the underfilled
+BS1/BS8 SQ4 shapes, Q4 for BS64/BS256 SQ4, and Q4 for prefill. In the speedup
+column, a value greater than one means PrimTS is faster.
+
+| Dtype | TP | Phase | BS | SQ | Route | Tail | PrimTS attention (us) | PrimTS E2E (us) | Triton (us) | SWA2K (us) | Triton / PrimTS E2E | PrimTS E2E / SWA2K |
+|---|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| BF16 | 1 | prefill | 1 | 8192 | Q4 | - | 850.42 | 884.35 | 3297.16 | 540.39 | 3.728x | 1.637x |
+| BF16 | 2 | prefill | 1 | 8192 | Q4 | - | 439.08 | 471.83 | 1665.43 | 279.71 | 3.530x | 1.687x |
+| BF16 | 1 | decode | 1 | 1 | Q1 | 0 | 17.41 | 20.09 | 17.84 | 26.60 | 0.888x | 0.755x |
+| BF16 | 1 | decode | 1 | 4 | Q1 | 3 | 18.62 | 21.27 | 24.85 | 25.84 | 1.168x | 0.823x |
+| BF16 | 1 | decode | 8 | 1 | Q1 | 0 | 21.51 | 23.99 | 29.53 | 28.77 | 1.231x | 0.834x |
+| BF16 | 1 | decode | 8 | 4 | Q1 | 0 | 38.66 | 41.62 | 50.38 | 28.77 | 1.210x | 1.447x |
+| BF16 | 1 | decode | 64 | 1 | Q1 | 3 | 65.21 | 67.99 | 79.56 | 61.26 | 1.170x | 1.110x |
+| BF16 | 1 | decode | 64 | 4 | Q4 | 3 | 145.84 | 152.07 | 183.44 | 65.48 | 1.206x | 2.322x |
+| BF16 | 1 | decode | 256 | 1 | Q1 | 3 | 197.16 | 200.70 | 212.58 | 182.03 | 1.059x | 1.103x |
+| BF16 | 1 | decode | 256 | 4 | Q4 | 3 | 483.65 | 491.81 | 564.94 | 201.39 | 1.149x | 2.442x |
+| BF16 | 2 | decode | 1 | 1 | Q1 | 0 | 17.30 | 19.77 | 16.47 | 26.43 | 0.833x | 0.748x |
+| BF16 | 2 | decode | 1 | 4 | Q1 | 3 | 16.74 | 19.36 | 18.72 | 24.81 | 0.967x | 0.780x |
+| BF16 | 2 | decode | 8 | 1 | Q1 | 0 | 19.08 | 21.46 | 24.78 | 28.35 | 1.155x | 0.757x |
+| BF16 | 2 | decode | 8 | 4 | Q1 | 3 | 26.86 | 29.29 | 32.82 | 26.82 | 1.121x | 1.092x |
+| BF16 | 2 | decode | 64 | 1 | Q1 | 3 | 42.35 | 45.92 | 56.72 | 40.74 | 1.235x | 1.127x |
+| BF16 | 2 | decode | 64 | 4 | Q4 | 3 | 87.25 | 93.15 | 111.48 | 44.53 | 1.197x | 2.092x |
+| BF16 | 2 | decode | 256 | 1 | Q1 | 3 | 110.67 | 114.09 | 126.20 | 104.06 | 1.106x | 1.096x |
+| BF16 | 2 | decode | 256 | 4 | Q4 | 3 | 249.48 | 257.70 | 332.53 | 111.64 | 1.290x | 2.308x |
+| FP8 | 1 | prefill | 1 | 8192 | Q4 | - | 817.49 | 850.68 | 5967.37 | 384.15 | 7.015x | 2.214x |
+| FP8 | 2 | prefill | 1 | 8192 | Q4 | - | 423.91 | 455.22 | 3007.36 | 200.25 | 6.606x | 2.273x |
+| FP8 | 1 | decode | 1 | 1 | Q1 | 0 | 45.79 | 48.05 | 16.28 | 18.19 | 0.339x | 2.642x |
+| FP8 | 1 | decode | 1 | 4 | Q1 | 3 | 45.62 | 48.08 | 22.56 | 18.23 | 0.469x | 2.637x |
+| FP8 | 1 | decode | 8 | 1 | Q1 | 0 | 46.49 | 48.50 | 31.51 | 18.45 | 0.650x | 2.629x |
+| FP8 | 1 | decode | 8 | 4 | Q1 | 0 | 60.24 | 62.25 | 49.67 | 18.79 | 0.798x | 3.313x |
+| FP8 | 1 | decode | 64 | 1 | Q1 | 3 | 134.57 | 136.58 | 89.90 | 36.66 | 0.658x | 3.726x |
+| FP8 | 1 | decode | 64 | 4 | Q4 | 3 | 120.75 | 126.63 | 267.34 | 42.98 | 2.111x | 2.946x |
+| FP8 | 1 | decode | 256 | 1 | Q1 | 3 | 427.70 | 429.85 | 273.10 | 100.88 | 0.635x | 4.261x |
+| FP8 | 1 | decode | 256 | 4 | Q4 | 3 | 353.08 | 361.91 | 1015.45 | 124.55 | 2.806x | 2.906x |
+| FP8 | 2 | decode | 1 | 1 | Q1 | 0 | 53.22 | 55.40 | 16.16 | 18.37 | 0.292x | 3.016x |
+| FP8 | 2 | decode | 1 | 4 | Q1 | 0 | 46.92 | 48.93 | 18.10 | 18.16 | 0.370x | 2.694x |
+| FP8 | 2 | decode | 8 | 1 | Q1 | 0 | 46.36 | 47.94 | 23.09 | 18.37 | 0.482x | 2.610x |
+| FP8 | 2 | decode | 8 | 4 | Q1 | 3 | 47.51 | 49.60 | 41.10 | 18.44 | 0.829x | 2.690x |
+| FP8 | 2 | decode | 64 | 1 | Q1 | 3 | 64.77 | 66.73 | 52.96 | 24.89 | 0.794x | 2.681x |
+| FP8 | 2 | decode | 64 | 4 | Q4 | 0 | 69.37 | 75.13 | 151.00 | 34.72 | 2.010x | 2.164x |
+| FP8 | 2 | decode | 256 | 1 | Q1 | 3 | 245.53 | 248.06 | 155.38 | 60.46 | 0.626x | 4.103x |
+| FP8 | 2 | decode | 256 | 4 | Q4 | 3 | 185.85 | 194.12 | 518.27 | 71.64 | 2.670x | 2.710x |
+
+BF16 prefill is 3.53--3.73x faster than Triton end to end. The large ratio
+is not produced by a missing Triton launch: at TP1, flattened PrimTS is
+2312.87 us versus Triton's 3297.16 us, while exact Q4 grouping reduces the
+logical KV work from 13,968,880 selected tokens to a 4,008,112-token union and
+reduces PrimTS attention to 850.42 us. A CUDA-graph-off audit reproduced
+2311.27/850.41/3295.30 us for flattened PrimTS/Q4 PrimTS/Triton, within 0.4
+percent of the captured numbers. The maximum BF16 output difference is
+`3.91e-3`.
+
+Across the 16 conservative BF16 decode rows, PrimTS is faster in 13, with a
+1.117x geometric-mean end-to-end speedup; the range is 0.833--1.290x. FP8
+prefill is 6.61--7.01x faster than the current Triton FP8 path, but that
+Triton path is an experimental baseline rather than a tuned production FP8
+kernel. FP8 decode is faster in only four of 16 policy-selected rows and has a
+0.791x geometric mean, so there is no general FP8 speedup claim. The maximum
+FP8 backend difference after the scaled-input correction is `4.34e-2`.
+
+The large Q4/SWA decode ratios are not a launch-profile regression. These
+synthetic adjacent routes are independent and overlap by only about 25
+percent, so each Q4 union contains roughly 1,393--1,402 page-4 blocks, versus
+about 513 pages of grouped SWA. This is 1.72--1.75x extra KV relative to SWA.
+The earlier near-parity Q4 checkpoint used correlated captured routes. The
+current shape-only grouping policy does not estimate route overlap; avoiding
+Q4 on low-overlap inputs remains part of the QSA-specific policy-cost TODO.
+
+The FP8 audit found three real implementation hazards: the original benchmark
+requested an unqualified FP8 output, each elected load warp replayed the whole
+page-fragment loop and over-completed its TMA barrier, and generic encoded
+page-4 direct/fused publication profiles could leave peers waiting. The
+qualified path uses FP8 Q/K/V with FP16 output, partitions page fragments
+exactly once across loader warps, and routes unsafe generic profiles through a
+separate split reducer. Q4 Keeps remains direct because that profile is
+qualified. These changes fix correctness and deadlock behavior; they do not
+close the FP8 Q1 or sparse-versus-SWA performance gaps shown above.
+
 #### Matched decode checkpoint
 
 Decode is measured separately from the full-8K prefill table above. The input
@@ -1233,16 +1318,75 @@ kernel tolerance tests:
 For the validated BrightDelta image on nodes where the configured Enroot proxy
 is unreachable, exporting `no_proxy='*'` before the first Pyxis invocation
 allows direct registry access. The source-under-test keeps the image's compiled
-vLLM extensions and bind-mounts only the four changed QSA Python files; the
-FlashInfer checkout is selected with `PYTHONPATH` and
-`FLASHINFER_DISABLE_VERSION_CHECK=1` because the image contains the preceding
-JIT-cache patch version. Every result must record the vLLM and FlashInfer commit
-IDs, image tag, checkpoint, cache dtype, MTP setting, prompt/scorer settings,
-and raw per-item output.
+vLLM extensions and bind-mounts only `qsa_cache.py`, `indexer_qsa.py`,
+`ops/qsa.py`, and `qsa.py`. FlashInfer must also use a selective overlay:
+bind-mount the source `flashinfer/decode.py`, the source
+`flashinfer/attention` package, and
+`flashinfer/trace/templates/attention.py` over the installed package. Do not
+put the complete FlashInfer checkout on `PYTHONPATH`: the source checkout and
+validated image have different MoE wrapper/JIT symbol contracts, and replacing
+the image's root `flashinfer` package prevents model startup. The selective
+overlay preserves the image's installed MoE/GEMM stack while replacing the
+PrimTS attention surface under test. Every result must record the vLLM and
+FlashInfer commit IDs, image tag, checkpoint, cache dtype, MTP setting,
+prompt/scorer settings, and raw per-item output.
 
-FP8 model weights and an FP8 KV cache are different contracts. The current
-model owner supports BF16 cache storage, while the standalone FP8 page-4 path
-qualifies matched FP8 Q/K/V with FP16 output. Therefore FP8-weight/BF16-cache
-runs must not be entered in an FP8-KV row. The FP8-KV rows remain pending until
-cache insertion, query/K/V scaling, Triton, and PrimTS model-facing interfaces
-are implemented and tested with BF16 model activations.
+FP8 model weights and an FP8 KV cache are different contracts. An FP8-weight
+run with `--kv-cache-dtype auto` still has a BF16 KV cache and must not be
+entered in an FP8-KV row. The model-facing FP8-KV implementation under test
+uses vLLM's encoded-`uint8` cache allocation and `reshape_and_cache_flash` to
+quantize BF16 K/V at insertion. Before sparse attention it views those bytes as
+the platform E4M3 dtype, statically quantizes the BF16 query into a persistent
+graph-stable FP8 buffer, and applies:
+
+```text
+bmm1_scale = head_dim^-0.5 * q_scale * k_scale
+bmm2_scale = v_scale
+```
+
+Both Triton and PrimTS receive those runtime descales and write BF16 model
+output. The local BF16 and FP8 checkpoints contain no Q/K/V cache-scale
+weights, so vLLM's explicit FP8-cache default of `1.0` is the expected scale
+for this study. Standalone qualification must cover FP8 Q/K/V to BF16 output
+with non-unit BMM scales before an FP8-KV model result is accepted.
+
+The first Triton/BF16/MTP0 smoke on GB300 used ten GSM8K items. All ten
+requests completed without a request or parser error, eight were correct, and
+three reached the fixed 256-token output cap. This is a transport/kernel smoke,
+not an aggregate accuracy result; the full 1,319-item row remains authoritative.
+
+`benchmarks/qsa/qsa_reasoning_eval.py` is the dependency-light OpenAI
+completions client used for all three tasks. Its fixed protocol is greedy
+decoding with seed 42, GSM8K five-shot with 256 output tokens, GPQA-Diamond
+zero-shot chain-of-thought with 2,048 output tokens, and AIME26 zero-shot
+chain-of-thought with 4,096 output tokens. GPQA choices are shuffled
+deterministically per question and seed; the source mirror stores the correct
+choice first, so evaluating its original order would be invalid. The validated
+source counts and SHA256 digests are:
+
+| Dataset | Items | SHA256 |
+|---|---:|---|
+| GPQA-Diamond JSON | 198 | `7fad87f34562cf760b32e85f533eba4025b450b4e5039d30cc13fb179b65c739` |
+| AIME26 JSONL | 30 | `52822957957a3f577d1e9706c36a66a8108a3f99b6aff424cfb72dff0094a9ee` |
+
+A ten-item smoke run followed by a full run has the form:
+
+```shell
+python3 benchmarks/qsa/qsa_reasoning_eval.py \
+  --task gsm8k --run-name triton-bf16-mtp0 \
+  --num-questions 10 --max-concurrency 10 \
+  --url http://nvl72d175-T08:8000/v1/completions \
+  --metadata vllm=ff70b29 --metadata flashinfer=eb1e8f0b \
+  --output qsa_accuracy/triton-bf16-mtp0/gsm8k-smoke.json
+
+python3 benchmarks/qsa/qsa_reasoning_eval.py \
+  --task gsm8k --run-name triton-bf16-mtp0 \
+  --url http://nvl72d175-T08:8000/v1/completions \
+  --metadata vllm=ff70b29 --metadata flashinfer=eb1e8f0b \
+  --output qsa_accuracy/triton-bf16-mtp0/gsm8k.json
+```
+
+Each artifact includes dataset hashes, exact settings, labels, parsed
+predictions, raw outputs, output hashes, token counts, finish reasons, and
+request errors. Keep raw records when comparing modes: equal aggregate
+accuracy can hide a position-specific Q2/Q4 failure.
