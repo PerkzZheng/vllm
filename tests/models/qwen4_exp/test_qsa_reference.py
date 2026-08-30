@@ -249,6 +249,7 @@ def test_qsa_side_metadata_marks_cudagraph_padding_inert() -> None:
     token_to_req = torch.tensor([0] * 4 + [1] * 4 + [2] * 4 + [0] * 4, device=device)
     common = SimpleNamespace(
         num_actual_tokens=16,
+        num_reqs=3,
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc.cpu(),
         seq_lens=torch.tensor([68, 68, 68, 0], dtype=torch.int32, device=device),
@@ -297,6 +298,7 @@ def test_qsa_circular_buffer_metadata_keeps_only_each_requests_suffix() -> None:
     block_table = torch.tensor([[1], [0], [2]], dtype=torch.int32, device=device)
     common = SimpleNamespace(
         num_actual_tokens=16,
+        num_reqs=2,
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc.cpu(),
         seq_lens=torch.tensor([9, 11, 0], dtype=torch.int32, device=device),
@@ -424,6 +426,7 @@ def test_qsa_compressed_metadata_keeps_dummy_slots_inert() -> None:
     )
     common = SimpleNamespace(
         num_actual_tokens=8,
+        num_reqs=3,
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc.cpu(),
         seq_lens=torch.tensor([7, 0, 12], dtype=torch.int32, device=device),

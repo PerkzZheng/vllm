@@ -53,8 +53,17 @@ raw output directory. Fresh-server first-request smokes precede full runs.
 
 - Production files pass Python bytecode compilation in the local vLLM
   environment.
-- CPU/GPU pytest qualification is pending the development container. The
-  local lightweight environment does not include pytest.
+- The complete QSA reference suite passes in the CUDA development container:
+  `53 passed` in
+  `tests/models/qwen4_exp/test_qsa_reference.py`. This covers the native
+  Triton metadata/indexer/attention path, PR-53896 combined-cache adaptation,
+  backend selection and PrimTS wrappers, and PrimTS page-4 Q1/Q2/Q4 metadata.
+- PR 53896 added `num_reqs` to common attention metadata. The migrated
+  metadata-builder fixtures now set the live request count explicitly, rather
+  than treating CUDA-graph padding rows as live requests.
+- Set `TRITON_CACHE_DIR` to a workspace-backed directory for CUDA tests and
+  model runs. The container user's default Triton cache has a small disk quota
+  and otherwise fails compilation before a kernel can run.
 - No PR-53896 model accuracy or performance number is accepted yet. Historical
   figures in `QSA_PRIMS_TS.md` come from the prior model branch and must be
   requalified before comparison.
