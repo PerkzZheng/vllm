@@ -257,19 +257,24 @@ The framework uses one policy for prefill, MTP, and decode; they differ only
 in each request's query length. Let `Nflat` be the total flattened query rows,
 `Hkv` the local KV-head count, `S=4` the assumed maximum split-KV fanout, and
 `NSM` the device SM count. The stable work estimate is
-`W = Nflat * Hkv * S`. The owner selects the largest request-safe group that
-retains one estimated SM wave:
+`W = Nflat * Hkv * S`. Before building page-union metadata, vLLM calls
+FlashInfer's `get_prims_ts_qsa_group_size` policy interface with the CPU
+request boundaries, flattened query extent, local head geometry, and device.
+FlashInfer selects the largest request-safe group that retains one estimated
+SM wave, and vLLM uses that returned value as the metadata row width:
 
 - Q4 when `W >= 4 * NSM`;
 - otherwise Q2 when `W >= 2 * NSM`;
 - otherwise Q1.
 
 The group must also fit as complete query-head rows in TileQ64:
-`group_size * (Hq / Hkv) <= 64`. FlashInfer reuses the dense grouped-Q
+`group_size * (Hq / Hkv) <= 64`. Both this capacity check and the current Q4
+limit live in FlashInfer; the latter is derived from the kernel's four-bit
+membership representation. FlashInfer then reuses the dense grouped-Q
 geometry to select the smallest canonical TileQ that contains the complete
 group, avoiding unnecessary padding. Q4 therefore uses TileQ64/32/16 at
-TP1-2/TP4/TP8, while Q2 uses TileQ32/16/8. The current four-bit membership
-format caps the policy at Q4 even when TileQ64 could contain Q8 or Q16.
+TP1-2/TP4/TP8, while Q2 uses TileQ32/16/8. The framework metadata path does
+not duplicate the grouping thresholds or kernel capability limit.
 
 Every real Q2/Q4 group must contain adjacent rows from one request; an inert
 CUDA-graph padding suffix must begin and end on the same group boundary.
@@ -281,11 +286,11 @@ attention and 1.277x end-to-end versus matched grouped-Q2 SWA, improving on
 forced Q4's 1.135x and 1.313x. Its roughly 12.8-microsecond metadata build is
 the remaining reason end-to-end exceeds 1.20x. The initial topology-only
 policy nevertheless selects Q4 once its estimated post-group grid fills a
-wave. A follow-up TODO is to reuse the dense launch-cost model with calibrated
-QSA costs for scattered page-4 loads and union metadata; that model can
-recover measured crossovers such as TP4 batch 64. At batch 256 forced Q4 meets
-the target for every TP; at batch 64 its attention kernel meets the target for
-every TP, while end-to-end still misses at TP1/TP4/TP8.
+wave. A FlashInfer-side follow-up TODO is to reuse the dense launch-cost model
+with calibrated QSA costs for scattered page-4 loads and union metadata; that
+model can recover measured crossovers such as TP4 batch 64. At batch 256
+forced Q4 meets the target for every TP; at batch 64 its attention kernel
+meets the target for every TP, while end-to-end still misses at TP1/TP4/TP8.
 
 All SQ1 and grouped Q2/Q4 outputs differ from their independent-route
 references by at most `9.8e-4`. Reported selected-KV bandwidth is a logical

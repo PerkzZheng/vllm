@@ -60,75 +60,6 @@ from .indexer_qsa import QSAIndexer
 _QSA_Q1_MAX_SEQ_LEN = 2051
 _QSA_Q2_MAX_SEQ_LEN = 4104
 _QSA_Q4_MAX_SEQ_LEN = 8208
-_QSA_MAX_GROUP_SIZE = 4
-_QSA_MAX_TILE_SIZE_Q = 64
-
-
-def _select_qsa_prims_ts_group_size(
-    query_start_loc_cpu: torch.Tensor | None,
-    num_tokens: int,
-    heads_q_per_kv: int,
-    flattened_kv_tasks: int,
-    num_sms: int,
-) -> int:
-    """Select the largest request-safe group that retains one SM wave.
-
-    ``flattened_kv_tasks`` estimates four split-KV CTAs for every flattened
-    query row and local KV head. Dividing it by the query group size estimates
-    the post-group launch grid, so Q4 and Q2 require respectively four and two
-    times the SM count. A group must also fit as complete query-head rows in a
-    TileQ64 CTA. The current four-bit membership encoding caps that capacity at
-    Q4 even when TP makes more complete tokens fit.
-    """
-
-    if flattened_kv_tasks <= 0 or num_sms <= 0 or heads_q_per_kv <= 0:
-        return 1
-    if (
-        query_start_loc_cpu is None
-        or query_start_loc_cpu.device.type != "cpu"
-        or query_start_loc_cpu.ndim != 1
-        or query_start_loc_cpu.numel() < 2
-    ):
-        return 1
-    query_starts = [int(value) for value in query_start_loc_cpu.tolist()]
-    num_mapped_tokens = query_starts[-1]
-    if query_starts[0] != 0 or not 0 <= num_mapped_tokens <= num_tokens:
-        return 1
-    query_deltas = [end - begin for begin, end in zip(query_starts, query_starts[1:])]
-    if any(length < 0 for length in query_deltas):
-        return 1
-    query_lengths = [length for length in query_deltas if length > 0]
-    if not query_lengths:
-        return 1
-
-    max_tile_group_size = min(
-        _QSA_MAX_GROUP_SIZE,
-        _QSA_MAX_TILE_SIZE_Q // heads_q_per_kv,
-    )
-
-    # TODO(qsa): Reuse the dense PrimTS launch-cost candidate model once it has
-    # QSA coefficients for scattered page-4 loads and grouped-union metadata.
-    # Extend this candidate set to Q8/Q16 only after the packed membership
-    # representation supports more than four query bits.
-
-    # CUDA graphs may append inert token rows beyond the final real request.
-    # They can share the grouped route only if the suffix starts and ends on
-    # the same group boundary, so no real request can share a group with it.
-    for group_size in (4, 2):
-        if group_size > max_tile_group_size:
-            continue
-        request_safe = (
-            num_mapped_tokens % group_size == 0
-            and num_tokens % group_size == 0
-            and all(length % group_size == 0 for length in query_lengths)
-        )
-        if not request_safe:
-            continue
-
-        required_flattened_tasks = group_size * num_sms
-        if flattened_kv_tasks >= required_flattened_tasks:
-            return group_size
-    return 1
 
 
 class Qwen4ExpQSAMetadataBuilder(FlashAttentionMetadataBuilder):
@@ -305,20 +236,14 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             from .ops.qsa import (
                 qsa_build_page4_grouped_paged_metadata,
                 qsa_build_page4_paged_metadata,
-                qsa_prims_ts_grouping_wave_estimate,
+                qsa_prims_ts_group_size,
                 qsa_prims_ts_paged_attention,
             )
 
-            flattened_kv_tasks, num_sms = qsa_prims_ts_grouping_wave_estimate(
+            group_size = qsa_prims_ts_group_size(
                 query[:num_tokens],
                 key_cache,
-            )
-            group_size = _select_qsa_prims_ts_group_size(
                 query_start_loc_cpu,
-                num_tokens,
-                query.shape[1] // key_cache.shape[1],
-                flattened_kv_tasks,
-                num_sms,
             )
             route_rows = num_tokens // group_size
             page_capacity = (logical_indices.shape[1] + 3) // 4

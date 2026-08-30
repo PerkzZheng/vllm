@@ -18,8 +18,11 @@ _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
 _QSA_SEMANTIC_PAGE_SIZE = 4
 _QSA_PAGE_MEMBERSHIP_BITS = 4
-_QSA_GROUPING_ASSUMED_SPLITS_KV = 4
-_QSAPrimsTSAPIs = tuple[Callable[..., int], Callable[..., torch.Tensor]]
+_QSAPrimsTSAPIs = tuple[
+    Callable[..., int],
+    Callable[..., int],
+    Callable[..., torch.Tensor],
+]
 
 
 @triton.jit
@@ -1376,6 +1379,7 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
     try:
         from flashinfer.decode import (
             get_prims_ts_batch_decode_workspace_size,
+            get_prims_ts_qsa_group_size,
             prims_ts_batch_decode_with_kv_cache,
         )
     except (AttributeError, ImportError):
@@ -1389,6 +1393,7 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
     if "storage_page_size" not in workspace_parameters:
         return None
     return (
+        get_prims_ts_qsa_group_size,
         get_prims_ts_batch_decode_workspace_size,
         prims_ts_batch_decode_with_kv_cache,
     )
@@ -1410,7 +1415,7 @@ def qsa_prims_ts_workspace_size(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    get_workspace_size, _ = apis
+    _, get_workspace_size, _ = apis
     if q.ndim == 3:
         batch_size, num_qo_heads, head_dim = q.shape
         seq_len_q = 1
@@ -1441,33 +1446,35 @@ def qsa_prims_ts_workspace_size(
     )
 
 
-def qsa_prims_ts_grouping_wave_estimate(
+def qsa_prims_ts_group_size(
     q: torch.Tensor,
     k_cache: torch.Tensor,
-) -> tuple[int, int]:
-    """Return the fixed-split grouping-work estimate and device SM count.
-
-    Group profitability uses four potential split-KV partitions per flattened
-    query row and local KV head. This is deliberately a stable policy estimate,
-    not the dynamically resolved Q1 launch grid: sharing can win even when the
-    resolver chooses fewer Q1 splits for a particular shape.
-    """
+    query_start_loc_cpu: torch.Tensor | None,
+) -> int:
+    """Ask FlashInfer how many adjacent Q rows each metadata route should own."""
 
     if q.ndim != 3 or k_cache.ndim != 4:
-        raise ValueError("QSA grouping estimate expects Q [R,Hq,D] and K [P,Hkv,N,D]")
+        raise ValueError("QSA grouping policy expects Q [R,Hq,D] and K [P,Hkv,N,D]")
     if not q.is_cuda or q.device != k_cache.device:
-        raise ValueError("QSA grouping estimate expects Q and K on one CUDA device")
+        raise ValueError("QSA grouping policy expects Q and K on one CUDA device")
     if q.dtype != torch.bfloat16 or k_cache.dtype != torch.bfloat16:
-        raise ValueError("QSA grouping estimate currently requires BF16 Q and K")
+        raise ValueError("QSA grouping policy currently requires BF16 Q and K")
     if q.shape[2] != k_cache.shape[3]:
-        raise ValueError("QSA grouping estimate requires matching head dimensions")
+        raise ValueError("QSA grouping policy requires matching head dimensions")
 
-    device_index = q.device.index
-    if device_index is None:
-        device_index = torch.cuda.current_device()
-    estimated_kv_tasks = q.shape[0] * k_cache.shape[1] * _QSA_GROUPING_ASSUMED_SPLITS_KV
-    num_sms = torch.cuda.get_device_properties(device_index).multi_processor_count
-    return estimated_kv_tasks, num_sms
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
+    get_group_size, _, _ = apis
+    return int(
+        get_group_size(
+            query_start_loc_cpu,
+            q.shape[0],
+            q.shape[1],
+            k_cache.shape[1],
+            device=q.device,
+        )
+    )
 
 
 def qsa_prims_ts_paged_attention(
@@ -1486,7 +1493,7 @@ def qsa_prims_ts_paged_attention(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    _, run_attention = apis
+    _, _, run_attention = apis
     if q.ndim == 3:
         seq_len_q = 1
     elif q.ndim == 4 and q.shape[1] in (2, 4):
