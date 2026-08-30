@@ -102,6 +102,16 @@ def _output_dtype_key() -> str:
     return "bfloat16"
 
 
+def _grouped_swa_output_dtype() -> torch.dtype:
+    """Return the supported two-byte output type for grouped SWA timing."""
+
+    # The Q64/KV128 Keeps profile accepts FP8 Q/K/V with FP16 output. It does
+    # not yet accept model-facing BF16 output. Both output types have identical
+    # traffic, and this baseline is a timing projection rather than a numerical
+    # reference for the sparse result.
+    return torch.bfloat16 if torch.bfloat16 == _QKV_DTYPE else torch.float16
+
+
 def _empty_output_like(query: torch.Tensor) -> torch.Tensor:
     return torch.empty(query.shape, dtype=_output_dtype(), device=query.device)
 
@@ -1287,7 +1297,11 @@ def _run_union_upper_bound(
         num_kv_heads,
         trace.context_length,
     )
-    baseline_output = _empty_output_like(union_q)
+    baseline_output = torch.empty(
+        union_q.shape,
+        dtype=_grouped_swa_output_dtype(),
+        device=union_q.device,
+    )
 
     def grouped_swa_attention() -> None:
         with torch.cuda.nvtx.range("union_grouped_swa_attention"):
@@ -1803,7 +1817,7 @@ def _make_grouped_contiguous_baseline(
         seq_len_q=group_size,
         q_dtype=inputs.q.dtype,
         kv_dtype=k_cache.dtype,
-        out_dtype=_output_dtype(),
+        out_dtype=_grouped_swa_output_dtype(),
         mask_type="causal",
         window_left=_BASELINE_WINDOW_LEFT,
         device="cuda",
@@ -1996,13 +2010,18 @@ def _run_case(
         triton_reference_diff = float(
             (triton_output[worst_row].float() - reference).abs().max().item()
         )
+        qsa_abs_max = float(qsa_output[worst_row].float().abs().max().item())
+        triton_abs_max = float(triton_output[worst_row].float().abs().max().item())
+        reference_abs_max = float(reference.abs().max().item())
         raise AssertionError(
             "QSA backend mismatch: "
             f"worst_row={worst_row}, request={int(request.item())}, "
             f"position={int(inputs.logical_positions[worst_row].item())}, "
             f"PrimTS-vs-Triton={triton_max_abs_diff:.6f}, "
             f"PrimTS-vs-reference={qsa_reference_diff:.6f}, "
-            f"Triton-vs-reference={triton_reference_diff:.6f}"
+            f"Triton-vs-reference={triton_reference_diff:.6f}, "
+            f"absmax=(PrimTS={qsa_abs_max:.6f}, "
+            f"Triton={triton_abs_max:.6f}, reference={reference_abs_max:.6f})"
         )
     torch.testing.assert_close(
         qsa_output.float(),

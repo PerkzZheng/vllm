@@ -290,3 +290,87 @@ GSM8K/GPQA/AIME. These include model serving and occupancy-dependent tails and
 are not accepted kernel-performance measurements. Raw outputs are under
 `qsa_accuracy/pr53896/prims-ts-fp8-mtp0/`; the matching server log is
 `server-bucketed-r1.log` in that directory.
+
+## Standalone decode performance checkpoint
+
+The accepted decode protocol uses one SM103 GB300 GPU, a 258-MiB L2 eviction
+before every measured replay, CUDA graphs, 10 warmup iterations, 100 measured
+iterations, randomized causal top-k routes, an 8K source context, and compact
+KV lengths of 2048 or 2051. The TP=2 model server remains on GPUs 0/1; all
+standalone measurements use GPU 2 and do not disturb serving. Times below are
+microseconds and ranges cover tail lengths zero and three.
+
+The BF16 Q1 checkpoint is unchanged by the FP8 work:
+
+| TP | BS | PrimTS | Triton | contiguous SWA2K |
+|---:|---:|---:|---:|---:|
+| 1 | 1 | 32.71--32.82 | 17.80--18.03 | 26.26--26.39 |
+| 1 | 8 | 61.21--61.61 | 28.53--28.70 | 28.57--28.62 |
+| 1 | 64 | 92.18--92.60 | 79.89--80.19 | 61.08--61.13 |
+| 1 | 256 | 244.02--245.65 | 211.48--212.18 | 182.02 |
+| 2 | 1 | 31.11--31.73 | 16.30--16.63 | 25.57--25.90 |
+| 2 | 8 | 39.14--40.85 | about 24.67 | 26.82--28.15 |
+| 2 | 64 | 59.53--60.08 | about 55.68 | 39.56--39.90 |
+| 2 | 256 | 161.20--162.63 | 124.95--126.32 | 103.40--103.64 |
+
+The FP8 audit found that production Q1 used one loader warp, while a separate
+multi-warp `SmemKvResource` path replayed all 32 page-fragment TMAs from every
+issuer because `elect_sync()` elects one lane per warp. The production fix
+partitions fragments by load-warp rank and selects four loaders for low-grid
+Q1 when `batch_size * num_heads_kv < 32`. Each warp issues eight page TMAs;
+every page is fetched exactly once. The sparse recurrence, split-two separate
+reducer, and output arithmetic are unchanged.
+
+| TP | BS | FP8 PrimTS before | FP8 PrimTS after | Triton | contiguous SWA2K | max diff |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 45.28--48.83 | 23.69--26.60 | 16.74--16.95 | 18.09--18.21 | 0.00067 |
+| 1 | 8 | 42.32--45.61 | 24.65--27.22 | 31.66--32.03 | 18.50--18.52 | 0.00070 |
+| 2 | 1 | 46.85--49.91 | 24.34--26.52 | 16.17--16.26 | about 18.14 | 0.00058 |
+| 2 | 8 | 42.16--45.53 | 24.46--27.13 | 23.02--23.49 | 18.28--18.45 | 0.00062 |
+
+This is a 1.68--1.93x Q1 kernel speedup. TP1/BS8 is now faster than Triton and
+TP2/BS8 is within 15.5 percent, but BS1 remains 42--63 percent slower than
+Triton. Against the raw 2K contiguous kernel, Q1 remains 30--47 percent over
+target, so the low-grid decode performance task is improved but not closed.
+
+SQ4 must be compared with the exact grouped Q4 union, not with four flattened
+Q1 launches or an unadjusted shared SWA window. The table below reports the
+measured sparse union and metadata-inclusive time, Triton, grouped SWA2K, and
+the grouped-SWA time projected by the measured union/SWA KV-volume ratio. The
+synthetic randomized routes have 1.69--1.75x non-shared KV beyond the exactly
+shared SWA window. For FP8, the grouped Keeps SWA proxy writes FP16 because
+that profile does not support BF16 output; FP16 and BF16 both have two-byte
+output traffic. The sparse and Triton paths still write model-facing BF16.
+
+| TP | BS | PrimTS union | metadata + union | Triton | grouped SWA2K | projected SWA | union/projected | e2e/projected |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 28.51--28.66 | 33.35--33.40 | 22.52--22.63 | 26.51--26.69 | 71.88--73.00 | 0.393--0.397 | 0.458--0.464 |
+| 1 | 8 | 34.74--34.78 | 39.20--39.73 | 49.71--50.17 | 28.34--28.51 | 77.71--77.73 | 0.447 | 0.504--0.511 |
+| 1 | 64 | 118.47--119.18 | 124.02--124.60 | 268.84--268.97 | 42.69--43.03 | 116.77--117.62 | 1.007--1.021 | 1.054--1.067 |
+| 1 | 256 | 352.12--352.98 | 359.97--360.96 | 1015.48--1015.55 | 123.51--123.91 | 337.51--338.58 | 1.043 | 1.066--1.067 |
+| 2 | 1 | 27.69--28.05 | 32.84--32.90 | 18.05--18.25 | 26.61--26.63 | 71.93--72.03 | 0.385--0.389 | 0.456--0.457 |
+| 2 | 8 | 28.84--28.94 | 34.78--34.82 | 41.11--42.14 | 27.97--28.31 | 76.56--77.17 | 0.374--0.378 | 0.451--0.455 |
+| 2 | 64 | 67.88--68.15 | 73.44--73.77 | 151.41--151.54 | 34.11--34.27 | 93.14--93.60 | 0.725--0.732 | 0.785--0.792 |
+| 2 | 256 | 184.66--185.30 | 192.70--193.46 | 517.44--517.47 | 71.57--71.62 | 195.49--195.74 | 0.945--0.947 | 0.986--0.988 |
+
+The fair SQ4 projection therefore meets the 20-percent target at every TP1/TP2
+BS point: worst attention ratio is 1.043x and worst metadata-inclusive ratio
+is 1.067x. PrimTS union is faster than Triton at BS8/64/256; Triton retains the
+BS1 low-grid advantage.
+
+Rejected experiments are kept out of production:
+
+- Four-to-eight Q1 loader warps is correct but slower at 32.1--37.1
+  microseconds; sixteen loader warps do not make forward progress in the task
+  graph.
+- BF16 physical KV64 produces a 0.153564 maximum error even after membership
+  and tail-mask fixes, locating the incompatibility below masking in the
+  score/PV schedule.
+- FP8 virtual BLOCK_N32 improves low-grid timing to roughly 29--37
+  microseconds but exceeds the accepted numerical tolerance on randomized
+  routes and tails, so the production recurrence remains unchanged.
+
+The targeted FlashInfer resolver tests pass (`8 passed`), both production Q1
+matrices pass with unchanged error, and the complete TP1/TP2 SQ4 and grouped
+union matrices pass. SM100 compiles are supported by the existing profiles;
+runtime qualification still requires access to an SM100 node.
