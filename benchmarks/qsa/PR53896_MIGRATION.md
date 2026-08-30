@@ -140,5 +140,23 @@ continue to use the standalone cold-L2 CUDA-graph protocol.
 
 Raw PrimTS artifacts are under
 `qsa_accuracy/pr53896/prims-ts-bf16-mtp0/` in the workspace. The next accuracy
-step is the small native-Triton MTP=3 gate; if it is stable, repeat that gate
-with PrimTS before moving to FP8-E4M3 MTP=0.
+step is FP8-E4M3 MTP=0, following the blocked MTP=3 gate below.
+
+## Native Triton BF16/MTP=3 gate
+
+The small native-Triton MTP=3 gate did not reach server readiness. During
+CUDA-graph capture, the image's compiled FlashInfer extension rejected the
+PR-53896 GDN call:
+
+```text
+_C::fused_gdn_decode_post_conv_mtp() expected at most 14 argument(s)
+but received 15 argument(s)
+```
+
+This happens on the native Triton route before any QSA inference request, so
+it is a baseline image/source ABI mismatch rather than a PrimTS QSA result.
+The image exposes the older 14-argument fused-GDN op while PR 53896 invokes
+the newer 15-argument interface. Per the qualification policy, the full BF16
+MTP=3 matrix and matching PrimTS MTP=3 gate are skipped for now. The complete
+failure is retained at
+`qsa_accuracy/pr53896/triton-bf16-mtp3-gate/server-official.log`.
