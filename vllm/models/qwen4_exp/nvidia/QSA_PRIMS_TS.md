@@ -51,11 +51,12 @@ second masking launch.
 ## Attention owner
 
 On SM100-family GPUs, the QSA owner selects PrimTS when the installed
-FlashInfer exposes encoded page-4 support. It keeps the logical vLLM cache view
-`[physical_page, Hkv, storage_page_size, 2D]` and splits K/V on the final
-dimension; no layout transpose or copy is needed. The adapter writes into
-registered maximum-token buffers, and the owner passes their live slices to
-the ordinary PrimTS arguments:
+FlashInfer exposes encoded page-4 support. PR 53896 exposes the combined vLLM
+cache as `[physical_page, storage_page_size, Hkv, 2D]`. The owner creates a
+zero-copy transposed view, splits K/V on the final dimension, and
+canonicalizes the resulting `[physical_page, Hkv, storage_page_size, D]`
+strides. The adapter writes into registered maximum-token buffers, and the
+owner passes their live slices to the ordinary PrimTS arguments:
 
 ```text
 (query, (k_cache, v_cache), workspace,

@@ -21,6 +21,14 @@ requires_qsa_kernels = pytest.mark.skipif(
     not current_platform.is_cuda() or not HAS_TRITON,
     reason="QSA kernels require CUDA and Triton",
 )
+requires_qsa_triton = pytest.mark.skipif(
+    not torch.cuda.is_available() or not HAS_TRITON,
+    reason="QSA metadata kernels require a CUDA-capable Triton runtime",
+)
+requires_qsa_prims_ts = pytest.mark.skipif(
+    not torch.cuda.is_available() or not qsa_ops.has_qsa_prims_ts_attention(),
+    reason="QSA attention requires page-4 FlashInfer PrimTS",
+)
 
 
 def test_qsa_mtp_index_share_updates_cache_but_skips_selection(
@@ -971,3 +979,426 @@ def test_qsa_streaming_compression_and_compressor_state_store_match_reference() 
                 rope_cache[block, position % 4, 0],
                 position_row(request, position).to("cuda"),
             )
+
+
+@pytest.mark.parametrize(
+    ("backend", "capable", "available", "expected"),
+    [
+        (None, True, True, True),
+        ("auto", True, False, False),
+        ("triton", True, True, False),
+        ("prims_ts", True, True, True),
+    ],
+)
+def test_qsa_attention_backend_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str | None,
+    capable: bool,
+    available: bool,
+    expected: bool,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import (
+        _QSA_BACKEND_ENV,
+        _resolve_qsa_prims_ts_backend,
+    )
+
+    if backend is None:
+        monkeypatch.delenv(_QSA_BACKEND_ENV, raising=False)
+    else:
+        monkeypatch.setenv(_QSA_BACKEND_ENV, backend)
+    assert (
+        _resolve_qsa_prims_ts_backend(capable=capable, available=available)
+        is expected
+    )
+
+
+def test_qsa_attention_backend_selection_rejects_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import (
+        _QSA_BACKEND_ENV,
+        _resolve_qsa_prims_ts_backend,
+    )
+
+    monkeypatch.setenv(_QSA_BACKEND_ENV, "prims_ts")
+    with pytest.raises(RuntimeError, match="SM100-family"):
+        _resolve_qsa_prims_ts_backend(capable=False, available=True)
+
+    monkeypatch.setenv(_QSA_BACKEND_ENV, "unknown")
+    with pytest.raises(ValueError, match=_QSA_BACKEND_ENV):
+        _resolve_qsa_prims_ts_backend(capable=True, available=True)
+
+
+def test_qsa_attention_owner_preserves_pr53896_cache_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
+
+    rows = 2
+    num_query_heads = 6
+    num_kv_heads = 1
+    head_dim = 256
+    storage_page_size = 16
+    selection_width = 2051
+    page_capacity = 513
+    query = torch.zeros(rows, num_query_heads, head_dim, dtype=torch.bfloat16)
+    kv_cache = torch.zeros(
+        3,
+        storage_page_size,
+        num_kv_heads,
+        2 * head_dim,
+        dtype=torch.bfloat16,
+    )
+    output = torch.full_like(query, torch.nan)
+    block_table = torch.zeros(2, 256, dtype=torch.int32)
+    token_to_req = torch.tensor([0, 1], dtype=torch.int32)
+    logical_positions = torch.tensor([2, -1], dtype=torch.int64)
+    layer = SimpleNamespace(
+        topk_indices_buffer=torch.full(
+            (rows, selection_width), -1, dtype=torch.int32
+        ),
+        qsa_paged_kv_indptr_buffer=torch.empty(rows + 1, dtype=torch.int32),
+        qsa_paged_kv_indices_buffer=torch.empty(
+            rows * page_capacity, dtype=torch.int32
+        ),
+        qsa_seq_lens_buffer=torch.empty(rows, dtype=torch.int32),
+        _qsa_prims_ts_workspace=None,
+        _qsa_prims_ts_workspace_key=None,
+    )
+    metadata = SimpleNamespace(num_actual_tokens=rows, block_table=block_table)
+    calls: dict[str, object] = {}
+
+    def fake_build_metadata(*_args, **buffers) -> None:
+        buffers["paged_kv_indptr"].copy_(
+            torch.tensor([0, page_capacity, 2 * page_capacity], dtype=torch.int32)
+        )
+        buffers["paged_kv_indices"].fill_(-1)
+        buffers["seq_lens"].copy_(torch.tensor([3, 1], dtype=torch.int32))
+
+    def fake_workspace_size(
+        actual_query: torch.Tensor,
+        key_cache: torch.Tensor,
+        max_seq_len: int,
+        *,
+        out_dtype: torch.dtype,
+    ) -> int:
+        assert actual_query.shape == query.shape
+        assert key_cache.shape == (3, 1, storage_page_size, head_dim)
+        assert key_cache.stride(-1) == 1
+        assert max_seq_len == selection_width
+        assert out_dtype == torch.bfloat16
+        return 128
+
+    def fake_attention(
+        actual_query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        workspace: torch.Tensor,
+        _paged_kv_indptr: torch.Tensor,
+        _paged_kv_indices: torch.Tensor,
+        _seq_lens: torch.Tensor,
+        _max_seq_len: int,
+        actual_output: torch.Tensor,
+        *,
+        bmm1_scale: float,
+        bmm2_scale: float,
+    ) -> torch.Tensor:
+        assert actual_query.data_ptr() == query.data_ptr()
+        assert key_cache.shape == value_cache.shape == (
+            3,
+            1,
+            storage_page_size,
+            head_dim,
+        )
+        assert workspace.shape == (128,)
+        assert bmm1_scale == head_dim**-0.5
+        assert bmm2_scale == 1.0
+        actual_output.fill_(5)
+        calls["workspace"] = workspace
+        return actual_output
+
+    monkeypatch.setattr(qsa_ops, "qsa_build_page4_paged_metadata", fake_build_metadata)
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_group_size", lambda *_args: 1)
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_workspace_size", fake_workspace_size)
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_paged_attention", fake_attention)
+    impl = Qwen4ExpQSAFlashAttentionImpl.__new__(Qwen4ExpQSAFlashAttentionImpl)
+    impl.head_size = head_dim
+    impl.scale = head_dim**-0.5
+    impl.kv_cache_dtype = "auto"
+    impl.alibi_slopes = None
+    impl.sinks = None
+    impl.sliding_window = (-1, -1)
+    impl.use_qsa_prims_ts = True
+
+    result = impl.forward_qsa(
+        layer,
+        query,
+        query,
+        query,
+        kv_cache,
+        metadata,
+        output,
+        token_to_req,
+        logical_positions,
+    )
+
+    assert result is output
+    assert torch.all(output == 5)
+    assert layer._qsa_prims_ts_workspace is calls["workspace"]
+
+
+def test_qsa_prims_ts_wrappers_forward_grouped_sq(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    groups = 3
+    group_size = 4
+    num_query_heads = 6
+    head_dim = 256
+    query = torch.zeros(
+        groups,
+        group_size,
+        num_query_heads,
+        head_dim,
+        dtype=torch.bfloat16,
+    )
+    key_cache = torch.zeros(8, 1, 16, head_dim, dtype=torch.bfloat16)
+    value_cache = torch.zeros_like(key_cache)
+    calls: dict[str, object] = {}
+
+    def fake_workspace_size(**kwargs) -> int:
+        calls["workspace"] = kwargs
+        return 320
+
+    def fake_attention(*args, **kwargs) -> torch.Tensor:
+        calls["attention_args"] = args
+        calls["attention_kwargs"] = kwargs
+        return kwargs["out"]
+
+    monkeypatch.setattr(
+        qsa_ops,
+        "_qsa_prims_ts_apis",
+        lambda: (lambda *_args, **_kwargs: 1, fake_workspace_size, fake_attention),
+    )
+    assert (
+        qsa_ops.qsa_prims_ts_workspace_size(
+            query, key_cache, 8208, out_dtype=torch.bfloat16
+        )
+        == 320
+    )
+    workspace_kwargs = calls["workspace"]
+    assert isinstance(workspace_kwargs, dict)
+    assert workspace_kwargs["batch_size"] == groups
+    assert workspace_kwargs["seq_len_q"] == group_size
+    assert workspace_kwargs["num_qo_heads"] == num_query_heads
+    assert workspace_kwargs["out_dtype"] == torch.bfloat16
+
+    workspace = torch.empty(320, dtype=torch.uint8)
+    indptr = torch.arange(groups + 1, dtype=torch.int32)
+    indices = torch.zeros(groups * group_size * 513, dtype=torch.int32)
+    seq_lens = torch.full((groups,), 2051, dtype=torch.int32)
+    output = torch.empty_like(query)
+    assert (
+        qsa_ops.qsa_prims_ts_paged_attention(
+            query,
+            key_cache,
+            value_cache,
+            workspace,
+            indptr,
+            indices,
+            seq_lens,
+            8208,
+            output,
+            bmm1_scale=0.125,
+            bmm2_scale=1.25,
+        )
+        is output
+    )
+    attention_kwargs = calls["attention_kwargs"]
+    assert isinstance(attention_kwargs, dict)
+    assert attention_kwargs["seq_len_q"] == group_size
+    assert attention_kwargs["mask_type"] == "causal"
+    assert attention_kwargs["bmm1_scale"] == 0.125
+    assert attention_kwargs["bmm2_scale"] == 1.25
+
+
+def _qsa_page4_paged_metadata_reference(
+    logical_indices: torch.Tensor,
+    block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    logical_positions: torch.Tensor,
+    storage_page_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    output_device = logical_indices.device
+    logical_indices = logical_indices.cpu()
+    block_table = block_table.cpu()
+    token_to_req = token_to_req.cpu()
+    logical_positions = logical_positions.cpu()
+    rows, output_width = logical_indices.shape
+    token_topk = output_width - 3
+    page_capacity = token_topk // 4 + 1
+    indptr = torch.arange(rows + 1, dtype=torch.int32) * page_capacity
+    locators = torch.full((rows, page_capacity), -1, dtype=torch.int32)
+    seq_lens = torch.ones(rows, dtype=torch.int32)
+    subpages_per_storage_page = storage_page_size // 4
+    for row in range(rows):
+        position = int(logical_positions[row].item())
+        request = int(token_to_req[row].item())
+        if position < 0 or request < 0 or request >= block_table.shape[0]:
+            continue
+        visible_tokens = position + 1
+        complete_pages = min(visible_tokens // 4, token_topk // 4)
+        tail_tokens = visible_tokens % 4
+        seq_lens[row] = complete_pages * 4 + tail_tokens
+        live_pages = complete_pages + int(tail_tokens > 0)
+        for page_rank in range(live_pages):
+            logical_token = int(logical_indices[row, 4 * page_rank].item())
+            logical_storage_page, token_offset = divmod(
+                logical_token, storage_page_size
+            )
+            physical_page = int(block_table[request, logical_storage_page].item())
+            locators[row, page_rank] = (
+                physical_page * subpages_per_storage_page + token_offset // 4
+            )
+    return tuple(
+        tensor.to(output_device) for tensor in (indptr, locators.flatten(), seq_lens)
+    )
+
+
+@requires_qsa_triton
+@pytest.mark.parametrize("storage_page_size", [16, 256])
+def test_qsa_page4_metadata_matches_test_reference(
+    storage_page_size: int,
+) -> None:
+    token_topk = 2048
+    compress_ratio = 4
+    block_topk = token_topk // compress_ratio
+    logical_positions = torch.tensor(
+        [0, 1, 2, 3, 6, 2048, 2049, 2050, 2051, 2052, -1],
+        dtype=torch.int64,
+        device="cuda",
+    )
+    token_to_req = torch.tensor(
+        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2],
+        dtype=torch.int32,
+        device="cuda",
+    )
+    sequence_lengths = torch.tensor([4096, 4096, 0], dtype=torch.int32, device="cuda")
+    blocks = torch.arange(block_topk, dtype=torch.int32, device="cuda")
+    blocks = blocks.unsqueeze(0).expand(logical_positions.numel(), -1).contiguous()
+    logical_indices = qsa_ops.expand_qsa_block_indices_cuda(
+        blocks,
+        logical_positions,
+        sequence_lengths,
+        token_to_req,
+        compress_ratio,
+        token_topk,
+    )
+    table_width = math.ceil(4096 / storage_page_size)
+    block_table = torch.arange(
+        3 * table_width, dtype=torch.int32, device="cuda"
+    ).reshape(3, table_width).flip(1).contiguous()
+
+    actual = qsa_ops.qsa_build_page4_paged_metadata(
+        logical_indices,
+        block_table,
+        token_to_req,
+        logical_positions,
+        storage_page_size,
+    )
+    expected = _qsa_page4_paged_metadata_reference(
+        logical_indices,
+        block_table,
+        token_to_req,
+        logical_positions,
+        storage_page_size,
+    )
+
+    for actual_tensor, expected_tensor in zip(actual, expected, strict=True):
+        torch.testing.assert_close(actual_tensor, expected_tensor)
+
+
+@requires_qsa_triton
+def test_qsa_grouped_page4_metadata_reinitializes_owned_bitsets() -> None:
+    group_size = 4
+    token_topk = 2048
+    output_width = token_topk + 3
+    storage_page_size = 16
+    positions = torch.tensor(
+        [12, 13, 14, 15, 20, 21, 22, 23], dtype=torch.int64, device="cuda"
+    )
+    requests = torch.tensor(
+        [0, 0, 0, 0, 1, 1, 1, 1], dtype=torch.int32, device="cuda"
+    )
+    selected_blocks = (
+        (0, 2, 4, 6),
+        (1, 2, 4, 6),
+        (0, 3, 4, 6),
+        (0, 2, 5, 6),
+        (8, 9, 10, 11, 12, 13),
+        (8, 9, 10, 11, 12, 14),
+        (8, 9, 10, 11, 15, 14),
+        (8, 9, 10, 16, 15, 14),
+    )
+    logical_indices = torch.full(
+        (len(selected_blocks), output_width),
+        -1,
+        dtype=torch.int32,
+        device="cuda",
+    )
+    for row, blocks in enumerate(selected_blocks):
+        logical_indices[row, : 4 * len(blocks) : 4] = (
+            torch.tensor(blocks, dtype=torch.int32, device="cuda") * 4
+        )
+    block_table = torch.arange(16, dtype=torch.int32, device="cuda").reshape(2, 8)
+    workspace, indptr, locators, seq_lens = (
+        qsa_ops.qsa_build_page4_grouped_paged_metadata(
+            logical_indices,
+            block_table,
+            requests,
+            positions,
+            storage_page_size,
+            group_size,
+        )
+    )
+
+    workspace.fill_(0x55555555)
+    indptr.fill_(-1)
+    locators.fill_(-1)
+    seq_lens.fill_(-1)
+    qsa_ops.qsa_build_page4_grouped_paged_metadata(
+        logical_indices,
+        block_table,
+        requests,
+        positions,
+        storage_page_size,
+        group_size,
+        bitset_workspace=workspace,
+        paged_kv_indptr=indptr,
+        paged_kv_indices=locators,
+        seq_lens=seq_lens,
+    )
+
+    page_capacity = group_size * (token_topk // 4 + 1)
+    assert indptr.tolist() == [0, page_capacity, 2 * page_capacity]
+    for group in range(2):
+        membership_by_block: dict[int, int] = {}
+        for query_index in range(group_size):
+            row = group * group_size + query_index
+            for logical_block in selected_blocks[row]:
+                membership_by_block[logical_block] = membership_by_block.get(
+                    logical_block, 0
+                ) | (1 << query_index)
+        expected = []
+        for logical_block, membership in sorted(membership_by_block.items()):
+            logical_token = logical_block * 4
+            storage_page = logical_token // storage_page_size
+            subpage = logical_block % (storage_page_size // 4)
+            physical_page = int(block_table[group, storage_page].item())
+            locator = physical_page * (storage_page_size // 4) + subpage
+            expected.append((locator << 4) | membership)
+        begin = group * page_capacity
+        torch.testing.assert_close(
+            locators[begin : begin + len(expected)].cpu(),
+            torch.tensor(expected, dtype=torch.int32),
+        )
+        assert int(seq_lens[group].item()) == 4 * len(expected)
