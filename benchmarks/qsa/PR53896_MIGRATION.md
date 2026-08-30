@@ -64,6 +64,29 @@ raw output directory. Fresh-server first-request smokes precede full runs.
 - Set `TRITON_CACHE_DIR` to a workspace-backed directory for CUDA tests and
   model runs. The container user's default Triton cache has a small disk quota
   and otherwise fails compilation before a kernel can run.
-- No PR-53896 model accuracy or performance number is accepted yet. Historical
-  figures in `QSA_PRIMS_TS.md` come from the prior model branch and must be
-  requalified before comparison.
+
+## Native Triton BF16/MTP=0 reference
+
+The first PR-53896 model-level reference completed on 2026-08-30 with vLLM
+`cfe1c01dd`, FlashInfer `0.6.17` from the dedicated
+`vllm/vllm-openai:qwen38-flash-next` image, model revision `de4b8e4`, TP=2,
+BF16 weights/KV cache, and MTP disabled. The server used the explicit
+`VLLM_QSA_ATTENTION_BACKEND=triton` route, greedy sampling, seed 42, and the
+model's chat template. All truncations and invalid final-answer parses remain
+in the denominator.
+
+| Task | Score | Truncated | Request errors | Completion tokens |
+|---|---:|---:|---:|---:|
+| GSM8K, 5-shot | 1284/1319 (97.35%) | 12 | 0 | 652,236 |
+| GPQA-Diamond | 146/198 (73.74%) | 48 | 0 | 1,426,628 |
+| AIME 2026 | 17/30 (56.67%) | 13 | 0 | 314,804 |
+
+Raw per-item outputs are under
+`qsa_accuracy/pr53896/triton-bf16-mtp0/` in the workspace. The evaluator
+records dataset hashes, full raw generations, parsed predictions, run
+metadata, and elapsed time. The server log is
+`server-official.log` in the same directory.
+
+Historical figures in `QSA_PRIMS_TS.md` come from the prior model branch and
+are not mixed with this reference. The next accepted comparison is PrimTS
+BF16/MTP=0 with the identical model snapshot and evaluation protocol.
