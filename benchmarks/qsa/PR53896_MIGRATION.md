@@ -64,6 +64,22 @@ raw output directory. Fresh-server first-request smokes precede full runs.
 - Set `TRITON_CACHE_DIR` to a workspace-backed directory for CUDA tests and
   model runs. The container user's default Triton cache has a small disk quota
   and otherwise fails compilation before a kernel can run.
+- The Qwen runtime image carries CUTLASS DSL 4.6.2, while the current PrimTS
+  task-scheduling implementation requires `cutlass.experimental.cuda` from
+  CUTLASS DSL 4.7. The runtime qualification uses 4.7.1 from a workspace-local
+  wheel target and exposes only its `nvidia_cutlass_dsl/dsl_packages`
+  directory. This avoids shadowing the image's NumPy, protobuf, CUDA Python,
+  and other runtime dependencies.
+- `benchmarks/qsa/runtime_overlay/sitecustomize.py` keeps the image's
+  ABI-matched FlashInfer root, GDN, fused-MoE, cubins, and vLLM extensions. It
+  overlays only the local FlashInfer attention package and attention trace
+  templates, then exports the three page-4 PrimTS APIs through
+  `flashinfer.decode`. Set `QSA_FLASHINFER_SOURCE` and
+  `QSA_CUTLASS_DSL_PACKAGES` to enable these two narrow overlays.
+- A cold-L2 eager decode smoke at TP=2, BS=1, SQ=1, pre-sparse KV=8192 ran the
+  real compiled PrimTS kernel successfully. Its maximum difference from the
+  reference was 0.00024. This is a runtime/import gate, not an accepted
+  performance measurement (one warmup and one measured iteration).
 
 ## Native Triton BF16/MTP=0 reference
 
