@@ -18,6 +18,7 @@ _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
 _QSA_SEMANTIC_PAGE_SIZE = 4
 _QSA_PAGE_MEMBERSHIP_BITS = 4
+_QSA_GROUPING_ASSUMED_SPLITS_KV = 4
 _QSAPrimsTSAPIs = tuple[Callable[..., int], Callable[..., torch.Tensor]]
 
 
@@ -313,6 +314,7 @@ def _build_qsa_grouped_page_bitsets_kernel(
     SEMANTIC_PAGE_SIZE: tl.constexpr,
     BITSET_WORDS: tl.constexpr,
     BITSET_BLOCK: tl.constexpr,
+    CLEAR_IN_CTA: tl.constexpr,
 ) -> None:
     """Materialize one logical-page bitmap for each query in a fused group."""
 
@@ -322,15 +324,16 @@ def _build_qsa_grouped_page_bitsets_kernel(
     bitset_base = (group * GROUP_SIZE + q_index) * BITSET_WORDS
     offsets = tl.arange(0, BITSET_BLOCK)
 
-    # This program exclusively owns one query bitmap. Initialize it here so
-    # grouped metadata needs only the build and pack launches; the CTA barrier
-    # makes every word zero visible before lanes begin colliding atomic ORs.
-    tl.store(
-        bitsets_ptr + bitset_base + offsets,
-        0,
-        mask=offsets < BITSET_WORDS,
-    )
-    tl.debug_barrier()
+    if CLEAR_IN_CTA:
+        # For a small grouped grid, saving the separate fill launch is worth
+        # the per-CTA clear and barrier. Large grids are cleared once by the
+        # caller so every builder CTA can begin issuing loads immediately.
+        tl.store(
+            bitsets_ptr + bitset_base + offsets,
+            0,
+            mask=offsets < BITSET_WORDS,
+        )
+        tl.debug_barrier()
 
     request = tl.load(token_to_req_ptr + row, mask=row < rows, other=-1)
     logical_position = tl.load(
@@ -1317,6 +1320,13 @@ def qsa_build_page4_grouped_paged_metadata(
         paged_kv_indptr.zero_()
         return bitset_workspace, paged_kv_indptr, paged_kv_indices, seq_lens
 
+    bitset_block = triton.next_power_of_2(token_topk // _QSA_SEMANTIC_PAGE_SIZE)
+    # A CTA can clear only the bitmap words covered by its selected-page
+    # lanes. Longer-context bitmaps and large grids use one stream-ordered
+    # device fill, which also avoids repeating the clear/barrier per query.
+    clear_in_cta = rows < 4096 and bitset_words <= bitset_block
+    if not clear_in_cta:
+        bitset_workspace.zero_()
     _build_qsa_grouped_page_bitsets_kernel[(groups, group_size)](
         logical_indices,
         token_to_req,
@@ -1330,7 +1340,8 @@ def qsa_build_page4_grouped_paged_metadata(
         GROUP_SIZE=group_size,
         SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
         BITSET_WORDS=bitset_words,
-        BITSET_BLOCK=triton.next_power_of_2(token_topk // _QSA_SEMANTIC_PAGE_SIZE),
+        BITSET_BLOCK=bitset_block,
+        CLEAR_IN_CTA=clear_in_cta,
         num_warps=4,
     )
     _pack_qsa_grouped_page_union_kernel[(groups,)](
@@ -1428,6 +1439,35 @@ def qsa_prims_ts_workspace_size(
         mask_type="causal",
         device=q.device,
     )
+
+
+def qsa_prims_ts_grouping_wave_estimate(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+) -> tuple[int, int]:
+    """Return the fixed-split grouping-work estimate and device SM count.
+
+    Group profitability uses four potential split-KV partitions per flattened
+    query row and local KV head. This is deliberately a stable policy estimate,
+    not the dynamically resolved Q1 launch grid: sharing can win even when the
+    resolver chooses fewer Q1 splits for a particular shape.
+    """
+
+    if q.ndim != 3 or k_cache.ndim != 4:
+        raise ValueError("QSA grouping estimate expects Q [R,Hq,D] and K [P,Hkv,N,D]")
+    if not q.is_cuda or q.device != k_cache.device:
+        raise ValueError("QSA grouping estimate expects Q and K on one CUDA device")
+    if q.dtype != torch.bfloat16 or k_cache.dtype != torch.bfloat16:
+        raise ValueError("QSA grouping estimate currently requires BF16 Q and K")
+    if q.shape[2] != k_cache.shape[3]:
+        raise ValueError("QSA grouping estimate requires matching head dimensions")
+
+    device_index = q.device.index
+    if device_index is None:
+        device_index = torch.cuda.current_device()
+    estimated_kv_tasks = q.shape[0] * k_cache.shape[1] * _QSA_GROUPING_ASSUMED_SPLITS_KV
+    num_sms = torch.cuda.get_device_properties(device_index).multi_processor_count
+    return estimated_kv_tasks, num_sms
 
 
 def qsa_prims_ts_paged_attention(

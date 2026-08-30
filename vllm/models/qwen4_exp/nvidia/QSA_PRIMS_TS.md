@@ -84,15 +84,33 @@ Zero-length padding requests are ignored. `fast_build` adaptive-verification
 metadata deliberately omits its CPU boundaries because only its total is
 authoritative; it consequently takes Q1. Other variable-length prefill/MTP
 batches also remain functional through Q1 when no common grouping is safe.
-The current qualified whole-launch policy is:
+Before evaluating those shapes, the owner computes a stable grouping-work
+estimate
+
+```text
+estimated_kv_tasks = flattened_query_rows * local_kv_heads * 4
+```
+
+The factor four is the assumed split-KV opportunity for this profitability
+policy; it is not the dynamically resolved Q1 split count. If the estimate is
+no larger than the CUDA device's SM count, the complete launch stays on Q1
+because there is too little potential work to amortize union metadata.
+Flattened query rows, rather than request count alone, are used because each
+MTP/prefill query token is an independent Q1 route. The remaining qualified
+whole-launch policy, applied only after this one-wave gate, is:
 
 - Q4 at 256 or more Q4 groups for every TP;
 - Q4 at 64 or more Q4 groups for TP1, TP2, and TP8;
 - Q2 at that 64-group crossover for TP4 (128 Q2 groups);
-- Q4 at eight or more Q4 groups for TP1;
+- Q4 at eight or more Q4 groups for TP1 and TP2;
 - Q2 for aligned SQ2 routes at 512 groups on TP1/TP2 or 128 groups on
   TP4/TP8;
 - Q1 otherwise.
+
+On the 152-SM GB300 checkpoint, TP1's two local KV heads cross the gate above
+19 flattened rows, while the one-local-KV-head TP2/TP4/TP8 shapes cross above
+38 rows. Request alignment and the measured Q2/Q4 crossover thresholds still
+apply after that gate. SM100 uses its own device SM count.
 
 The owner lazily retains an exact-size Int32 bitmap workspace for grouped
 metadata and reuses the registered maximum-token CSR buffers. Both addresses
@@ -137,8 +155,8 @@ the current performance signoff.
 
 The standalone harness now also builds exact Q2/Q4 page unions with packed
 per-query membership. On the captured 8K prefill trace, Q4 attention is
-`0.962x/0.998x/0.667x/0.616x` the effective contiguous-KV baseline at TP
-`1/2/4/8`; including metadata gives `0.966x/1.008x/0.707x/0.655x`. Q2 also
+`0.637x/0.650x/0.667x/0.616x` the effective contiguous-KV baseline at TP
+`1/2/4/8`; including metadata gives `0.656x/0.689x/0.707x/0.655x`. Q2 also
 meets the 20-percent target at every TP but is slower because it loads
 6,313,676 union KV tokens instead of Q4's 3,513,700. Flattened Q1 loads
 11,870,704 tokens and remains about 1.49--1.54x contiguous on the same trace.
@@ -149,13 +167,13 @@ All flattened SQ1 decode cases at TP `1/2/4/8`, batch `1/8/64/256`, and tail
 
 - batch 1: Q1 for every TP;
 - batch 8: Q4 for TP1 and Q1 for TP2/TP4/TP8;
-- batch 64: Q4 for TP1/TP2 and Q2 for TP4/TP8;
+- batch 64: Q4 for TP1/TP2/TP8 and Q2 for TP4;
 - batch 256: Q4 for every TP.
 
-The worst selected SQ4 end-to-end ratio is 1.187x. Every measurement uses 10
-warmups, 100 CUDA-graph replays, and cold L2. Grouped correctness is within
-`1.95e-3` of four independent routes. Reported selected-KV bandwidth is a
-logical byte rate and may exceed GB300's roughly 8-TB/s physical HBM limit
+The selected SQ4 end-to-end matrix remains inside 1.20x. Every measurement
+uses 10 warmups, 100 CUDA-graph replays, and cold L2. Grouped correctness is
+within `1.95e-3` of four independent routes. Reported selected-KV bandwidth is
+a logical byte rate and may exceed GB300's roughly 8-TB/s physical HBM limit
 because adjacent query routes reuse cache lines.
 
 #### Graph-stable fixed-bound checkpoint
@@ -169,23 +187,32 @@ Q4 captures use 4,104 and 8,208 tokens respectively.
 FlashInfer `04abb0ee` stages full encoded locators one KV tile at a time for a
 long fixed-bound route and retains only packed membership nibbles until
 softmax. Short routes of at most eight CTA-local KV tiles retain the complete
-locator window. This recovers graph-stable Q4 prefill at every TP:
+locator window. This recovers graph-stable Q4 prefill at every TP. TP1/TP2
+now use Q64/KV128 D256 Keeps; TP4/TP8 retain their grouped Swaps paths:
 
 | TP | Attention (us) | Metadata + attention (us) | Contiguous (us) | Attention / contiguous | End-to-end / contiguous |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 900.29 | 925.72 | 1193.28 | 0.754x | 0.776x |
-| 2 | 464.59 | 489.77 | 595.38 | 0.780x | 0.823x |
+| 1 | 759.54 | 781.94 | 1191.75 | 0.637x | 0.656x |
+| 2 | 386.74 | 409.91 | 595.26 | 0.650x | 0.689x |
 | 4 | 405.22 | 432.02 | 570.31 | 0.711x | 0.758x |
 | 8 | 377.83 | 403.90 | 568.71 | 0.664x | 0.710x |
 
-The fixed-bound decode crossover is size dependent. Q4 passes at 64 groups
-for TP1/TP2/TP8 and at 256 groups for every TP; Q2 passes the TP4 128-group
-case at `0.983x` attention and `1.178x` end-to-end. Small grids remain on Q1
-for TP2/TP4/TP8. TP1 with eight Q4 groups is the remaining graph-stable gap:
-attention is `1.043x`, but metadata raises end-to-end to `1.255x`; flattened
-Q1 is `1.357x`--`1.369x`. A fused single-launch metadata prototype was correct
-but slower (`1.329x` end-to-end), so it was removed. All fixed-bound rows match
-the independent-route reference within `1.95e-3`.
+The fair KV-tile comparison uses the same real top-k union, exact causal
+membership, fixed 8,208-token bound, eight TMA issuers, split fanout, cold L2,
+and CUDA graphs. KV128 lowers high-grid attention latency by 15.6 percent at
+TP1 and 16.6 percent at TP2 relative to KV256. At eight Q4 groups with split
+eight, KV128 measures 20.48/20.43 microseconds attention and 0.998x/1.003x
+end-to-end versus contiguous for TP1/TP2; KV256 measures 26.86/26.56
+microseconds and 1.244x/1.236x end-to-end. At 64 groups with split two, KV128
+is 27.6/27.5 percent faster in attention. All cases match the independent
+route reference within `9.8e-4`.
+
+The fixed-bound decode crossover is therefore size dependent. Q4 now passes
+from eight groups at TP1/TP2, at 64 groups for TP8, and at 256 groups for every
+TP; Q2 passes the TP4 128-group case at `0.983x` attention and `1.178x`
+end-to-end. Small TP4/TP8 grids remain on Q1. The previous TP1 eight-group
+metadata gap was a KV256 attention-profile issue, not a reason to optimize the
+metadata kernel first; KV128 closes it with the existing metadata path.
 
 This fixed-bound kernel and route policy is now wired into the model-facing
 owner as a whole-launch Q1/Q2/Q4 decision. Mixed launches are conservatively
@@ -836,12 +863,15 @@ three tokens. This applies to both saturated rows and short causal prefixes:
 the tail column is `complete_pages * 4`, so the model-facing 2051-wide index
 layout is unchanged.
 
-Bitmap clearing is now a single stream-ordered workspace fill before the
-builder rather than 8192 separate CTA-local clears and barriers. Every bitmap
-row has exactly one producer CTA, so its lane collisions require atomicity only
-within that CTA. The atomics therefore use relaxed CTA scope. The later packer
-is a separate kernel on the same CUDA stream, and the kernel boundary orders
-its reads after all builder writes. Generated PTX contains
+Bitmap clearing uses a measured hybrid. Grids below 4096 flattened rows clear
+inside each producer CTA and avoid a separate fill launch. At 4096 rows and
+above, one stream-ordered workspace fill removes the repeated CTA-local clear
+and barrier. The global-fill path is also mandatory when a very long-context
+bitmap has more words than the builder's selected-page vector can cover.
+Every bitmap row has exactly one producer CTA, so its lane collisions require
+atomicity only within that CTA. The atomics therefore use relaxed CTA scope.
+The later packer is a separate kernel on the same CUDA stream, and the kernel
+boundary orders its reads after all builder writes. Generated PTX contains
 `atom.global.cta.relaxed.or.b32` for both SM103 and SM100. Offline compilation
 also succeeds for the Q2 and Q4 builder and ordered-packer specializations on
 both architectures.
@@ -868,6 +898,17 @@ This closes the TP2 real-8K prefill checkpoint for both attention-only and
 metadata-plus-attention latency. Q4 metadata and attention remain numerically
 correct on the same full causal trace. The separate flattened-SQ1 TP/batch and
 tail gate is recorded next.
+
+The later Q4/KV128 checkpoint (10 warmups, 100 cold-L2 graph replays) measures
+the hybrid clear at 41.41 microseconds versus 43.24 microseconds with CTA-local
+clearing throughout. Its profiled GPU components are 2.112 microseconds fill,
+19.264 microseconds bitmap build, and 15.712 microseconds ordered pack. A
+two-warp packer improved a 512-group microcase but regressed the full 2048-group
+prefill to 47.64 microseconds. A two-warp builder measured 42.76 microseconds,
+also behind the 41.41-microsecond four-warp result. The production builder and
+packer therefore both retain four warps. A dense `tl.histogram` builder was
+also rejected: its 64/512-group metadata times were 22.35/83.61 microseconds
+versus 12.21/19.18 microseconds for the bitmap/atomic design.
 
 ### Cold-L2 flattened-SQ1 checkpoint
 
@@ -1034,6 +1075,6 @@ Complete KV128 tiles skip per-row causal work, so only the final boundary tile
 needs token-level checks. Membership is evaluated across every union page and
 is likely the larger part of the measured delta, but that attribution remains
 an inference. An exact breakdown requires a compile-time control that decodes
-the shifted packed locator while omitting membership application. The current
-priority remains the separate approximately 52-microsecond metadata path;
-masking is a low-single-digit attention optimization opportunity after that.
+the shifted packed locator while omitting membership application. The later
+hybrid-clear Q4 checkpoint reduces metadata to 41.41 microseconds; masking
+remains a low-single-digit attention optimization opportunity after metadata.

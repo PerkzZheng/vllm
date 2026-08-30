@@ -66,9 +66,16 @@ def _select_qsa_prims_ts_group_size(
     query_start_loc_cpu: torch.Tensor | None,
     num_tokens: int,
     num_query_heads: int,
+    estimated_kv_tasks: int,
+    num_sms: int,
 ) -> int:
     """Select a request-safe Q1/Q2/Q4 route from CPU query boundaries."""
 
+    # Estimate four split-KV partitions per (flattened row, local KV head).
+    # Below one SM wave there is too little potential work to amortize union
+    # metadata construction, regardless of the request-alignment policy below.
+    if estimated_kv_tasks <= 0 or num_sms <= 0 or estimated_kv_tasks <= num_sms:
+        return 1
     if (
         query_start_loc_cpu is None
         or query_start_loc_cpu.device.type != "cpu"
@@ -103,7 +110,7 @@ def _select_qsa_prims_ts_group_size(
             # TP4's 6:1 local GQA shape uses two Q2 groups per request;
             # TP1/TP2/TP8 use the qualified Q4 union.
             return 2 if num_query_heads == 6 else 4
-        if q4_groups >= 8 and num_query_heads == 24:
+        if q4_groups >= 8 and num_query_heads in (24, 12):
             return 4
 
     can_group_q2 = (
@@ -294,13 +301,20 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             from .ops.qsa import (
                 qsa_build_page4_grouped_paged_metadata,
                 qsa_build_page4_paged_metadata,
+                qsa_prims_ts_grouping_wave_estimate,
                 qsa_prims_ts_paged_attention,
             )
 
+            estimated_kv_tasks, num_sms = qsa_prims_ts_grouping_wave_estimate(
+                query[:num_tokens],
+                key_cache,
+            )
             group_size = _select_qsa_prims_ts_group_size(
                 query_start_loc_cpu,
                 num_tokens,
                 query.shape[1],
+                estimated_kv_tasks,
+                num_sms,
             )
             route_rows = num_tokens // group_size
             page_capacity = (logical_indices.shape[1] + 3) // 4
