@@ -1350,6 +1350,18 @@ weights, so vLLM's explicit FP8-cache default of `1.0` is the expected scale
 for this study. Standalone qualification must cover FP8 Q/K/V to BF16 output
 with non-unit BMM scales before an FP8-KV model result is accepted.
 
+The initial SM100 FP8-KV model startup failed before loading weights because
+the QSA implementation inherited `FlashAttentionImpl`'s dense-kernel
+capability check; FA2 rejects FP8 KV on this device even though the selected
+QSA Triton/PrimTS kernels support it. QSA never calls the inherited dense
+attention kernel. The constructor now uses an unquantized placeholder only
+while reusing the parent's metadata and DCP initialization, then restores the
+requested FP8 cache dtype before QSA cache insertion, scale initialization, or
+attention. The patched Triton/FP8/MTP0 server loaded at TP4 and a ten-item
+GSM8K smoke scored 10/10 with no errors, invalid predictions, or truncations.
+The smoke exercised encoded FP8 K/V insertion, BF16-to-FP8 query quantization,
+the Triton sparse attention kernel with descales, and BF16 output.
+
 The first Triton/BF16/MTP0 smoke on GB300 used ten GSM8K items. All ten
 requests completed without a request or parser error, eight were correct, and
 three reached the fixed 256-token output cap. This is a transport/kernel smoke,
