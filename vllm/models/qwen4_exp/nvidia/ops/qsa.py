@@ -1394,24 +1394,34 @@ def qsa_prims_ts_workspace_size(
     k_cache: torch.Tensor,
     max_seq_len: int,
 ) -> int:
-    """Return byte workspace required for one flattened causal QSA launch."""
+    """Return byte workspace required for a causal Q1/Q2/Q4 launch."""
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
     get_workspace_size, _ = apis
-    if q.ndim != 3 or k_cache.ndim != 4:
-        raise ValueError("QSA PrimTS expects Q [R,Hq,D] and K [P,Hkv,N,D]")
-    if q.shape[2] != k_cache.shape[3]:
+    if q.ndim == 3:
+        batch_size, num_qo_heads, head_dim = q.shape
+        seq_len_q = 1
+    elif q.ndim == 4:
+        batch_size, seq_len_q, num_qo_heads, head_dim = q.shape
+        if seq_len_q not in (2, 4):
+            raise ValueError("QSA PrimTS grouped queries require SQ two or four")
+    else:
+        raise ValueError("QSA PrimTS expects Q [R,Hq,D] or grouped Q [B,SQ,Hq,D]")
+    if k_cache.ndim != 4:
+        raise ValueError("QSA PrimTS expects K [P,Hkv,N,D]")
+    if head_dim != k_cache.shape[3]:
         raise ValueError("QSA PrimTS query and cache head dimensions must match")
     return get_workspace_size(
-        batch_size=q.shape[0],
-        num_qo_heads=q.shape[1],
+        batch_size=batch_size,
+        num_qo_heads=num_qo_heads,
         num_kv_heads=k_cache.shape[1],
-        head_dim=q.shape[2],
+        head_dim=head_dim,
         page_size=_QSA_SEMANTIC_PAGE_SIZE,
         storage_page_size=k_cache.shape[2],
         max_seq_len=max_seq_len,
+        seq_len_q=seq_len_q,
         q_dtype=q.dtype,
         kv_dtype=k_cache.dtype,
         out_dtype=q.dtype,
@@ -1431,12 +1441,20 @@ def qsa_prims_ts_paged_attention(
     max_seq_len: int,
     out: torch.Tensor,
 ) -> torch.Tensor:
-    """Run flattened SQ=1 QSA through the existing PrimTS CSR interface."""
+    """Run Q1/Q2/Q4 QSA through the existing PrimTS CSR interface."""
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
     _, run_attention = apis
+    if q.ndim == 3:
+        seq_len_q = 1
+    elif q.ndim == 4 and q.shape[1] in (2, 4):
+        seq_len_q = q.shape[1]
+    else:
+        raise ValueError("QSA PrimTS expects Q [R,Hq,D] or grouped Q [B,2|4,Hq,D]")
+    if out.shape != q.shape:
+        raise ValueError("QSA PrimTS output must match the query shape")
     return run_attention(
         q,
         (k_cache, v_cache),
@@ -1445,6 +1463,7 @@ def qsa_prims_ts_paged_attention(
         paged_kv_indices,
         seq_lens,
         max_seq_len,
+        seq_len_q=seq_len_q,
         bmm1_scale=q.shape[-1] ** -0.5,
         out=out,
         out_dtype=out.dtype,

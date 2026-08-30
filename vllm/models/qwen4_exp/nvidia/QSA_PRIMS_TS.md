@@ -63,11 +63,40 @@ the ordinary PrimTS arguments:
 ```
 
 Workspace is allocated lazily at the exact policy size and reused while the
-semantic launch key is stable. Switching token count or physical page extent
-re-zeros the buffer because PrimTS section offsets can change. Warmed CUDA
-graph replays keep both the key and storage address stable. The previous Triton
-sparse-attention path remains the fallback on other architectures or when the
-page-4 API is absent.
+semantic launch key is stable. The key includes the query-group size, token
+count, and physical page extent. Switching it re-zeros the buffer because
+PrimTS section offsets can change. Warmed CUDA graph replays keep both the key
+and storage address stable. The previous Triton sparse-attention path remains
+the fallback on other architectures or when the page-4 API is absent.
+
+The production owner now chooses one request-safe route for the complete
+launch. Q1 keeps one independent CSR row per query token. Q2/Q4 reshape Q and O
+to `[route, 2|4, Hq, D]`, build the exact union of the member rows, and encode
+per-query membership in the high nibble of each ordinary
+`paged_kv_indices` entry. They therefore keep the existing PrimTS interface and
+do not add a top-k argument. Grouped launches use fixed graph bounds of 4,104
+and 8,208 tokens; Q1 uses 2,051.
+
+CPU query boundaries gate grouping. Every nonempty request and any inert CUDA
+graph suffix must begin and end on the selected group boundary, preventing a
+group from crossing between requests or between real and padded rows.
+Zero-length padding requests are ignored. `fast_build` adaptive-verification
+metadata deliberately omits its CPU boundaries because only its total is
+authoritative; it consequently takes Q1. Other variable-length prefill/MTP
+batches also remain functional through Q1 when no common grouping is safe.
+The current qualified whole-launch policy is:
+
+- Q4 at 256 or more Q4 groups for every TP;
+- Q4 at 64 or more Q4 groups for TP1, TP2, and TP8;
+- Q2 at that 64-group crossover for TP4 (128 Q2 groups);
+- Q4 at eight or more Q4 groups for TP1;
+- Q2 for aligned SQ2 routes at 512 groups on TP1/TP2 or 128 groups on
+  TP4/TP8;
+- Q1 otherwise.
+
+The owner lazily retains an exact-size Int32 bitmap workspace for grouped
+metadata and reuses the registered maximum-token CSR buffers. Both addresses
+are stable after warmup, so capture does not allocate or resize them.
 
 ## Validation status
 
@@ -90,6 +119,78 @@ uv run python benchmarks/kernels/benchmark_qsa_prims_ts.py \
     --context-length 8192 --prefill-seq-len 8192 \
     --decode-batch-sizes 1 8 64 256 --decode-seq-lens-q 1 4
 ```
+
+Timing now defaults to CUDA-graph replay and a cold L2 for every sample. A
+persistent eviction buffer is at least twice the runtime-reported L2 capacity
+(258 MiB on GB300); its graph replay is ordered before the target on the same
+stream but outside the target's CUDA-event interval. `--warm-l2` is an
+explicit diagnostic opt-out. The benchmark also reports exact logical
+selected-token counts and effective selected-KV TB/s. That logical rate is
+not a profiler measurement of HBM traffic when routes share physical cache
+lines; physical achieved bandwidth still requires matched DRAM counters.
+
+Historical timing tables below that predate the cold-L2 checkpoint used warmed
+L2 state even when they used CUDA graphs. They remain experiment history, not
+the current performance signoff.
+
+### Current grouped standalone signoff
+
+The standalone harness now also builds exact Q2/Q4 page unions with packed
+per-query membership. On the captured 8K prefill trace, Q4 attention is
+`0.962x/0.998x/0.667x/0.616x` the effective contiguous-KV baseline at TP
+`1/2/4/8`; including metadata gives `0.966x/1.008x/0.707x/0.655x`. Q2 also
+meets the 20-percent target at every TP but is slower because it loads
+6,313,676 union KV tokens instead of Q4's 3,513,700. Flattened Q1 loads
+11,870,704 tokens and remains about 1.49--1.54x contiguous on the same trace.
+
+All flattened SQ1 decode cases at TP `1/2/4/8`, batch `1/8/64/256`, and tail
+`0/3` meet target; their worst attention and metadata-plus-attention ratios are
+1.130x and 1.181x. For SQ4/MTP the qualified standalone policy is:
+
+- batch 1: Q1 for every TP;
+- batch 8: Q4 for TP1 and Q1 for TP2/TP4/TP8;
+- batch 64: Q4 for TP1/TP2 and Q2 for TP4/TP8;
+- batch 256: Q4 for every TP.
+
+The worst selected SQ4 end-to-end ratio is 1.187x. Every measurement uses 10
+warmups, 100 CUDA-graph replays, and cold L2. Grouped correctness is within
+`1.95e-3` of four independent routes. Reported selected-KV bandwidth is a
+logical byte rate and may exceed GB300's roughly 8-TB/s physical HBM limit
+because adjacent query routes reuse cache lines.
+
+#### Graph-stable fixed-bound checkpoint
+
+The observed-union results above are an attention upper bound, not a valid
+CUDA-graph launch policy. The benchmark now accepts
+`--topk-dump-union-static-max-seq-len`, validates that the observed union fits,
+and reports both the observed maximum and fixed `launch_KV`. Production Q2 and
+Q4 captures use 4,104 and 8,208 tokens respectively.
+
+FlashInfer `04abb0ee` stages full encoded locators one KV tile at a time for a
+long fixed-bound route and retains only packed membership nibbles until
+softmax. Short routes of at most eight CTA-local KV tiles retain the complete
+locator window. This recovers graph-stable Q4 prefill at every TP:
+
+| TP | Attention (us) | Metadata + attention (us) | Contiguous (us) | Attention / contiguous | End-to-end / contiguous |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 900.29 | 925.72 | 1193.28 | 0.754x | 0.776x |
+| 2 | 464.59 | 489.77 | 595.38 | 0.780x | 0.823x |
+| 4 | 405.22 | 432.02 | 570.31 | 0.711x | 0.758x |
+| 8 | 377.83 | 403.90 | 568.71 | 0.664x | 0.710x |
+
+The fixed-bound decode crossover is size dependent. Q4 passes at 64 groups
+for TP1/TP2/TP8 and at 256 groups for every TP; Q2 passes the TP4 128-group
+case at `0.983x` attention and `1.178x` end-to-end. Small grids remain on Q1
+for TP2/TP4/TP8. TP1 with eight Q4 groups is the remaining graph-stable gap:
+attention is `1.043x`, but metadata raises end-to-end to `1.255x`; flattened
+Q1 is `1.357x`--`1.369x`. A fused single-launch metadata prototype was correct
+but slower (`1.329x` end-to-end), so it was removed. All fixed-bound rows match
+the independent-route reference within `1.95e-3`.
+
+This fixed-bound kernel and route policy is now wired into the model-facing
+owner as a whole-launch Q1/Q2/Q4 decision. Mixed launches are conservatively
+kept on Q1; partitioning one heterogeneous batch into disjoint Q4, Q2, and Q1
+output slices remains a future extension rather than a correctness dependency.
 
 The current GB300 checkpoint (`FlashInfer 102b246`) at TP4 measures 3.9--4.1
 microseconds for metadata. For one route, page-4 attention is 14.4 microseconds
@@ -765,5 +866,174 @@ range, 20 warmups, and 300 CUDA-graph replays. Two consecutive runs agree to
 
 This closes the TP2 real-8K prefill checkpoint for both attention-only and
 metadata-plus-attention latency. Q4 metadata and attention remain numerically
-correct on the same full causal trace. The requested flattened-SQ1 TP/batch and
-tail matrix remains a separate completion gate.
+correct on the same full causal trace. The separate flattened-SQ1 TP/batch and
+tail gate is recorded next.
+
+### Cold-L2 flattened-SQ1 checkpoint
+
+The flattened TP/batch gate now uses exact tail-zero and tail-three positions.
+Every backend is a CUDA graph; a separate 258-MiB eviction graph runs on the
+same stream before every sample and outside its CUDA-event interval. Routes
+and physical page tables are independently randomized per request. The command
+is:
+
+```shell
+VLLM_TARGET_DEVICE=cpu PYTHONPATH=/workspace/qwen_next/flashinfer \
+  .venv/bin/python benchmarks/kernels/benchmark_qsa_prims_ts.py \
+  --phases decode --tp-sizes 1 2 4 8 \
+  --decode-batch-sizes 8 32 128 512 --decode-seq-lens-q 1 \
+  --decode-end-tails 0 3 --warmup-iterations 10 --iterations 100
+```
+
+Each cell reports tail zero / tail three. Effective TB/s is the exact sum of
+selected tokens times local BF16 K+V bytes divided by attention latency; it is
+not substituted for profiler DRAM counters when routes share cache lines.
+
+| TP | BS | Attention / contiguous | E2E / contiguous | Effective selected-KV TB/s |
+|---:|---:|---:|---:|---:|
+| 1 | 8 | 1.484x / 1.588x | 1.570x / 1.692x | 1.14 / 1.14 |
+| 1 | 32 | 1.826x / 2.084x | 1.904x / 2.137x | 1.99 / 1.64 |
+| 1 | 128 | 1.026x / 1.016x | 1.063x / 1.045x | 5.13 / 4.94 |
+| 1 | 512 | 1.046x / 1.014x | 1.056x / 1.024x | 6.25 / 6.11 |
+| 2 | 8 | 1.429x / 1.536x | 1.587x / 1.697x | 0.68 / 0.67 |
+| 2 | 32 | 1.584x / 2.008x | 1.666x / 2.111x | 1.72 / 1.23 |
+| 2 | 128 | 1.024x / 1.004x | 1.077x / 1.054x | 4.32 / 4.17 |
+| 2 | 512 | 1.057x / 1.062x | 1.075x / 1.081x | 5.65 / 5.34 |
+| 4 | 8 | 1.685x / 1.352x | 1.920x / 1.630x | 0.60 / 0.76 |
+| 4 | 32 | 1.548x / 1.540x | 1.670x / 1.627x | 1.77 / 1.64 |
+| 4 | 128 | 1.035x / 1.042x | 1.089x / 1.095x | 4.29 / 4.04 |
+| 4 | 512 | 1.071x / 1.092x | 1.089x / 1.110x | 5.63 / 5.23 |
+| 8 | 8 | 1.481x / 1.346x | 1.706x / 1.603x | 0.65 / 0.76 |
+| 8 | 32 | 1.548x / 1.543x | 1.666x / 1.641x | 1.77 / 1.64 |
+| 8 | 128 | 1.045x / 1.009x | 1.093x / 1.059x | 4.23 / 4.17 |
+| 8 | 512 | 1.074x / 1.086x | 1.094x / 1.103x | 5.62 / 5.27 |
+
+All BS128/512 rows pass the strict 1.20x attention and end-to-end gates for
+both tails. BS8/32 remain launch/pipeline limited. The largest miss is
+TP2/BS32 tail three: the extra 17th KV128 tile makes the two-way split
+imbalanced, producing 2.008x attention and 2.111x end-to-end ratios. Every row
+matches the Triton sparse backend within `9.8e-4`.
+
+### Retained TileQ32 and physical-8K windowed baseline
+
+The TP2 Q2 route contains 24 live rows: two query tokens times twelve local
+query heads. The retained policy rounds this to the existing TileQ32 path. A
+native TileQ24 experiment reduced a prior full-prefill attention result from
+809.44 to 803.75 microseconds, only about 0.7 percent in a cross-run comparison.
+It required special padded TMEM S/O traffic, staged-P packing, correction
+reductions, final-output copying, and P-descriptor stepping. Because it did not
+change K/V traffic, CTA count, staging depth, or occupancy, that small result
+did not justify the extra production surface. The TileQ24 commit was reverted;
+the standalone and FMHA code again use only the established TileQ8/16/32
+layouts.
+
+The performance target was also tightened. The contiguous control no longer
+allocates only the compact 2051-token QSA extent. It exposes the full physical
+8192-token K/V cache through ordinary page-128 CSR metadata and launches causal
+attention with `window_left=2047`, so exactly 2048 tokens are visible to the
+final flattened query. This keeps the physical address range at 8K while
+matching the intended effective contiguous work.
+
+On GB300 `nvl72d061-T09`, with 20 warmups, 300 interleaved CUDA-graph replays,
+and a 258-MiB L2 eviction before every sample:
+
+| Path | Selected KV tokens | Nominal logical KV (GB) | Latency (us) | Versus physical-8K/window-2K |
+|---|---:|---:|---:|---:|
+| Flattened QSA | 14,690,304 | 15.04 | 1155.28 | 1.555x |
+| TileQ32 exact Q2 union | 7,743,816 | 7.93 | 819.49 | 1.103x |
+| Union metadata + attention | 7,743,816 | 7.93 | 866.33 | 1.167x |
+| Physical-8K causal-window-2K | 16,777,216 | 17.18 | 742.66 | 1.000x |
+
+The exact union removes 47.3 percent of selected page fragments versus the
+flattened routes (472.6 mean and 561 maximum union blocks across 4096 groups).
+Both attention-only and metadata-inclusive latency are within the strict
+20-percent target. Dividing the dynamic logical byte counts by latency gives
+13.02 TB/s for flattened QSA and 9.68 TB/s for the union. These are logical
+selected-KV rates, not achieved HBM bandwidth; reuse through L2 can make them
+exceed the roughly 8-TB/s GB300 HBM limit. Hardware bandwidth claims still
+require profiler DRAM-byte counters.
+
+### TileQ32 full-D256 producer result
+
+Q2 with Hq/Hkv=12 exactly fills TileQ32, so the shared-producer attention can
+load one D256 K/V stage instead of two D128 stages without changing its public
+vLLM inputs, packed membership, causal-tail handling, two K/V instructions, or
+eight TMA issuer warps. PV consumes the full stage through two legal M128
+instructions and writes adjacent Qx128 TMEM panels. The final-output STSM
+layout now strides those panels by the physical M128 width; using the logical
+D256 producer-stage width would place the second panel beyond the Qx256 shared
+scratch tile.
+
+A same-node A/B on GB300 `nvl72d175-T01` uses the full layer-3 8K TP2 trace,
+4,096 Q2 groups, masked packed membership, the full causal row range, a
+258-MiB L2 eviction before every sample, CUDA graphs, 10 warmups, and 100 timed
+replays:
+
+| Stage | Metadata (us) | Attention (us) | E2E (us) | Physical-8K/window-2K (us) | Attention / contiguous | E2E / contiguous | Max error |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| D128 | 51.45 | 816.23 | 862.57 | 739.55 | 1.104x | 1.166x | 9.8e-4 |
+| D256/M128x2 | 51.55 | 738.88 | 785.13 | 739.51 | 0.999x | 1.062x | 9.8e-4 |
+
+D256 improves attention by 9.5 percent and E2E by 9.0 percent over the
+same-node D128 run. Attention reaches parity with the effective contiguous
+control, and the separate metadata kernel leaves only 6.2 percent E2E
+overhead.
+
+The complete 10/100 TP sweep keeps D256 only where Q2 exactly fills TileQ32;
+the lower head ratios at TP4/TP8 retain the qualified D128 TileQ16/TileQ8
+paths:
+
+| TP | Stage | Metadata (us) | Attention (us) | E2E (us) | Contiguous (us) | Attention / contiguous | E2E / contiguous | Logical selected-KV (TB/s) |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | D256/M128x2 | 51.37 | 1453.71 | 1499.67 | 1492.25 | 0.974x | 1.005x | 10.91 |
+| 2 | D256/M128x2 | 52.01 | 738.76 | 784.77 | 739.41 | 0.999x | 1.061x | 10.73 |
+| 4 | D128 | 51.57 | 749.84 | 796.08 | 703.36 | 1.066x | 1.132x | 10.58 |
+| 8 | D128 | 51.77 | 709.40 | 754.58 | 704.22 | 1.007x | 1.072x | 11.18 |
+
+All TP sizes remain inside the 1.20x attention and E2E target and match
+flattened QSA within `9.8e-4`. The logical selected-KV rates count dynamically
+selected bytes and are not HBM-bandwidth claims. The same D256 specialization
+compiles for SM100a under the fixed 148-SM compile-only occupancy model;
+runtime qualification remains pending access to an SM100 node.
+
+### Q2 masking-overhead checkpoint
+
+The following same-node control changes only union membership semantics and
+the attention mask. It retains the D256/M128x2 TileQ32 kernel, cold-L2 eviction,
+CUDA graphs, and 10/100 timing protocol:
+
+```shell
+VLLM_TARGET_DEVICE=cpu PYTHONPATH=.:../flashinfer .venv/bin/python \
+  benchmarks/kernels/benchmark_qsa_prims_ts.py \
+  --topk-dumps \
+    ../real_topk_dumps_8k/qsa_topk_layer03_call0000_rank0.pt \
+    ../real_topk_dumps_8k/qsa_topk_layer03_call0001_rank0.pt \
+  --topk-dump-patterns captured --tp-sizes 2 \
+  --topk-dump-union-group-sizes 2 \
+  --topk-dump-union-membership-modes full masked \
+  --topk-dump-union-row-scope full --topk-dump-union-only \
+  --warmup-iterations 10 --iterations 100
+```
+
+| Membership | Attention mask | Attention (us) | Contiguous (us) | Attention / contiguous |
+|---|---|---:|---:|---:|
+| Every page is `0b11` | Dense control | 720.10 | 739.21 | 0.974x |
+| Exact Q0/Q1 bits | Causal | 738.86 | 739.56 | 0.999x |
+
+The exact path is 18.76 microseconds, or 2.6 percent, slower. This is only the
+incremental dynamic-mask cost. The full-bit control still uses packed
+locators, loads membership nibbles from the staged page-offset window, maps
+TileQ32 score rows to Q0/Q1, and tests the selected bit; its `0b11` values
+simply prevent the conditional `-FLT_MAX` assignments. The delta also includes
+the causal boundary path. It does not measure the fixed membership-loop cost
+shared by both kernels. The dense control processes 4,096 additional logical
+tail tokens, one per group, rather than receiving an artificial work
+advantage.
+
+Complete KV128 tiles skip per-row causal work, so only the final boundary tile
+needs token-level checks. Membership is evaluated across every union page and
+is likely the larger part of the measured delta, but that attribution remains
+an inference. An exact breakdown requires a compile-time control that decodes
+the shifted packed locator while omitting membership application. The current
+priority remains the separate approximately 52-microsecond metadata path;
+masking is a low-single-digit attention optimization opportunity after that.

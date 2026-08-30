@@ -57,6 +57,68 @@ from ..common.qsa_cache import QSAForwardMetadata
 from . import model
 from .indexer_qsa import QSAIndexer
 
+_QSA_Q1_MAX_SEQ_LEN = 2051
+_QSA_Q2_MAX_SEQ_LEN = 4104
+_QSA_Q4_MAX_SEQ_LEN = 8208
+
+
+def _select_qsa_prims_ts_group_size(
+    query_start_loc_cpu: torch.Tensor | None,
+    num_tokens: int,
+    num_query_heads: int,
+) -> int:
+    """Select a request-safe Q1/Q2/Q4 route from CPU query boundaries."""
+
+    if (
+        query_start_loc_cpu is None
+        or query_start_loc_cpu.device.type != "cpu"
+        or query_start_loc_cpu.ndim != 1
+        or query_start_loc_cpu.numel() < 2
+    ):
+        return 1
+    query_starts = [int(value) for value in query_start_loc_cpu.tolist()]
+    num_mapped_tokens = query_starts[-1]
+    if query_starts[0] != 0 or not 0 <= num_mapped_tokens <= num_tokens:
+        return 1
+    query_deltas = [end - begin for begin, end in zip(query_starts, query_starts[1:])]
+    if any(length < 0 for length in query_deltas):
+        return 1
+    query_lengths = [length for length in query_deltas if length > 0]
+    if not query_lengths:
+        return 1
+
+    # CUDA graphs may append inert token rows beyond the final real request.
+    # They can share the grouped route only if the suffix starts and ends on
+    # the same group boundary, so no real request can share a group with it.
+    can_group_q4 = (
+        num_mapped_tokens % 4 == 0
+        and num_tokens % 4 == 0
+        and all(length % 4 == 0 for length in query_lengths)
+    )
+    if can_group_q4:
+        q4_groups = num_tokens // 4
+        if q4_groups >= 256:
+            return 4
+        if q4_groups >= 64:
+            # TP4's 6:1 local GQA shape uses two Q2 groups per request;
+            # TP1/TP2/TP8 use the qualified Q4 union.
+            return 2 if num_query_heads == 6 else 4
+        if q4_groups >= 8 and num_query_heads == 24:
+            return 4
+
+    can_group_q2 = (
+        num_mapped_tokens % 2 == 0
+        and num_tokens % 2 == 0
+        and all(length % 2 == 0 for length in query_lengths)
+    )
+    if can_group_q2:
+        q2_groups = num_tokens // 2
+        if num_query_heads in (24, 12) and q2_groups >= 512:
+            return 2
+        if num_query_heads in (6, 3) and q2_groups >= 128:
+            return 2
+    return 1
+
 
 class Qwen4ExpQSAMetadataBuilder(FlashAttentionMetadataBuilder):
     """Flash metadata supporting uniform decode and target-verify graphs."""
@@ -135,9 +197,11 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             max_seq_len,
         )
         workspace = getattr(layer, "_qsa_prims_ts_workspace", None)
+        seq_len_q = query.shape[1] if query.ndim == 4 else 1
         workspace_key = (
             query.device,
             query.shape[0],
+            seq_len_q,
             key_cache.shape[2],
             required_bytes,
         )
@@ -160,6 +224,32 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         layer._qsa_prims_ts_workspace_key = workspace_key
         return workspace
 
+    def _get_qsa_grouped_bitset_workspace(
+        self,
+        layer: torch.nn.Module,
+        num_tokens: int,
+        block_table: torch.Tensor,
+        storage_page_size: int,
+    ) -> torch.Tensor:
+        """Return graph-stable scratch for exact grouped page unions."""
+
+        logical_page_capacity = block_table.shape[1] * storage_page_size // 4
+        bitset_words = (logical_page_capacity + 31) // 32
+        required_words = num_tokens * bitset_words
+        workspace = getattr(layer, "_qsa_grouped_bitset_workspace", None)
+        if (
+            workspace is None
+            or workspace.device != block_table.device
+            or workspace.numel() < required_words
+        ):
+            workspace = torch.empty(
+                required_words,
+                dtype=torch.int32,
+                device=block_table.device,
+            )
+            layer._qsa_grouped_bitset_workspace = workspace
+        return workspace[:required_words]
+
     def forward_qsa(
         self,
         layer: torch.nn.Module,
@@ -171,6 +261,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         output: torch.Tensor,
         token_to_req: torch.Tensor,
         logical_positions: torch.Tensor,
+        query_start_loc_cpu: torch.Tensor | None = None,
         output_scale: torch.Tensor | None = None,
         output_block_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -201,10 +292,17 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
 
         if self.use_qsa_prims_ts:
             from .ops.qsa import (
+                qsa_build_page4_grouped_paged_metadata,
                 qsa_build_page4_paged_metadata,
                 qsa_prims_ts_paged_attention,
             )
 
+            group_size = _select_qsa_prims_ts_group_size(
+                query_start_loc_cpu,
+                num_tokens,
+                query.shape[1],
+            )
+            route_rows = num_tokens // group_size
             page_capacity = (logical_indices.shape[1] + 3) // 4
             indptr_buffer = getattr(layer, "qsa_paged_kv_indptr_buffer", None)
             indices_buffer = getattr(layer, "qsa_paged_kv_indices_buffer", None)
@@ -215,35 +313,68 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 or seq_lens_buffer is None
             ):
                 raise RuntimeError("QSA owner did not provide PrimTS metadata buffers")
-            paged_kv_indptr = indptr_buffer[: num_tokens + 1]
+            paged_kv_indptr = indptr_buffer[: route_rows + 1]
             paged_kv_indices = indices_buffer[: num_tokens * page_capacity]
-            seq_lens = seq_lens_buffer[:num_tokens]
-            qsa_build_page4_paged_metadata(
-                logical_indices,
-                attn_metadata.block_table,
-                token_to_req,
-                logical_positions,
-                key_cache.shape[2],
-                paged_kv_indptr=paged_kv_indptr,
-                paged_kv_indices=paged_kv_indices,
-                seq_lens=seq_lens,
-            )
+            seq_lens = seq_lens_buffer[:route_rows]
+            if group_size == 1:
+                qsa_build_page4_paged_metadata(
+                    logical_indices,
+                    attn_metadata.block_table,
+                    token_to_req,
+                    logical_positions,
+                    key_cache.shape[2],
+                    paged_kv_indptr=paged_kv_indptr,
+                    paged_kv_indices=paged_kv_indices,
+                    seq_lens=seq_lens,
+                )
+                route_query = query[:num_tokens]
+                route_output = output[:num_tokens]
+                max_seq_len = _QSA_Q1_MAX_SEQ_LEN
+            else:
+                bitset_workspace = self._get_qsa_grouped_bitset_workspace(
+                    layer,
+                    num_tokens,
+                    attn_metadata.block_table,
+                    key_cache.shape[2],
+                )
+                qsa_build_page4_grouped_paged_metadata(
+                    logical_indices,
+                    attn_metadata.block_table,
+                    token_to_req,
+                    logical_positions,
+                    key_cache.shape[2],
+                    group_size,
+                    bitset_workspace=bitset_workspace,
+                    paged_kv_indptr=paged_kv_indptr,
+                    paged_kv_indices=paged_kv_indices,
+                    seq_lens=seq_lens,
+                )
+                route_query = query[:num_tokens].view(
+                    route_rows,
+                    group_size,
+                    query.shape[1],
+                    query.shape[2],
+                )
+                route_output = output[:num_tokens].view_as(route_query)
+                max_seq_len = (
+                    _QSA_Q2_MAX_SEQ_LEN if group_size == 2 else _QSA_Q4_MAX_SEQ_LEN
+                )
             workspace = self._get_qsa_prims_ts_workspace(
                 layer,
-                query[:num_tokens],
+                route_query,
                 key_cache,
-                logical_indices.shape[1],
+                max_seq_len,
             )
             qsa_prims_ts_paged_attention(
-                query[:num_tokens],
+                route_query,
                 key_cache,
                 value_cache,
                 workspace,
                 paged_kv_indptr,
                 paged_kv_indices,
                 seq_lens,
-                logical_indices.shape[1],
-                output[:num_tokens],
+                max_seq_len,
+                route_output,
             )
             return output
 
@@ -416,9 +547,10 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             persistent=False,
         )
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
-        self._qsa_prims_ts_workspace_key: tuple[torch.device, int, int, int] | None = (
-            None
-        )
+        self._qsa_prims_ts_workspace_key: (
+            tuple[torch.device, int, int, int, int] | None
+        ) = None
+        self._qsa_grouped_bitset_workspace: torch.Tensor | None = None
         if self.impl.use_qsa_prims_ts:
             page_capacity = (self.indexer.output_width + 3) // 4
             self.register_buffer(
@@ -509,6 +641,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             output,
             token_to_req=side_metadata.token_to_req,
             logical_positions=side_metadata.logical_positions,
+            query_start_loc_cpu=side_metadata.query_start_loc_cpu,
         )
 
     def forward(

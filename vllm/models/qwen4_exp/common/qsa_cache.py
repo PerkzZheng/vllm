@@ -556,6 +556,7 @@ class QSAForwardMetadata(AttentionMetadata):
     slot_mapping: torch.Tensor
     seq_lens: torch.Tensor
     query_start_loc: torch.Tensor
+    query_start_loc_cpu: torch.Tensor | None
     token_to_req: torch.Tensor
     logical_positions: torch.Tensor
     k_work_metadata: torch.Tensor
@@ -617,7 +618,7 @@ class QSAMetadataBuilder(AttentionMetadataBuilder[QSAForwardMetadata]):
         common_attn_metadata: CommonAttentionMetadata,
         fast_build: bool = False,
     ) -> QSAForwardMetadata:
-        del common_prefix_len, fast_build
+        del common_prefix_len
         num_tokens = common_attn_metadata.num_actual_tokens
         build_k_work = not self.is_circular_buffer and self.compress_ratio != 1
         k_work_metadata = self.k_work_metadata_buffer
@@ -647,6 +648,16 @@ class QSAMetadataBuilder(AttentionMetadataBuilder[QSAForwardMetadata]):
             slot_mapping=slot_mapping,
             seq_lens=common_attn_metadata.seq_lens,
             query_start_loc=common_attn_metadata.query_start_loc,
+            # Adaptive verification computes exact request splits on device;
+            # its CPU boundaries only preserve the total token count.  Keep
+            # those launches on the request-independent Q1 route.
+            query_start_loc_cpu=(
+                None
+                if fast_build
+                else common_attn_metadata.query_start_loc_cpu[
+                    : common_attn_metadata.num_reqs + 1
+                ]
+            ),
             token_to_req=token_to_req,
             logical_positions=logical_positions,
             k_work_metadata=k_work_metadata,
