@@ -60,21 +60,28 @@ from .indexer_qsa import QSAIndexer
 _QSA_Q1_MAX_SEQ_LEN = 2051
 _QSA_Q2_MAX_SEQ_LEN = 4104
 _QSA_Q4_MAX_SEQ_LEN = 8208
+_QSA_MAX_GROUP_SIZE = 4
+_QSA_MAX_TILE_SIZE_Q = 64
 
 
 def _select_qsa_prims_ts_group_size(
     query_start_loc_cpu: torch.Tensor | None,
     num_tokens: int,
-    num_query_heads: int,
-    estimated_kv_tasks: int,
+    heads_q_per_kv: int,
+    flattened_kv_tasks: int,
     num_sms: int,
 ) -> int:
-    """Select a request-safe Q1/Q2/Q4 route from CPU query boundaries."""
+    """Select the largest request-safe group that retains one SM wave.
 
-    # Estimate four split-KV partitions per (flattened row, local KV head).
-    # Below one SM wave there is too little potential work to amortize union
-    # metadata construction, regardless of the request-alignment policy below.
-    if estimated_kv_tasks <= 0 or num_sms <= 0 or estimated_kv_tasks <= num_sms:
+    ``flattened_kv_tasks`` estimates four split-KV CTAs for every flattened
+    query row and local KV head. Dividing it by the query group size estimates
+    the post-group launch grid, so Q4 and Q2 require respectively four and two
+    times the SM count. A group must also fit as complete query-head rows in a
+    TileQ64 CTA. The current four-bit membership encoding caps that capacity at
+    Q4 even when TP makes more complete tokens fit.
+    """
+
+    if flattened_kv_tasks <= 0 or num_sms <= 0 or heads_q_per_kv <= 0:
         return 1
     if (
         query_start_loc_cpu is None
@@ -94,36 +101,33 @@ def _select_qsa_prims_ts_group_size(
     if not query_lengths:
         return 1
 
+    max_tile_group_size = min(
+        _QSA_MAX_GROUP_SIZE,
+        _QSA_MAX_TILE_SIZE_Q // heads_q_per_kv,
+    )
+
+    # TODO(qsa): Reuse the dense PrimTS launch-cost candidate model once it has
+    # QSA coefficients for scattered page-4 loads and grouped-union metadata.
+    # Extend this candidate set to Q8/Q16 only after the packed membership
+    # representation supports more than four query bits.
+
     # CUDA graphs may append inert token rows beyond the final real request.
     # They can share the grouped route only if the suffix starts and ends on
     # the same group boundary, so no real request can share a group with it.
-    can_group_q4 = (
-        num_mapped_tokens % 4 == 0
-        and num_tokens % 4 == 0
-        and all(length % 4 == 0 for length in query_lengths)
-    )
-    if can_group_q4:
-        q4_groups = num_tokens // 4
-        if q4_groups >= 256:
-            return 4
-        if q4_groups >= 64:
-            # TP4's 6:1 local GQA shape uses two Q2 groups per request;
-            # TP1/TP2/TP8 use the qualified Q4 union.
-            return 2 if num_query_heads == 6 else 4
-        if q4_groups >= 8 and num_query_heads in (24, 12):
-            return 4
+    for group_size in (4, 2):
+        if group_size > max_tile_group_size:
+            continue
+        request_safe = (
+            num_mapped_tokens % group_size == 0
+            and num_tokens % group_size == 0
+            and all(length % group_size == 0 for length in query_lengths)
+        )
+        if not request_safe:
+            continue
 
-    can_group_q2 = (
-        num_mapped_tokens % 2 == 0
-        and num_tokens % 2 == 0
-        and all(length % 2 == 0 for length in query_lengths)
-    )
-    if can_group_q2:
-        q2_groups = num_tokens // 2
-        if num_query_heads in (24, 12) and q2_groups >= 512:
-            return 2
-        if num_query_heads in (6, 3) and q2_groups >= 128:
-            return 2
+        required_flattened_tasks = group_size * num_sms
+        if flattened_kv_tasks >= required_flattened_tasks:
+            return group_size
     return 1
 
 
@@ -305,15 +309,15 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 qsa_prims_ts_paged_attention,
             )
 
-            estimated_kv_tasks, num_sms = qsa_prims_ts_grouping_wave_estimate(
+            flattened_kv_tasks, num_sms = qsa_prims_ts_grouping_wave_estimate(
                 query[:num_tokens],
                 key_cache,
             )
             group_size = _select_qsa_prims_ts_group_size(
                 query_start_loc_cpu,
                 num_tokens,
-                query.shape[1],
-                estimated_kv_tasks,
+                query.shape[1] // key_cache.shape[1],
+                flattened_kv_tasks,
                 num_sms,
             )
             route_rows = num_tokens // group_size

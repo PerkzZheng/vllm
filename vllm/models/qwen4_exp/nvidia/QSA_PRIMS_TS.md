@@ -153,28 +153,144 @@ the current performance signoff.
 
 ### Current grouped standalone signoff
 
-The standalone harness now also builds exact Q2/Q4 page unions with packed
-per-query membership. On the captured 8K prefill trace, Q4 attention is
-`0.637x/0.650x/0.667x/0.616x` the effective contiguous-KV baseline at TP
-`1/2/4/8`; including metadata gives `0.656x/0.689x/0.707x/0.655x`. Q2 also
-meets the 20-percent target at every TP but is slower because it loads
-6,313,676 union KV tokens instead of Q4's 3,513,700. Flattened Q1 loads
-11,870,704 tokens and remains about 1.49--1.54x contiguous on the same trace.
+The standalone harness builds exact Q2/Q4 page unions with packed per-query
+membership. The original Q4 signoff compared one shared sparse producer with
+a flattened `SQ=1` sliding-window baseline. That baseline launched two to four
+query CTAs per four-token group and reloaded the same K/V window, so its result
+was not a fair contiguous target.
 
-All flattened SQ1 decode cases at TP `1/2/4/8`, batch `1/8/64/256`, and tail
-`0/3` meet target; their worst attention and metadata-plus-attention ratios are
-1.130x and 1.181x. For SQ4/MTP the qualified standalone policy is:
+The corrected control presents Q as `[groups, 4, Hq, D]`, uses page-128 K/V,
+and applies an exact causal 2K sliding window. Both paths now use one Q CTA per
+`(group, KV head)`. Native page-128 staging uses one TMA issuer because one
+page covers the KV128 tile; page-4 QSA retains eight issuers to distribute its
+independent fragments. On the full layer-3 8K trace, with 10 warmups, 100
+CUDA-graph replays, and a 258-MiB L2 eviction before every replay:
 
-- batch 1: Q1 for every TP;
-- batch 8: Q4 for TP1 and Q1 for TP2/TP4/TP8;
-- batch 64: Q4 for TP1/TP2/TP8 and Q2 for TP4;
-- batch 256: Q4 for every TP.
+| TP | Metadata (us) | Q4 PrimTS (us) | Q4 E2E (us) | Triton sparse (us) | Grouped SWA2K (us) | PrimTS / SWA | E2E / SWA | Triton / SWA | PrimTS / Triton | Volume-adjusted PrimTS / SWA | Volume-adjusted E2E / SWA |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 41.43 | 908.24 | 942.89 | 3444.27 | 566.29 | 1.604x | 1.665x | 6.082x | 0.264x | 1.395x | 1.448x |
+| 2 | 42.64 | 470.76 | 503.41 | 1744.63 | 293.59 | 1.603x | 1.715x | 5.942x | 0.270x | 1.395x | 1.491x |
+| 4 | 41.44 | 501.64 | 535.52 | 1966.31 | 274.64 | 1.827x | 1.950x | 7.160x | 0.255x | 1.589x | 1.696x |
+| 8 | 41.57 | 463.38 | 497.11 | 2703.03 | 243.15 | 1.906x | 2.044x | 11.117x | 0.171x | 1.658x | 1.778x |
 
-The selected SQ4 end-to-end matrix remains inside 1.20x. Every measurement
-uses 10 warmups, 100 CUDA-graph replays, and cold L2. Grouped correctness is
-within `1.95e-3` of four independent routes. Reported selected-KV bandwidth is
-a logical byte rate and may exceed GB300's roughly 8-TB/s physical HBM limit
-because adjacent query routes reuse cache lines.
+The Q4 unions contain 4,226,204 logical KV tokens. Exact grouped causal SWA
+contains 3,675,648, so real top-k unions add 15.0 percent non-shared semantic
+work. The volume-adjusted columns multiply measured SWA latency by 1.150; they
+are a linear projection, not a hardware counter or a replacement for the
+measured grouped baseline. Page-boundary rounding and cross-CTA cache reuse
+remain outside that projection.
+
+This result supersedes the older flattened-contiguous Q4 ratios in the
+historical sections below. The 20-percent target is not yet met: the remaining
+attention gap is 39.5--65.8 percent after the requested semantic-volume
+adjustment. The dominant structural difference is transaction granularity.
+For each D128 K or V stage, native page-128 SWA issues two contiguous D64 TMA
+copies; page-4 QSA must issue 32 independently addressed page fragments per
+D64 chunk. Grouping removes redundant K/V consumption across four queries but
+does not remove those page-table reads or TMA instructions.
+
+The Triton column is vLLM's existing
+`_qsa_sparse_paged_gqa_splitk_kernel`. It consumes the original per-token
+top-k rows because that interface has no grouped-union route. Grouped PrimTS is
+3.79x/3.71x/3.92x/5.83x faster than Triton at TP1/2/4/8 while preserving the
+same per-query semantics. Both implementations match flattened PrimTS within
+`3.91e-3` on this checkpoint.
+
+The reported Q4 logical rates are 9.53/9.19/8.63/9.32 TB/s at TP1/2/4/8.
+They are not achieved HBM bandwidth. Cold-L2 eviction removes cache state from
+the previous replay, but adjacent groups can still reuse the same physical K/V
+lines through L2 during one kernel execution; consequently this logical rate
+can exceed GB300's roughly 8-TB/s physical HBM limit.
+
+#### Matched decode checkpoint
+
+Decode is measured separately from the full-8K prefill table above. The input
+context is 8K before sparse selection, batch is `1/8/64/256`, TP is
+`1/2/4/8`, and the two causal boundary cases end in page-4 tail `0/3`. Every
+number below is the worse ratio across the two tails, with 10 warmups, 100
+CUDA-graph replays, and a 258-MiB L2 eviction before each replay. Rankings are
+randomized causally per request and shared only by the adjacent MTP tokens of
+that request.
+
+SQ1 uses one independent sparse route and one contiguous 2K-equivalent route
+per query token. All 32 cells meet the 1.20x attention and end-to-end target:
+
+| TP | Worst PrimTS / contiguous | Worst E2E / contiguous | Worst Triton / contiguous |
+|---:|---:|---:|---:|
+| 1 | 1.088x | 1.138x | 1.304x |
+| 2 | 1.063x | 1.096x | 1.357x |
+| 4 | 1.109x | 1.144x | 1.350x |
+| 8 | 1.112x | 1.141x | 1.397x |
+
+SQ4 uses one exact Q4 union CTA per `(request, KV head)` and compares it with
+one exact grouped causal SWA2K CTA with the same topology. PrimTS is grouped:
+it loads the union K/V once and applies packed membership and causal masks for
+four query tokens. The existing vLLM Triton
+`_qsa_sparse_paged_gqa_splitk_kernel` remains a per-token sparse baseline and
+processes the four top-k rows independently. These are forced-Q4 results, not
+the mixed Q1/Q2/Q4 launch policy:
+
+| TP | Batch | Q4 / grouped SWA | Q4 E2E / grouped SWA | Triton / grouped SWA | Q4 / Triton |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0.665x | 0.798x | 0.733x | 0.907x |
+| 1 | 8 | 0.689x | 0.873x | 1.277x | 0.547x |
+| 1 | 64 | 1.155x | 1.247x | 2.505x | 0.463x |
+| 1 | 256 | 1.035x | 1.079x | 2.445x | 0.423x |
+| 2 | 1 | 0.664x | 0.801x | 0.581x | 1.142x |
+| 2 | 8 | 0.655x | 0.818x | 0.873x | 0.750x |
+| 2 | 64 | 1.034x | 1.155x | 2.244x | 0.464x |
+| 2 | 256 | 1.037x | 1.115x | 2.641x | 0.393x |
+| 4 | 1 | 1.362x | 1.562x | 0.468x | 3.019x |
+| 4 | 8 | 1.332x | 1.538x | 0.737x | 1.819x |
+| 4 | 64 | 1.135x | 1.313x | 1.942x | 0.589x |
+| 4 | 256 | 1.056x | 1.141x | 2.715x | 0.389x |
+| 8 | 1 | 1.386x | 1.583x | 0.558x | 2.484x |
+| 8 | 8 | 1.326x | 1.556x | 0.932x | 1.460x |
+| 8 | 64 | 1.145x | 1.301x | 2.233x | 0.513x |
+| 8 | 256 | 1.051x | 1.130x | 3.153x | 0.333x |
+
+At batch 64 and 256, grouped PrimTS is 1.70--3.00x faster than the per-token
+Triton kernel. The small TP4/TP8 grids reverse that result because forced Q4
+underfills the GPU; the wave policy keeps underfilled shapes on Q1.
+
+The framework uses one policy for prefill, MTP, and decode; they differ only
+in each request's query length. Let `Nflat` be the total flattened query rows,
+`Hkv` the local KV-head count, `S=4` the assumed maximum split-KV fanout, and
+`NSM` the device SM count. The stable work estimate is
+`W = Nflat * Hkv * S`. The owner selects the largest request-safe group that
+retains one estimated SM wave:
+
+- Q4 when `W >= 4 * NSM`;
+- otherwise Q2 when `W >= 2 * NSM`;
+- otherwise Q1.
+
+The group must also fit as complete query-head rows in TileQ64:
+`group_size * (Hq / Hkv) <= 64`. FlashInfer reuses the dense grouped-Q
+geometry to select the smallest canonical TileQ that contains the complete
+group, avoiding unnecessary padding. Q4 therefore uses TileQ64/32/16 at
+TP1-2/TP4/TP8, while Q2 uses TileQ32/16/8. The current four-bit membership
+format caps the policy at Q4 even when TileQ64 could contain Q8 or Q16.
+
+Every real Q2/Q4 group must contain adjacent rows from one request; an inert
+CUDA-graph padding suffix must begin and end on the same group boundary.
+Consequently ordinary SQ1 decode remains Q1 even at a large batch; the policy
+never groups unrelated requests.
+
+For TP4 batch 64, grouping the SQ4 workload as two Q2 unions measures 1.106x
+attention and 1.277x end-to-end versus matched grouped-Q2 SWA, improving on
+forced Q4's 1.135x and 1.313x. Its roughly 12.8-microsecond metadata build is
+the remaining reason end-to-end exceeds 1.20x. The initial topology-only
+policy nevertheless selects Q4 once its estimated post-group grid fills a
+wave. A follow-up TODO is to reuse the dense launch-cost model with calibrated
+QSA costs for scattered page-4 loads and union metadata; that model can
+recover measured crossovers such as TP4 batch 64. At batch 256 forced Q4 meets
+the target for every TP; at batch 64 its attention kernel meets the target for
+every TP, while end-to-end still misses at TP1/TP4/TP8.
+
+All SQ1 and grouped Q2/Q4 outputs differ from their independent-route
+references by at most `9.8e-4`. Reported selected-KV bandwidth is a logical
+byte rate and may exceed GB300's roughly 8-TB/s physical HBM limit because
+adjacent query routes can reuse cache lines during one kernel execution.
 
 #### Graph-stable fixed-bound checkpoint
 
