@@ -1032,12 +1032,26 @@ def test_qsa_attention_backend_selection_rejects_unsupported(
         _resolve_qsa_prims_ts_backend(capable=True, available=True)
 
 
+def test_qsa_prims_ts_batch_capacity_uses_bounded_power_of_two_buckets() -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import _qsa_prims_ts_batch_capacity
+
+    assert _qsa_prims_ts_batch_capacity(1, 16384) == 1
+    assert _qsa_prims_ts_batch_capacity(64, 16384) == 64
+    assert _qsa_prims_ts_batch_capacity(65, 16384) == 128
+    assert _qsa_prims_ts_batch_capacity(12000, 12000) == 12000
+    with pytest.raises(ValueError, match="fit the staging capacity"):
+        _qsa_prims_ts_batch_capacity(0, 16384)
+    with pytest.raises(ValueError, match="fit the staging capacity"):
+        _qsa_prims_ts_batch_capacity(16385, 16384)
+
+
 def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
 
-    rows = 2
+    rows = 3
+    route_capacity = 4
     num_query_heads = 6
     num_kv_heads = 1
     head_dim = 256
@@ -1054,29 +1068,53 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     )
     output = torch.full_like(query, torch.nan)
     block_table = torch.zeros(2, 256, dtype=torch.int32)
-    token_to_req = torch.tensor([0, 1], dtype=torch.int32)
-    logical_positions = torch.tensor([2, -1], dtype=torch.int64)
+    token_to_req = torch.tensor([0, 1, 0], dtype=torch.int32)
+    logical_positions = torch.tensor([2, 3, 4], dtype=torch.int64)
     layer = SimpleNamespace(
         topk_indices_buffer=torch.full(
-            (rows, selection_width), -1, dtype=torch.int32
+            (route_capacity, selection_width), -1, dtype=torch.int32
         ),
-        qsa_paged_kv_indptr_buffer=torch.empty(rows + 1, dtype=torch.int32),
+        qsa_paged_kv_indptr_buffer=torch.empty(
+            route_capacity + 1, dtype=torch.int32
+        ),
         qsa_paged_kv_indices_buffer=torch.empty(
-            rows * page_capacity, dtype=torch.int32
+            route_capacity * page_capacity, dtype=torch.int32
         ),
-        qsa_seq_lens_buffer=torch.empty(rows, dtype=torch.int32),
+        qsa_seq_lens_buffer=torch.empty(route_capacity, dtype=torch.int32),
+        _qsa_prims_ts_token_to_req_buffer=torch.zeros(
+            route_capacity, dtype=torch.int32
+        ),
+        _qsa_prims_ts_logical_positions_buffer=torch.full(
+            (route_capacity,), -1, dtype=torch.int64
+        ),
+        _qsa_prims_ts_bf16_query_buffer=torch.zeros(
+            route_capacity,
+            num_query_heads,
+            head_dim,
+            dtype=torch.bfloat16,
+        ),
+        _qsa_prims_ts_output_buffer=torch.empty(
+            route_capacity,
+            num_query_heads,
+            head_dim,
+            dtype=torch.bfloat16,
+        ),
         _qsa_prims_ts_workspace=None,
-        _qsa_prims_ts_workspace_key=None,
     )
     metadata = SimpleNamespace(num_actual_tokens=rows, block_table=block_table)
     calls: dict[str, object] = {}
 
     def fake_build_metadata(*_args, **buffers) -> None:
         buffers["paged_kv_indptr"].copy_(
-            torch.tensor([0, page_capacity, 2 * page_capacity], dtype=torch.int32)
+            torch.arange(route_capacity + 1, dtype=torch.int32) * page_capacity
         )
         buffers["paged_kv_indices"].fill_(-1)
-        buffers["seq_lens"].copy_(torch.tensor([3, 1], dtype=torch.int32))
+        buffers["seq_lens"].copy_(
+            torch.tensor([3, 1, 1, 1], dtype=torch.int32)
+        )
+        assert _args[0].shape[0] == route_capacity
+        assert _args[2].shape == _args[3].shape == (route_capacity,)
+        assert int(_args[3][-1]) == -1
 
     def fake_workspace_size(
         actual_query: torch.Tensor,
@@ -1085,7 +1123,11 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         *,
         out_dtype: torch.dtype,
     ) -> int:
-        assert actual_query.shape == query.shape
+        assert actual_query.shape == (
+            route_capacity,
+            num_query_heads,
+            head_dim,
+        )
         assert key_cache.shape == (3, 1, storage_page_size, head_dim)
         assert key_cache.stride(-1) == 1
         assert max_seq_len == selection_width
@@ -1106,7 +1148,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         bmm1_scale: float,
         bmm2_scale: float,
     ) -> torch.Tensor:
-        assert actual_query.data_ptr() == query.data_ptr()
+        torch.testing.assert_close(actual_query[:rows], query)
         assert key_cache.shape == value_cache.shape == (
             3,
             1,

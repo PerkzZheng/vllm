@@ -241,3 +241,12 @@ buffers, but that adds copies and large per-layer buffers. Until dynamic
 capacity is implemented, a safe integration fallback is native Triton for
 unwarmed mixed-prefill shapes while retaining PrimTS for qualified decode
 buckets. Full PrimTS FP8 GSM8K/GPQA/AIME remains blocked on this fix.
+
+The first implementation uses the vLLM adapter option so it does not change
+FlashInfer's existing public interface. Live row counts round up to bounded
+power-of-two capacities. Each QSA owner keeps graph-stable Q/O and request
+metadata staging buffers; padded rows receive position `-1`, request zero, and
+zero Q, reusing the already-qualified inert-row metadata path. Exact bucket
+sizes stay zero-copy. A three-live-row/four-capacity owner smoke passes on CPU.
+This implementation still needs a fresh TP2 graph server run, continuous-batch
+throughput validation, and the full FP8 accuracy matrix before it is qualified.
