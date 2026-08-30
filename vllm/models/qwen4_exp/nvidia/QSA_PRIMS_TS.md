@@ -646,10 +646,11 @@ For Hq/Hkv=12 (TP1/TP2), TileQ32 holds only two query tokens; a Q4 group
 therefore launches two CTAs and reloads the same union. The retained policy is
 Q2 for TP1/TP2 and Q4 for TP4/TP8. This meets the attention-only target at all
 TP sizes. The remaining end-to-end misses are the two Q2 metadata cases, by
-about 1.6 and 3.2 microseconds. A 512-lane builder specialization was neutral
-and was discarded; the next experiment removes the launch/global barrier by
-fusing bitmap construction and union packing. All attention profiles here
-retain `num_insts_kv=2`.
+about 1.6 and 3.2 microseconds. An isolated 512-lane builder specialization was
+neutral while it retained per-CTA clearing and a barrier. The later full-8K
+experiment combines tail splitting with stream-ordered workspace clearing and
+weaker, sufficient atomic semantics. All attention profiles here retain
+`num_insts_kv=2`.
 
 #### Full 8K real-prefill checkpoint
 
@@ -724,3 +725,45 @@ microseconds and end-to-end latency to 871.8--872.5 microseconds, or
 1.218--1.219x the approximately 715.6-microsecond contiguous reference. This
 removes about 5.7 microseconds without changing packed metadata or attention
 results, but leaves roughly 13 microseconds to reach the end-to-end target.
+
+#### Barrier-free tail builder and CTA-scoped atomics
+
+The full-8K builder no longer lets the optional 513th page round its Triton
+vector from 512 to 1024 lanes. It processes the 512 complete selected pages in
+the vector path and issues one scalar load/atomic for a causal tail of one to
+three tokens. This applies to both saturated rows and short causal prefixes:
+the tail column is `complete_pages * 4`, so the model-facing 2051-wide index
+layout is unchanged.
+
+Bitmap clearing is now a single stream-ordered workspace fill before the
+builder rather than 8192 separate CTA-local clears and barriers. Every bitmap
+row has exactly one producer CTA, so its lane collisions require atomicity only
+within that CTA. The atomics therefore use relaxed CTA scope. The later packer
+is a separate kernel on the same CUDA stream, and the kernel boundary orders
+its reads after all builder writes. Generated PTX contains
+`atom.global.cta.relaxed.or.b32` for both SM103 and SM100. Offline compilation
+also succeeds for the Q2 and Q4 builder and ordered-packer specializations on
+both architectures.
+
+Nsight Systems profiling of one warmed TP2 full-8K metadata invocation shows
+where the improvement comes from:
+
+| Metadata component | Native-popcount baseline (us) | Final builder (us) |
+|---|---:|---:|
+| Workspace fill | n/a | 1.920 |
+| Bitmap builder | 37.568 | 20.704 |
+| Ordered union packer | 24.384 | 24.384 |
+| Total GPU kernels | 61.952 | 47.008 |
+
+The stable end-to-end result uses the same real layer-3 trace, full causal row
+range, 20 warmups, and 300 CUDA-graph replays. Two consecutive runs agree to
+0.01 microseconds in metadata time:
+
+| Path | Metadata (us) | Attention (us) | E2E (us) | Contiguous (us) | Attention / contiguous | E2E / contiguous | Max error |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Exact Q2 union | 43.08 | 809.44 | 856.62 | 719.96 | 1.124x | 1.190x | 9.8e-4 |
+
+This closes the TP2 real-8K prefill checkpoint for both attention-only and
+metadata-plus-attention latency. Q4 metadata and attention remain numerically
+correct on the same full causal trace. The requested flattened-SQ1 TP/batch and
+tail matrix remains a separate completion gate.

@@ -321,6 +321,10 @@ def _build_qsa_grouped_page_bitsets_kernel(
     row = group * GROUP_SIZE + q_index
     bitset_base = (group * GROUP_SIZE + q_index) * BITSET_WORDS
     offsets = tl.arange(0, BITSET_BLOCK)
+
+    # This program exclusively owns one query bitmap. Initialize it here so
+    # grouped metadata needs only the build and pack launches; the CTA barrier
+    # makes every word zero visible before lanes begin colliding atomic ORs.
     tl.store(
         bitsets_ptr + bitset_base + offsets,
         0,
@@ -346,13 +350,12 @@ def _build_qsa_grouped_page_bitsets_kernel(
         TOKEN_TOPK // SEMANTIC_PAGE_SIZE,
     )
     tail_tokens = visible_tokens % SEMANTIC_PAGE_SIZE
-    live_pages = complete_pages + (tail_tokens > 0)
     page_ranks = offsets
     logical_token = tl.load(
         logical_indices_ptr
         + row * stride_indices_row
         + page_ranks * SEMANTIC_PAGE_SIZE * stride_indices_column,
-        mask=active & (page_ranks < live_pages),
+        mask=active & (page_ranks < complete_pages),
         other=-1,
     )
     logical_block = logical_token // SEMANTIC_PAGE_SIZE
@@ -360,16 +363,49 @@ def _build_qsa_grouped_page_bitsets_kernel(
     bit = logical_block % 32
     page_live = (
         active
-        & (page_ranks < live_pages)
+        & (page_ranks < complete_pages)
         & (logical_token >= 0)
         & (word >= 0)
         & (word < BITSET_WORDS)
     )
     bit_value = (1 << bit).to(tl.int32)
+    # This CTA exclusively owns its query bitmap. CTA-scope atomicity resolves
+    # lane collisions; the following stream-ordered pack kernel provides the
+    # inter-kernel visibility boundary.
     tl.atomic_or(
         bitsets_ptr + bitset_base + tl.maximum(word, 0),
         bit_value,
         mask=page_live,
+        sem="relaxed",
+        scope="cta",
+    )
+
+    # Keep the optional 1--3-token causal tail out of the vector block. Including
+    # its 513th page would round this kernel from 512 to 1024 lanes even though
+    # every other lane in the upper half is inactive.
+    tail_logical_token = tl.load(
+        logical_indices_ptr
+        + row * stride_indices_row
+        + complete_pages * SEMANTIC_PAGE_SIZE * stride_indices_column,
+        mask=active & (tail_tokens > 0),
+        other=-1,
+    )
+    tail_logical_block = tail_logical_token // SEMANTIC_PAGE_SIZE
+    tail_word = tail_logical_block // 32
+    tail_bit = tail_logical_block % 32
+    tail_live = (
+        active
+        & (tail_tokens > 0)
+        & (tail_logical_token >= 0)
+        & (tail_word >= 0)
+        & (tail_word < BITSET_WORDS)
+    )
+    tl.atomic_or(
+        bitsets_ptr + bitset_base + tl.maximum(tail_word, 0),
+        (1 << tail_bit).to(tl.int32),
+        mask=tail_live,
+        sem="relaxed",
+        scope="cta",
     )
 
 
@@ -1294,8 +1330,8 @@ def qsa_build_page4_grouped_paged_metadata(
         GROUP_SIZE=group_size,
         SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
         BITSET_WORDS=bitset_words,
-        BITSET_BLOCK=triton.next_power_of_2(page_capacity),
-        num_warps=8,
+        BITSET_BLOCK=triton.next_power_of_2(token_topk // _QSA_SEMANTIC_PAGE_SIZE),
+        num_warps=4,
     )
     _pack_qsa_grouped_page_union_kernel[(groups,)](
         bitset_workspace,
