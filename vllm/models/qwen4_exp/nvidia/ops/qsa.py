@@ -17,6 +17,7 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
 _QSA_SEMANTIC_PAGE_SIZE = 4
+_QSA_PAGE_MEMBERSHIP_BITS = 4
 _QSAPrimsTSAPIs = tuple[Callable[..., int], Callable[..., torch.Tensor]]
 
 
@@ -281,6 +282,218 @@ def _build_qsa_page4_paged_metadata_kernel(
         tl.store(seq_lens_ptr + row, tl.maximum(compact_length, 1))
         if row == rows - 1:
             tl.store(paged_kv_indptr_ptr + rows, rows * PAGE_CAPACITY)
+
+
+@triton.jit
+def _qsa_popcount_u32(value):
+    """Return a vectorized uint32 population count."""
+
+    return tl.inline_asm_elementwise(
+        asm="popc.b32 $0, $1;",
+        constraints="=r,r",
+        args=[value.to(tl.uint32)],
+        dtype=tl.int32,
+        is_pure=True,
+        pack=1,
+    )
+
+
+@triton.jit
+def _build_qsa_grouped_page_bitsets_kernel(
+    logical_indices_ptr,
+    token_to_req_ptr,
+    logical_positions_ptr,
+    bitsets_ptr,
+    stride_indices_row,
+    stride_indices_column,
+    rows,
+    num_requests,
+    TOKEN_TOPK: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    SEMANTIC_PAGE_SIZE: tl.constexpr,
+    BITSET_WORDS: tl.constexpr,
+    BITSET_BLOCK: tl.constexpr,
+) -> None:
+    """Materialize one logical-page bitmap for each query in a fused group."""
+
+    group = tl.program_id(0)
+    q_index = tl.program_id(1)
+    row = group * GROUP_SIZE + q_index
+    bitset_base = (group * GROUP_SIZE + q_index) * BITSET_WORDS
+    offsets = tl.arange(0, BITSET_BLOCK)
+    tl.store(
+        bitsets_ptr + bitset_base + offsets,
+        0,
+        mask=offsets < BITSET_WORDS,
+    )
+    tl.debug_barrier()
+
+    request = tl.load(token_to_req_ptr + row, mask=row < rows, other=-1)
+    logical_position = tl.load(
+        logical_positions_ptr + row,
+        mask=row < rows,
+        other=-1,
+    )
+    active = (
+        (row < rows)
+        & (logical_position >= 0)
+        & (request >= 0)
+        & (request < num_requests)
+    )
+    visible_tokens = tl.maximum(logical_position + 1, 0)
+    complete_pages = tl.minimum(
+        visible_tokens // SEMANTIC_PAGE_SIZE,
+        TOKEN_TOPK // SEMANTIC_PAGE_SIZE,
+    )
+    tail_tokens = visible_tokens % SEMANTIC_PAGE_SIZE
+    live_pages = complete_pages + (tail_tokens > 0)
+    page_ranks = offsets
+    logical_token = tl.load(
+        logical_indices_ptr
+        + row * stride_indices_row
+        + page_ranks * SEMANTIC_PAGE_SIZE * stride_indices_column,
+        mask=active & (page_ranks < live_pages),
+        other=-1,
+    )
+    logical_block = logical_token // SEMANTIC_PAGE_SIZE
+    word = logical_block // 32
+    bit = logical_block % 32
+    page_live = (
+        active
+        & (page_ranks < live_pages)
+        & (logical_token >= 0)
+        & (word >= 0)
+        & (word < BITSET_WORDS)
+    )
+    bit_value = (1 << bit).to(tl.int32)
+    tl.atomic_or(
+        bitsets_ptr + bitset_base + tl.maximum(word, 0),
+        bit_value,
+        mask=page_live,
+    )
+
+
+@triton.jit
+def _pack_qsa_grouped_page_union_kernel(
+    bitsets_ptr,
+    block_table_ptr,
+    token_to_req_ptr,
+    logical_positions_ptr,
+    paged_kv_indptr_ptr,
+    paged_kv_indices_ptr,
+    seq_lens_ptr,
+    stride_table_req,
+    stride_table_page,
+    groups,
+    num_requests,
+    GROUP_SIZE: tl.constexpr,
+    BITSET_WORDS: tl.constexpr,
+    BITSET_BLOCK: tl.constexpr,
+    PAGE_TABLE_WIDTH: tl.constexpr,
+    SEMANTIC_PAGE_SIZE: tl.constexpr,
+    PAGE_MEMBERSHIP_BITS: tl.constexpr,
+    STORAGE_PAGE_SIZE: tl.constexpr,
+    PAGE_CAPACITY: tl.constexpr,
+) -> None:
+    """Scan grouped bitsets into sorted packed locator/membership entries."""
+
+    group = tl.program_id(0)
+    words = tl.arange(0, BITSET_BLOCK)
+    word_live = words < BITSET_WORDS
+    bitset_base = group * GROUP_SIZE * BITSET_WORDS
+    q_word_0 = tl.load(
+        bitsets_ptr + bitset_base + words,
+        mask=(group < groups) & word_live,
+        other=0,
+    ).to(tl.uint32)
+    q_word_1 = tl.load(
+        bitsets_ptr + bitset_base + BITSET_WORDS + words,
+        mask=(group < groups) & word_live,
+        other=0,
+    ).to(tl.uint32)
+    q_word_2 = tl.zeros((BITSET_BLOCK,), dtype=tl.uint32)
+    q_word_3 = tl.zeros((BITSET_BLOCK,), dtype=tl.uint32)
+    if GROUP_SIZE == 4:
+        q_word_2 = tl.load(
+            bitsets_ptr + bitset_base + 2 * BITSET_WORDS + words,
+            mask=(group < groups) & word_live,
+            other=0,
+        ).to(tl.uint32)
+        q_word_3 = tl.load(
+            bitsets_ptr + bitset_base + 3 * BITSET_WORDS + words,
+            mask=(group < groups) & word_live,
+            other=0,
+        ).to(tl.uint32)
+    union_word = q_word_0 | q_word_1 | q_word_2 | q_word_3
+    word_counts = _qsa_popcount_u32(union_word)
+    word_offsets = tl.cumsum(word_counts, axis=0) - word_counts
+    union_pages = tl.sum(word_counts, axis=0)
+
+    first_row = group * GROUP_SIZE
+    request = tl.load(token_to_req_ptr + first_row)
+    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
+    group_valid = (group < groups) & (request >= 0) & (request < num_requests)
+    first_position = tl.load(logical_positions_ptr + first_row)
+    last_position = tl.load(logical_positions_ptr + first_row + GROUP_SIZE - 1)
+    group_valid &= last_position == first_position + GROUP_SIZE - 1
+    for q_index in tl.static_range(1, GROUP_SIZE):
+        q_request = tl.load(token_to_req_ptr + first_row + q_index)
+        q_position = tl.load(logical_positions_ptr + first_row + q_index)
+        group_valid &= (q_request == request) & (q_position == first_position + q_index)
+
+    subpages_per_storage_page: tl.constexpr = STORAGE_PAGE_SIZE // SEMANTIC_PAGE_SIZE
+    for bit_index in tl.static_range(0, 32):
+        selected = word_live & ((union_word & (1 << bit_index)) != 0)
+        rank = word_offsets + _qsa_popcount_u32(union_word & ((1 << bit_index) - 1))
+        logical_block = words * 32 + bit_index
+        logical_token = logical_block * SEMANTIC_PAGE_SIZE
+        logical_storage_page = logical_token // STORAGE_PAGE_SIZE
+        table_live = (
+            group_valid
+            & selected
+            & (rank < PAGE_CAPACITY)
+            & (logical_storage_page < PAGE_TABLE_WIDTH)
+        )
+        physical_page = tl.load(
+            block_table_ptr
+            + safe_request * stride_table_req
+            + tl.minimum(logical_storage_page, PAGE_TABLE_WIDTH - 1)
+            * stride_table_page,
+            mask=table_live,
+            other=-1,
+        )
+        subpage = (logical_token % STORAGE_PAGE_SIZE) // SEMANTIC_PAGE_SIZE
+        locator = physical_page * subpages_per_storage_page + subpage
+        membership = (
+            ((q_word_0 >> bit_index) & 1).to(tl.int32)
+            | (((q_word_1 >> bit_index) & 1).to(tl.int32) << 1)
+            | (((q_word_2 >> bit_index) & 1).to(tl.int32) << 2)
+            | (((q_word_3 >> bit_index) & 1).to(tl.int32) << 3)
+        )
+        packed = (locator << PAGE_MEMBERSHIP_BITS) | membership
+        tl.store(
+            paged_kv_indices_ptr + group * PAGE_CAPACITY + rank,
+            packed,
+            mask=table_live & (physical_page >= 0),
+        )
+
+    if group < groups:
+        tail_tokens = (last_position + 1) % SEMANTIC_PAGE_SIZE
+        tail_padding = tl.where(
+            tail_tokens == 0,
+            0,
+            SEMANTIC_PAGE_SIZE - tail_tokens,
+        )
+        seq_len = union_pages * SEMANTIC_PAGE_SIZE - tail_padding
+        tl.store(paged_kv_indptr_ptr + group, group * PAGE_CAPACITY)
+        tl.store(seq_lens_ptr + group, tl.where(group_valid, seq_len, 1))
+        if group == groups - 1:
+            tl.store(paged_kv_indptr_ptr + groups, groups * PAGE_CAPACITY)
+        tl.store(
+            paged_kv_indices_ptr + group * PAGE_CAPACITY,
+            -1,
+            mask=~group_valid,
+        )
 
 
 @triton.jit
@@ -948,6 +1161,165 @@ def qsa_build_page4_paged_metadata(
         num_warps=4,
     )
     return paged_kv_indptr, paged_kv_indices, seq_lens
+
+
+def qsa_build_page4_grouped_paged_metadata(
+    logical_indices: torch.Tensor,
+    block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    logical_positions: torch.Tensor,
+    storage_page_size: int,
+    group_size: int,
+    *,
+    bitset_workspace: torch.Tensor | None = None,
+    paged_kv_indptr: torch.Tensor | None = None,
+    paged_kv_indices: torch.Tensor | None = None,
+    seq_lens: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build Q2/Q4 union CSR with packed per-query page membership.
+
+    The model-facing ``logical_indices`` tensor is unchanged. An internal
+    per-query logical-page bitmap forms each consecutive same-request union.
+    Every output CSR word uses ``(locator << 4) | membership``; PrimTS strips
+    the low nibble for TMA and applies it to score rows before softmax. The
+    final partial page remains governed by the grouped causal mask.
+    """
+
+    if group_size not in (2, 4):
+        raise ValueError("QSA grouped page metadata supports group size two or four")
+    if not logical_indices.is_cuda or not HAS_TRITON:
+        raise RuntimeError("QSA grouped page metadata requires CUDA and Triton")
+    if logical_indices.ndim != 2 or logical_indices.dtype != torch.int32:
+        raise ValueError("QSA logical indices must be a rank-two int32 tensor")
+    rows, output_width = logical_indices.shape
+    if rows % group_size:
+        raise ValueError("QSA grouped page metadata requires complete query groups")
+    token_topk = output_width - (_QSA_SEMANTIC_PAGE_SIZE - 1)
+    if token_topk <= 0 or token_topk % _QSA_SEMANTIC_PAGE_SIZE:
+        raise ValueError(
+            "QSA index width must be token_topk + 3 with token_topk divisible by 4"
+        )
+    if block_table.ndim != 2 or block_table.dtype != torch.int32:
+        raise ValueError("QSA block table must be a rank-two int32 tensor")
+    if not all(block_table.shape):
+        raise ValueError("QSA block table must be nonempty")
+    if token_to_req.shape != (rows,) or token_to_req.dtype != torch.int32:
+        raise ValueError("QSA request mapping must be int32 with one entry per row")
+    if logical_positions.shape != (rows,) or logical_positions.dtype not in (
+        torch.int32,
+        torch.int64,
+    ):
+        raise ValueError("QSA logical positions must be int32/int64 per-row values")
+    if (
+        not isinstance(storage_page_size, int)
+        or isinstance(storage_page_size, bool)
+        or storage_page_size < _QSA_SEMANTIC_PAGE_SIZE
+        or storage_page_size % _QSA_SEMANTIC_PAGE_SIZE
+    ):
+        raise ValueError("QSA storage page size must be a positive multiple of four")
+    tensors = (block_table, token_to_req, logical_positions)
+    if any(tensor.device != logical_indices.device for tensor in tensors):
+        raise ValueError("QSA grouped page metadata inputs must share one CUDA device")
+    if logical_indices.stride(1) != 1 or block_table.stride(1) != 1:
+        raise ValueError("QSA indices and block-table rows must be contiguous")
+
+    groups = rows // group_size
+    page_capacity = token_topk // _QSA_SEMANTIC_PAGE_SIZE + 1
+    union_page_capacity = group_size * page_capacity
+    logical_block_capacity = (
+        block_table.shape[1] * storage_page_size // _QSA_SEMANTIC_PAGE_SIZE
+    )
+    bitset_words = (logical_block_capacity + 31) // 32
+    expected_bitset_shape = (groups * group_size * bitset_words,)
+    expected_output_shapes = (
+        (groups + 1,),
+        (groups * union_page_capacity,),
+        (groups,),
+    )
+    if bitset_workspace is None:
+        bitset_workspace = torch.empty(
+            expected_bitset_shape,
+            dtype=torch.int32,
+            device=logical_indices.device,
+        )
+    elif (
+        bitset_workspace.shape != expected_bitset_shape
+        or bitset_workspace.dtype != torch.int32
+        or bitset_workspace.device != logical_indices.device
+        or not bitset_workspace.is_contiguous()
+    ):
+        raise ValueError(
+            "QSA grouped bitset workspace must be contiguous int32 with shape "
+            f"{expected_bitset_shape}"
+        )
+
+    outputs = [paged_kv_indptr, paged_kv_indices, seq_lens]
+    for output_index, (output, shape) in enumerate(
+        zip(outputs, expected_output_shapes)
+    ):
+        if output is None:
+            outputs[output_index] = torch.empty(
+                shape,
+                dtype=torch.int32,
+                device=logical_indices.device,
+            )
+        elif (
+            output.shape != shape
+            or output.dtype != torch.int32
+            or output.device != logical_indices.device
+            or not output.is_contiguous()
+        ):
+            raise ValueError(
+                "QSA grouped page outputs must be contiguous int32 tensors "
+                f"with shapes {expected_output_shapes}"
+            )
+    paged_kv_indptr, paged_kv_indices, seq_lens = outputs
+    assert paged_kv_indptr is not None
+    assert paged_kv_indices is not None
+    assert seq_lens is not None
+    if not groups:
+        paged_kv_indptr.zero_()
+        return bitset_workspace, paged_kv_indptr, paged_kv_indices, seq_lens
+
+    _build_qsa_grouped_page_bitsets_kernel[(groups, group_size)](
+        logical_indices,
+        token_to_req,
+        logical_positions,
+        bitset_workspace,
+        logical_indices.stride(0),
+        logical_indices.stride(1),
+        rows,
+        block_table.shape[0],
+        TOKEN_TOPK=token_topk,
+        GROUP_SIZE=group_size,
+        SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
+        BITSET_WORDS=bitset_words,
+        BITSET_BLOCK=triton.next_power_of_2(page_capacity),
+        num_warps=8,
+    )
+    _pack_qsa_grouped_page_union_kernel[(groups,)](
+        bitset_workspace,
+        block_table,
+        token_to_req,
+        logical_positions,
+        paged_kv_indptr,
+        paged_kv_indices,
+        seq_lens,
+        block_table.stride(0),
+        block_table.stride(1),
+        groups,
+        block_table.shape[0],
+        GROUP_SIZE=group_size,
+        BITSET_WORDS=bitset_words,
+        BITSET_BLOCK=triton.next_power_of_2(bitset_words),
+        PAGE_TABLE_WIDTH=block_table.shape[1],
+        SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
+        PAGE_MEMBERSHIP_BITS=_QSA_PAGE_MEMBERSHIP_BITS,
+        STORAGE_PAGE_SIZE=storage_page_size,
+        PAGE_CAPACITY=union_page_capacity,
+        num_warps=4,
+    )
+    return bitset_workspace, paged_kv_indptr, paged_kv_indices, seq_lens
 
 
 @lru_cache
