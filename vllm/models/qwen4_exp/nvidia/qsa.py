@@ -335,9 +335,18 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 qsa_prims_ts_paged_attention,
             )
 
+            # PR 53896 stores the combined cache as [P,Hkv,N,2D]. The common
+            # transpose/split above gives Triton's [P,N,Hkv,D] views; PrimTS
+            # consumes HND pages, so recover [P,Hkv,N,D] without a copy.
+            prims_key_cache = canonicalize_singleton_dim_strides(
+                key_cache.transpose(1, 2)
+            )
+            prims_value_cache = canonicalize_singleton_dim_strides(
+                value_cache.transpose(1, 2)
+            )
             group_size = qsa_prims_ts_group_size(
                 query_for_attention,
-                key_cache,
+                prims_key_cache,
                 query_start_loc_cpu,
             )
             route_rows = num_tokens // group_size
@@ -360,7 +369,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                     attn_metadata.block_table,
                     token_to_req,
                     logical_positions,
-                    key_cache.shape[2],
+                    prims_key_cache.shape[2],
                     paged_kv_indptr=paged_kv_indptr,
                     paged_kv_indices=paged_kv_indices,
                     seq_lens=seq_lens,
@@ -373,14 +382,14 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                     layer,
                     num_tokens,
                     attn_metadata.block_table,
-                    key_cache.shape[2],
+                    prims_key_cache.shape[2],
                 )
                 qsa_build_page4_grouped_paged_metadata(
                     logical_indices,
                     attn_metadata.block_table,
                     token_to_req,
                     logical_positions,
-                    key_cache.shape[2],
+                    prims_key_cache.shape[2],
                     group_size,
                     bitset_workspace=bitset_workspace,
                     paged_kv_indptr=paged_kv_indptr,
@@ -400,14 +409,14 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             workspace = self._get_qsa_prims_ts_workspace(
                 layer,
                 route_query,
-                key_cache,
+                prims_key_cache,
                 max_seq_len,
                 route_output.dtype,
             )
             qsa_prims_ts_paged_attention(
                 route_query,
-                key_cache,
-                value_cache,
+                prims_key_cache,
+                prims_value_cache,
                 workspace,
                 paged_kv_indptr,
                 paged_kv_indices,

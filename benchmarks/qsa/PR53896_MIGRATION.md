@@ -29,10 +29,12 @@ The migration is split into reviewable commits:
 5. BF16 and FP8-E4M3 model-facing cache paths.
 
 The physical cache is a combined
-`[page, storage_page_size, Hkv, 2 * head_dim]` tensor in PR 53896. Both
-backends use a zero-copy transpose and final-dimension split to obtain
-`[page, Hkv, storage_page_size, head_dim]` K and V views. This is the main
-layout adaptation relative to the old checkout.
+`[page, Hkv, storage_page_size, 2 * head_dim]` tensor in PR 53896. Its common
+transpose and final-dimension split produce native Triton's
+`[page, storage_page_size, Hkv, head_dim]` K and V views. PrimTS applies one
+additional zero-copy axis transpose to obtain
+`[page, Hkv, storage_page_size, head_dim]`. This is the main layout adaptation
+relative to the old checkout.
 
 ## Qualification order
 

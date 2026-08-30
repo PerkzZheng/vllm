@@ -1047,8 +1047,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     query = torch.zeros(rows, num_query_heads, head_dim, dtype=torch.bfloat16)
     kv_cache = torch.zeros(
         3,
-        storage_page_size,
         num_kv_heads,
+        storage_page_size,
         2 * head_dim,
         dtype=torch.bfloat16,
     )
