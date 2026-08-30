@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar, cast
 
 import torch
@@ -60,6 +61,34 @@ from .indexer_qsa import QSAIndexer
 _QSA_Q1_MAX_SEQ_LEN = 2051
 _QSA_Q2_MAX_SEQ_LEN = 4104
 _QSA_Q4_MAX_SEQ_LEN = 8208
+
+_QSA_BACKEND_ENV = "VLLM_QSA_ATTENTION_BACKEND"
+_QSA_BACKENDS = frozenset(("auto", "triton", "prims_ts"))
+
+
+def _resolve_qsa_prims_ts_backend(*, capable: bool, available: bool) -> bool:
+    """Resolve the QSA attention implementation selected for this process.
+
+    ``auto`` preserves the production default. The explicit modes make
+    end-to-end accuracy and performance A/B tests reproducible without
+    changing the model or attention-backend interface.
+    """
+
+    backend = os.environ.get(_QSA_BACKEND_ENV, "auto").strip().lower()
+    if backend not in _QSA_BACKENDS:
+        choices = ", ".join(sorted(_QSA_BACKENDS))
+        raise ValueError(
+            f"{_QSA_BACKEND_ENV} must be one of {choices}; got {backend!r}"
+        )
+    if backend == "triton":
+        return False
+    supported = capable and available
+    if backend == "prims_ts" and not supported:
+        raise RuntimeError(
+            "VLLM_QSA_ATTENTION_BACKEND=prims_ts requires an SM100-family GPU "
+            "and the FlashInfer page-4 PrimTS API"
+        )
+    return supported
 
 
 class Qwen4ExpQSAMetadataBuilder(FlashAttentionMetadataBuilder):
@@ -119,9 +148,9 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         self.supports_quant_query_input = False
         from .ops.qsa import has_qsa_prims_ts_attention
 
-        self.use_qsa_prims_ts = (
-            current_platform.is_device_capability_family(100)
-            and has_qsa_prims_ts_attention()
+        self.use_qsa_prims_ts = _resolve_qsa_prims_ts_backend(
+            capable=current_platform.is_device_capability_family(100),
+            available=has_qsa_prims_ts_attention(),
         )
 
     def _get_qsa_prims_ts_workspace(

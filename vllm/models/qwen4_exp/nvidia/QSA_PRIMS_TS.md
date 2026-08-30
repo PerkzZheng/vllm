@@ -1199,3 +1199,50 @@ an inference. An exact breakdown requires a compile-time control that decodes
 the shifted packed locator while omitting membership application. The later
 hybrid-clear Q4 checkpoint reduces metadata to 41.41 microseconds; masking
 remains a low-single-digit attention optimization opportunity after metadata.
+
+## End-to-end accuracy qualification
+
+Set `VLLM_QSA_ATTENTION_BACKEND` to make model-level comparisons explicit:
+
+- `triton` always uses `_qsa_sparse_paged_gqa_splitk_kernel`.
+- `prims_ts` requires an SM100-family GPU and the FlashInfer encoded-page-4
+  API, and fails during model construction if either prerequisite is absent.
+- `auto` is the production default and selects PrimTS when both prerequisites
+  are present.
+
+This switch changes only the final sparse attention implementation. The QSA
+indexer, causal top-k expansion, paged cache update, model weights, prompts,
+sampling parameters, and vLLM scheduling interface remain shared. It exists so
+an accuracy or performance run cannot silently compare two automatically
+selected instances of the same backend.
+
+The model-level qualification matrix is tracked separately from the standalone
+kernel tolerance tests:
+
+| Attention | KV cache | MTP proposals | Effective decode SQ | GSM8K | GPQA-Diamond | AIME26 |
+|---|---|---:|---:|---:|---:|---:|
+| Triton | BF16 | 0 | 1 | pending | pending | pending |
+| Triton | BF16 | 3 | 4 | pending | pending | pending |
+| Triton | FP8-E4M3 | 0 | 1 | pending | pending | pending |
+| Triton | FP8-E4M3 | 3 | 4 | pending | pending | pending |
+| PrimTS | BF16 | 0 | 1 | pending | pending | pending |
+| PrimTS | BF16 | 3 | 4 | pending | pending | pending |
+| PrimTS | FP8-E4M3 | 0 | 1 | pending | pending | pending |
+| PrimTS | FP8-E4M3 | 3 | 4 | pending | pending | pending |
+
+For the validated BrightDelta image on nodes where the configured Enroot proxy
+is unreachable, exporting `no_proxy='*'` before the first Pyxis invocation
+allows direct registry access. The source-under-test keeps the image's compiled
+vLLM extensions and bind-mounts only the four changed QSA Python files; the
+FlashInfer checkout is selected with `PYTHONPATH` and
+`FLASHINFER_DISABLE_VERSION_CHECK=1` because the image contains the preceding
+JIT-cache patch version. Every result must record the vLLM and FlashInfer commit
+IDs, image tag, checkpoint, cache dtype, MTP setting, prompt/scorer settings,
+and raw per-item output.
+
+FP8 model weights and an FP8 KV cache are different contracts. The current
+model owner supports BF16 cache storage, while the standalone FP8 page-4 path
+qualifies matched FP8 Q/K/V with FP16 output. Therefore FP8-weight/BF16-cache
+runs must not be entered in an FP8-KV row. The FP8-KV rows remain pending until
+cache insertion, query/K/V scaling, Triton, and PrimTS model-facing interfaces
+are implemented and tested with BF16 model activations.
