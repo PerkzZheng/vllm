@@ -160,3 +160,22 @@ the newer 15-argument interface. Per the qualification policy, the full BF16
 MTP=3 matrix and matching PrimTS MTP=3 gate are skipped for now. The complete
 failure is retained at
 `qsa_accuracy/pr53896/triton-bf16-mtp3-gate/server-official.log`.
+
+## Native Triton FP8-E4M3/MTP=0 reference
+
+The matching native-Triton FP8 KV-cache reference completed with vLLM
+`b4a79ab08`, image FlashInfer 0.6.17, model revision `de4b8e4`, TP=2, and
+`--kv-cache-dtype fp8_e4m3`. Prompts, greedy seed, generation limits,
+concurrency, and task order were unchanged from the BF16 reference.
+
+| Task | BF16 Triton | FP8 Triton | FP8 truncations | FP8 errors |
+|---|---:|---:|---:|---:|
+| GSM8K, 5-shot | 1284/1319 (97.35%) | 1288/1319 (97.65%) | 8 | 0 |
+| GPQA-Diamond | 146/198 (73.74%) | 151/198 (76.26%) | 44 | 0 |
+| AIME 2026 | 17/30 (56.67%) | 19/30 (63.33%) | 11 | 0 |
+
+Across the three tasks, FP8 Triton has nine more correct answers and ten fewer
+truncations than BF16 Triton. This rules out an aggregate FP8 accuracy drop in
+the native baseline, although the 30-item AIME result remains statistically
+noisy. Raw artifacts and the server log are under
+`qsa_accuracy/pr53896/triton-fp8-mtp0/`.
