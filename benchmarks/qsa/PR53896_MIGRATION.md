@@ -108,3 +108,37 @@ metadata, and elapsed time. The server log is
 Historical figures in `QSA_PRIMS_TS.md` come from the prior model branch and
 are not mixed with this reference. The next accepted comparison is PrimTS
 BF16/MTP=0 with the identical model snapshot and evaluation protocol.
+
+## PrimTS BF16/MTP=0 accuracy gate
+
+The matching PrimTS run completed with vLLM `a17e08919`, FlashInfer
+`8fa4396a`, CUTLASS DSL 4.7.1, model revision `de4b8e4`, and the same TP=2,
+greedy chat, seed, prompts, and generation limits as the Triton reference.
+The first full-model startup exposed and fixed the PR-53896 cache-axis
+adaptation described above; the failed attempt is retained as
+`server-official-r1-cache-layout-failure.log`.
+
+| Task | Triton | PrimTS | PrimTS truncations | PrimTS errors |
+|---|---:|---:|---:|---:|
+| GSM8K, 5-shot | 1284/1319 (97.35%) | 1280/1319 (97.04%) | 12 | 0 |
+| GPQA-Diamond | 146/198 (73.74%) | 148/198 (74.75%) | 46 | 0 |
+| AIME 2026 | 17/30 (56.67%) | 21/30 (70.00%) | 9 | 0 |
+
+The item-level audit found 18/8/6 prediction changes and 9/2/1 regressions
+versus 5/4/5 improvements on GSM8K/GPQA/AIME, respectively. Raw generation
+hashes changed for 975/157/22 items. This is expected autoregressive
+sensitivity to a numerically different BF16 attention implementation rather
+than evidence of a systematic accuracy drop: the three tasks have mixed
+directions, the total correct count is two higher, total truncations fall from
+73 to 67, and neither run has request errors. PrimTS BF16/MTP=0 therefore
+passes the model-level accuracy gate.
+
+The evaluator wall times are not accepted kernel-performance results. The two
+servers exposed different usable KV-cache capacities, and the PrimTS smoke
+triggered first-inference Triton/CuTeDSL compilation. Decode performance must
+continue to use the standalone cold-L2 CUDA-graph protocol.
+
+Raw PrimTS artifacts are under
+`qsa_accuracy/pr53896/prims-ts-bf16-mtp0/` in the workspace. The next accuracy
+step is the small native-Triton MTP=3 gate; if it is stable, repeat that gate
+with PrimTS before moving to FP8-E4M3 MTP=0.
