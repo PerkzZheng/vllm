@@ -66,6 +66,14 @@ def _extract_number(text: str) -> str | None:
     return numbers[-1] if numbers else None
 
 
+def _extract_gsm8k(text: str) -> str | None:
+    # The canonical GSM8K answer marker is more reliable than the last number
+    # in a reasoning response. Some chat templates can append text after the
+    # final ``#### N`` answer.
+    marked = re.findall(r"####\s*(-?\d+(?:\.\d+)?)", text.replace(",", ""))
+    return marked[-1] if marked else _extract_number(text)
+
+
 def _extract_choice(text: str) -> str | None:
     patterns = (
         r"(?i)(?:final\s+)?answer\s*(?:is|:)\s*\(?([A-D])\)?",
@@ -180,7 +188,7 @@ def _prediction(task: str, output: str) -> str | None:
         return _extract_choice(output)
     if task == "aime26":
         return _extract_aime(output)
-    return _extract_number(output)
+    return _extract_gsm8k(output)
 
 
 async def _evaluate(args: argparse.Namespace) -> dict[str, Any]:

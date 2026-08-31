@@ -71,6 +71,36 @@ The server context limit must cover the complete prompt plus the 131,072-token
 generation allowance. Smoke tests may use a smaller token cap, but their
 outputs are ABI/kernel gates rather than benchmark scores.
 
+## Published-table reproduction gate
+
+PrimTS is paused until native Triton reproduces the supplied accuracy table.
+The first exact-policy BF16/MTP=0 run on 2026-08-30 did not reproduce its
+GSM8K row:
+
+| Configuration | GSM8K score | Difference from supplied row | Errors | Invalid | Truncated |
+|---|---:|---:|---:|---:|---:|
+| supplied BF16 row, job 2780006 | 1273/1319 (96.51%) | -- | not available | not available | not available |
+| local native Triton, BF16, MTP=0 | 1292/1319 (97.95%) | +19 answers (+1.44 pp) | 0 | 0 | 0 |
+
+The local run used TP=2, model revision `de4b8e4`, vLLM/evaluator
+`8a8015c3d`, FlashInfer `7eacf585`, and the exact sampling policy above. It
+completed 660,178 output tokens in 402.82 seconds. All 1,319 generations
+contain a canonical GSM8K `#### N` answer marker. The initial generic
+last-number parser reported 1291/1319 because one response included numeric
+text after its answer marker; strict `####` rescoring corrects that one item.
+The evaluator now prioritizes the canonical marker.
+
+Raw output is retained at
+`qsa_accuracy/pr53896/triton-bf16-mtp0-sampling-v2/gsm8k.json`, with the
+server and evaluator logs beside it. This result is not evidence of a Triton
+accuracy problem--it is higher than the supplied row--but it is a failed
+protocol-reproduction gate. The exact published prompt builder, scorer,
+repetition convention, TP/batching topology, and job artifacts are not
+available locally; the internal runbook repository cannot be fetched without
+GitLab credentials. Do not start the PrimTS accuracy matrix from this baseline
+until that protocol difference is resolved or an explicit paired-run protocol
+is accepted.
+
 ## Current validation
 
 - Production files pass Python bytecode compilation in the local vLLM
