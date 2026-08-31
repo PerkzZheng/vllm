@@ -332,11 +332,23 @@ used on the SM103 GB300 node. Local recoverable artifacts are:
 |---|---|
 | `.runtime/gdn-abi-backup/_C_stable_libtorch.14arg.abi3.so` | `fbcb725abbec191f0e013bf6d37ea55d157f9b8183b401abf7f1cf77712e4c94` |
 | `.runtime/gdn-abi-backup/_C_stable_libtorch.15arg.torch2.13.abi3.so` | `6a82c126726ab81b44a8fbec9a5652af54abe177dbcd88e0075b224dc4c625ad` |
+| `.runtime/gdn-abi-backup/_C_stable_libtorch.15arg.torch2.13.glibc235.abi3.so` | `9417fd16c7e94e220dcf2cae74244452794d058aca145d441012ea3238da2538` |
 
 The build tree is `.runtime/vllm-pr53896-gdn-build`. A system-Torch 2.8 build
 attempt is retained separately in `.runtime/vllm-pr53896-gdn-system-build`;
 it cannot build this target because Torch 2.8 lacks the required
 `torch/csrc/stable` headers and is not a valid runtime match.
+
+The private BrightDelta registry returned HTTP 403 on two later nodes that did
+not already cache the image. A compatible local CUDA 13/Torch 2.13 image was
+therefore exported to `.runtime/images/arf-mr5-unit-20260807.sqsh`. That image
+uses glibc 2.35, while the first 15-argument extension required glibc 2.38.
+The third artifact above was rebuilt against the image's system Torch 2.13 and
+glibc 2.35, then staged atomically as `vllm/_C_stable_libtorch.abi3.so`. Its
+operator schema retains all 15 arguments, including `output_gate_activation`.
+It passed real TP=2 FP8/MTP=3 startup, CUDA-graph capture, and repeated draft
+inference on both native Triton and PrimTS. Because it targets the older glibc
+with the same Torch stable ABI, it also remains usable by the newer runtime.
 
 All 16 focused cases in `tests/kernels/mamba/test_gdn_fused_mtp.py` pass with
 the rebuilt extension. They cover pure fused MTP=3 for both `silu` and
