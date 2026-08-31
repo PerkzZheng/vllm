@@ -7,7 +7,8 @@
 - Source integration: local branch `qsa-prims-ts-pr53896`; the FP8 accuracy
   gate used implementation revision `8dd467f74`. Each production port commit
   carries its original `Cherry-picked-from` revision.
-- FlashInfer kernel branch: `qsa-page4-prims-ts` at `8fa4396a`.
+- Compact PrimTS metadata integration: vLLM revision `778d2bd87`.
+- FlashInfer kernel branch: `qsa-page4-prims-ts` at `7eacf5856b47`.
 - Accuracy model: [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/main)
   revision `de4b8e4`, staged locally as `models/Qwen3.8-Flash-Next-de4b8e4`.
   The model config identifies the implementation as `qwen4_exp`, uses 24 Q
@@ -279,7 +280,7 @@ identical to the matrix protocol.
 - Production files pass Python bytecode compilation in the local vLLM
   environment.
 - The complete QSA reference suite passes in the CUDA development container:
-  `53 passed` in
+  `57 passed` in
   `tests/models/qwen4_exp/test_qsa_reference.py`. This covers the native
   Triton metadata/indexer/attention path, PR-53896 combined-cache adaptation,
   backend selection and PrimTS wrappers, and PrimTS page-4 Q1/Q2/Q4 metadata.
@@ -593,6 +594,52 @@ KV lengths of 2048 or 2051. The TP=2 model server remains on GPUs 0/1; all
 standalone measurements use GPU 2 and do not disturb serving. Times below are
 microseconds and ranges cover tail lengths zero and three.
 
+### Compact block-index metadata
+
+The PrimTS route now retains the indexer's native `[rows, 512]` selected
+four-token block IDs instead of materializing `[rows, 2051]` token IDs. Q1 and
+grouped Q2/Q4 metadata kernels accept the compact blocks directly, derive the
+zero-to-three-token causal tail from each logical query position, and still
+produce the existing fixed-capacity page-4 CSR interface. Native Triton keeps
+the expanded representation. This removes one standalone expansion launch
+from the PrimTS serving path and reduces the persistent top-k output buffer by
+four times.
+
+The comparison below uses the accepted cold-L2, CUDA-graph, interleaved
+10-warmup/100-iteration protocol on job 624558. `legacy` includes block
+expansion followed by the same metadata builder; `compact` starts from the
+native block output. Ranges cover causal tails zero and three. Times are
+microseconds.
+
+| Route | TP | BS | compact metadata | legacy metadata | measured saving |
+|---|---:|---:|---:|---:|---:|
+| Q1 | 1 | 1 | 7.92--8.17 | 9.94--10.20 | 2.02--2.03 |
+| Q1 | 1 | 8 | 7.91--8.02 | 10.00--10.21 | 2.09--2.19 |
+| Q1 | 1 | 64 | 8.13--8.42 | 10.41--10.70 | 1.99--2.57 |
+| Q1 | 1 | 256 | 8.18--8.23 | 11.97--12.10 | 3.74--3.92 |
+| Q1 | 2 | 1 | 8.06--8.14 | 10.02--10.20 | 1.96--2.06 |
+| Q1 | 2 | 8 | 7.95--8.19 | 10.05--10.30 | 2.10--2.11 |
+| Q1 | 2 | 64 | 8.14--8.15 | 10.23--10.87 | 2.09--2.72 |
+| Q1 | 2 | 256 | 8.25--8.26 | 12.14--12.23 | 3.89--3.97 |
+| Q4 union | 1 | 1 | 10.52--11.55 | 13.07--13.93 | 2.38--2.55 |
+| Q4 union | 1 | 8 | 11.19--12.20 | 13.62--14.26 | 2.06--2.43 |
+| Q4 union | 1 | 64 | 12.20--12.23 | 15.12--15.77 | 2.89--3.57 |
+| Q4 union | 1 | 256 | 14.30--14.34 | 21.14--22.36 | 6.80--8.06 |
+| Q4 union | 2 | 1 | 10.45--11.15 | 12.91--13.33 | 1.76--2.88 |
+| Q4 union | 2 | 8 | 11.58--11.59 | 13.81--14.06 | 2.23--2.47 |
+| Q4 union | 2 | 64 | 12.17--12.26 | 15.02--15.25 | 2.76--3.08 |
+| Q4 union | 2 | 256 | 14.19--14.26 | 20.99--21.82 | 6.73--7.63 |
+
+The compact builder is launch-bound at small row counts: reducing its vector
+extent from the old nominal 1,024 lanes to 512 did not measurably change its
+roughly eight-microsecond Q1 latency. The useful optimization is removing the
+separate expansion launch and its scaling memory traffic. Attention remains
+the dominant residual gap. Raw benchmark logs are retained at
+`qsa_compact_metadata_bf16_decode_sq1_tp12_cold_graph_10w100i_job624558.log`
+and
+`qsa_compact_metadata_bf16_decode_q4_tp12_cold_graph_10w100i_job624558.log`
+in the workspace root.
+
 The BF16 Q1 checkpoint is unchanged by the FP8 work:
 
 | TP | BS | PrimTS | Triton | contiguous SWA2K |
@@ -667,3 +714,23 @@ The targeted FlashInfer resolver tests pass (`8 passed`), both production Q1
 matrices pass with unchanged error, and the complete TP1/TP2 SQ4 and grouped
 union matrices pass. SM100 compiles are supported by the existing profiles;
 runtime qualification still requires access to an SM100 node.
+
+## Remaining performance and integration signoff
+
+Work proceeds in this order:
+
+1. Profile and close the remaining standalone attention gap against matched
+   Triton and grouped SWA controls; keep metadata-inclusive latency in every
+   acceptance table.
+2. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after the
+   performance changes.
+3. Measure matched Triton/PrimTS end-to-end prefill and decode speedups with
+   8K, 16K, 32K, and 64K natural input lengths. Decode uses MTP=3 and batch
+   sizes 1, 8, 64, and 512; prefill and decode timings are reported
+   separately.
+4. Promote the compact metadata builders into a public FlashInfer integration
+   API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
+   caller-owned output/workspace buffers, no host synchronization or replay-
+   time allocation, and stable capacities suitable for CUDA graph capture.
+   The vLLM path becomes the reference integration, with standalone examples
+   documenting the contract for other frameworks.
