@@ -114,6 +114,11 @@ that same manifest. API-reported prompt-token counts are retained per request
 to detect any offline/server template drift. A second prepare-only pass using
 the manifest reproduced all 48 prompt hashes and token counts.
 
+The reviewed manifest is committed at
+`benchmarks/qsa/manifests/longbench_v2_qwen38_8k16k32k_seed42.json` with
+SHA256 `651d887459b8e1a86f2ee3d93f3b54bd4e3755411decdb51f32f0d56281939c4`.
+Pass it through `--longbench-manifest` for every scored run.
+
 ```bash
 python benchmarks/qsa/qsa_reasoning_eval.py \
   --task longbench-v2 \
