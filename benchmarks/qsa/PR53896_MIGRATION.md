@@ -185,6 +185,33 @@ GitLab credentials. Do not start the PrimTS accuracy matrix from this baseline
 until that protocol difference is resolved or an explicit paired-run protocol
 is accepted.
 
+## Exact-policy paired matrix in progress
+
+The user accepted the local native-Triton rows as the paired reference and
+requested the matching PrimTS matrix. The table below uses only the exact
+sampling policy in this document. GSM8K has 1,319 examples; GPQA-Diamond is
+reported over two 198-example repetitions; AIME26 is reported over two
+30-example repetitions. These rows must not be mixed with the historical
+greedy gates later in this document.
+
+| Backend | KV cache | MTP | GSM8K | GPQA-Diamond, 2 reps | AIME26, 2 reps | Slurm job |
+|---|---|---:|---:|---:|---:|---:|
+| Triton | BF16 | 0 | 1292/1319 (97.95%) | 362/396 (91.41%) | 55/60 (91.67%) | 622875 |
+| Triton | BF16 | 3 | 1294/1319 (98.10%) | 363/396 (91.67%) | 59/60 (98.33%) | 622875 |
+| Triton | FP8-E4M3 | 0 | 1290/1319 (97.80%) | 368/396 (92.93%) | 60/60 (100.00%) | 622875 |
+| Triton | FP8-E4M3 | 3 | 1290/1319 (97.80%) | 363/396 (91.67%) | 60/60 (100.00%) | 622875 |
+| PrimTS | BF16 | 0 | 1288/1319 (97.65%) | 361/396 (91.16%) | 56/60 (93.33%) | 623062 |
+| PrimTS | BF16 | 3 | 1293/1319 (98.03%) | 367/396 (92.68%) | 60/60 (100.00%) | 623063 |
+| PrimTS | FP8-E4M3 | 0 | 1288/1319 (97.65%) | 357/396 (90.15%) | 60/60 (100.00%) | 623064 |
+| PrimTS | FP8-E4M3 | 3 | pending | pending | pending | 623068 |
+
+The completed BF16/MTP=3 AIME repetitions each scored 30/30. Across both
+repetitions there were zero request errors, invalid parses, or truncations.
+The FP8/MTP=3 allocation landed on a node without the private BrightDelta
+image cache; its registry import returned HTTP 403. The allocation is retained
+while a compatible local-image ABI path is qualified. This is an
+infrastructure/runtime-image issue, not a QSA result.
+
 ## Current validation
 
 - Production files pass Python bytecode compilation in the local vLLM
