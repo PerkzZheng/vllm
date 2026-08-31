@@ -5,14 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 from pathlib import Path
 from typing import Any
 
-TASKS = ("gsm8k", "gpqa-diamond", "aime26")
+TASKS = ("gsm8k", "gpqa-diamond", "aime26", "longbench-v2")
 MIN_QUALIFIED_MAX_TOKENS = {
     "gsm8k": 4096,
     "gpqa-diamond": 16384,
     "aime26": 16384,
+    "longbench-v2": 128,
 }
 
 
@@ -58,8 +60,8 @@ def _cell(result: dict[str, Any] | None) -> str:
 
 
 def _print_matrix(results: dict[str, dict[str, dict[str, Any]]]) -> None:
-    print("| Run | GSM8K | GPQA-Diamond | AIME26 |")
-    print("|---|---:|---:|---:|")
+    print("| Run | GSM8K | GPQA-Diamond | AIME26 | LongBench v2 |")
+    print("|---|---:|---:|---:|---:|")
     for run_name, run_results in sorted(results.items()):
         cells = " | ".join(_cell(run_results.get(task)) for task in TASKS)
         print(f"| {run_name} | {cells} |")
@@ -144,6 +146,84 @@ def _print_audit(
             )
 
 
+def _percentile(values: list[int], quantile: float) -> int:
+    ordered = sorted(values)
+    return ordered[round((len(ordered) - 1) * quantile)]
+
+
+def _distribution(values: list[int]) -> str:
+    if not values:
+        return "unavailable"
+    return (
+        f"mean={statistics.fmean(values):.1f}, "
+        f"p50={_percentile(values, 0.5)}, "
+        f"p90={_percentile(values, 0.9)}, "
+        f"p99={_percentile(values, 0.99)}, "
+        f"range={min(values)}--{max(values)}"
+    )
+
+
+def _length_groups(
+    task: str, result: dict[str, Any]
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    if task != "longbench-v2":
+        return [(task, result["records"])]
+    targets = sorted(
+        {
+            record["target_input_tokens"]
+            for record in result["records"]
+            if record.get("target_input_tokens") is not None
+        }
+    )
+    return [
+        (
+            f"{task}/{target // 1024}K",
+            [
+                record
+                for record in result["records"]
+                if record.get("target_input_tokens") == target
+            ],
+        )
+        for target in targets
+    ]
+
+
+def _print_lengths(results: dict[str, dict[str, dict[str, Any]]]) -> None:
+    print()
+    print("Token-length distributions:")
+    print()
+    print("| Run | Task/bucket | N | Input tokens | Output tokens | Total tokens |")
+    print("|---|---|---:|---|---|---|")
+    for run_name, run_results in sorted(results.items()):
+        for task, result in sorted(run_results.items()):
+            for label, records in _length_groups(task, result):
+                inputs = [
+                    int(record.get("api_prompt_tokens") or record.get("input_tokens"))
+                    for record in records
+                    if record.get("api_prompt_tokens") or record.get("input_tokens")
+                ]
+                outputs = [
+                    int(record["completion_tokens"])
+                    for record in records
+                    if record.get("completion_tokens") is not None
+                ]
+                totals = [
+                    int(record.get("api_prompt_tokens") or record.get("input_tokens"))
+                    + int(record["completion_tokens"])
+                    for record in records
+                    if (
+                        record.get("api_prompt_tokens")
+                        or record.get("input_tokens")
+                    )
+                    and record.get("completion_tokens") is not None
+                ]
+                print(
+                    f"| {run_name} | {label} | {len(records)} | "
+                    f"{_distribution(inputs)} | {_distribution(outputs)} | "
+                    f"{_distribution(totals)} |"
+                )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, nargs="?", default=Path("qsa_accuracy"))
@@ -155,6 +235,7 @@ def main() -> None:
         parser.error(f"no full result artifacts found under {args.root}")
     _print_matrix(results)
     _print_audit(results, args.reference_run)
+    _print_lengths(results)
 
 
 if __name__ == "__main__":
