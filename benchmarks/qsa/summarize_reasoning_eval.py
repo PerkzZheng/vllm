@@ -205,7 +205,8 @@ def _print_lengths(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                 outputs = [
                     int(record["completion_tokens"])
                     for record in records
-                    if record.get("completion_tokens") is not None
+                    if record.get("error") is None
+                    and record.get("completion_tokens") is not None
                 ]
                 totals = [
                     int(record.get("api_prompt_tokens") or record.get("input_tokens"))
@@ -215,6 +216,7 @@ def _print_lengths(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                         record.get("api_prompt_tokens")
                         or record.get("input_tokens")
                     )
+                    and record.get("error") is None
                     and record.get("completion_tokens") is not None
                 ]
                 print(
