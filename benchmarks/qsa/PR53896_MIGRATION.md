@@ -155,6 +155,42 @@ cap, not API or kernel failures. A diagnostic attempt to use the required
 10,366--34,370-token prompts exceed its remaining context allowance. Its 48
 HTTP-400 responses are retained for diagnosis and excluded from accuracy.
 
+The first full paired gate completed on job 623471 with FP8-E4M3 KV cache,
+MTP=3, TP=2, and the 196,608-token server limit. Triton and PrimTS ran on
+separate GPU pairs of the same SM103 node and consumed the identical frozen
+manifest. All 96 requests returned HTTP 200, no generation reached the
+131,072-token cap, and every API prompt-token count exactly matched its
+offline manifest value.
+
+| Input bucket | Examples | Triton | PrimTS | Prediction changes | Regressions | Improvements |
+|---:|---:|---:|---:|---:|---:|---:|
+| nominal 8K | 16 | 8/16 (50.00%) | 8/16 (50.00%) | 2 | 1 | 1 |
+| nominal 16K | 16 | 12/16 (75.00%) | 14/16 (87.50%) | 4 | 1 | 3 |
+| nominal 32K | 16 | 12/16 (75.00%) | 12/16 (75.00%) | 1 | 0 | 0 |
+| all | 48 | 32/48 (66.67%) | 34/48 (70.83%) | 7 | 2 | 4 |
+
+All 48 raw output hashes differ, which is expected from autoregressive
+sensitivity, but final-answer predictions agree on 41/48 examples. PrimTS has
+two more correct answers overall and no evidence of a long-prefill accuracy
+drop. Token distributions are reported below; `p50/p90/p99` are observed
+order statistics over each 16-example bucket.
+
+| Backend | Bucket | Input mean (range) | Output mean; p50/p90/p99 (range) | Total mean (range) |
+|---|---:|---:|---:|---:|
+| Triton | 8K | 12,596.6 (10,366--15,674) | 3,446.1; 1,815/9,673/9,701 (715--9,701) | 16,042.8 (11,201--23,314) |
+| Triton | 16K | 16,504.6 (15,698--17,336) | 1,638.4; 966/4,375/5,273 (266--5,273) | 18,143.0 (16,509--22,222) |
+| Triton | 32K | 32,864.2 (30,753--34,370) | 2,549.7; 1,745/5,718/6,569 (449--6,569) | 35,413.9 (31,613--39,962) |
+| PrimTS | 8K | 12,596.6 (10,366--15,674) | 2,561.3; 2,854/5,354/6,045 (474--6,045) | 15,157.9 (11,614--18,995) |
+| PrimTS | 16K | 16,504.6 (15,698--17,336) | 1,648.6; 914/4,659/4,801 (10--4,801) | 18,153.1 (16,280--21,955) |
+| PrimTS | 32K | 32,864.2 (30,753--34,370) | 2,700.9; 1,857/6,619/12,727 (391--12,727) | 35,565.2 (31,838--44,910) |
+
+Raw artifacts are under
+`qsa_accuracy/pr53896/longbench-v2-paired-fp8-mtp3/`. The evaluator wall
+times were 133.83 seconds for Triton and 177.55 seconds for PrimTS. These are
+accuracy-run timings with different generated-token totals (122,148 versus
+110,573), first-use JIT, and shared host activity, so they are not accepted
+kernel-performance measurements.
+
 ## Published-table reproduction gate
 
 PrimTS is paused until native Triton reproduces the supplied accuracy table.

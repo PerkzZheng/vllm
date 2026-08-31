@@ -21,7 +21,11 @@ MIN_QUALIFIED_MAX_TOKENS = {
 def _load_results(root: Path) -> dict[str, dict[str, dict[str, Any]]]:
     results: dict[str, dict[str, dict[str, Any]]] = {}
     dataset_hashes: dict[str, object] = {}
-    for path in sorted(root.glob("*/*.json")):
+    # Result directories are normally one level below the matrix root, but
+    # paired same-node runs may place multiple backend artifacts directly in
+    # one directory. Recursive discovery supports both layouts; the semantic
+    # checks below still exclude smokes and diagnostic JSON files.
+    for path in sorted(root.rglob("*.json")):
         if "smoke" in path.stem:
             continue
         result = json.loads(path.read_text())
