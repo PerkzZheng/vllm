@@ -208,14 +208,19 @@ async def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
         async def run_one(index: int) -> None:
             payload: dict[str, Any] = {
                 "model": args.model,
-                "temperature": 0,
+                "temperature": args.temperature,
+                "top_p": args.top_p,
+                "top_k": args.top_k,
                 "max_tokens": args.max_tokens,
                 "seed": args.seed,
+                "n": args.n,
+                "stream": False,
             }
             if args.api_mode == "chat":
                 payload["messages"] = [
                     {"role": "user", "content": selected[index].prompt}
                 ]
+                payload["reasoning_effort"] = args.reasoning_effort
             else:
                 payload["prompt"] = selected[index].prompt
             if args.api_mode == "completions" and args.task == "gsm8k":
@@ -231,7 +236,11 @@ async def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
                     choice = result["choices"][0]
                     if args.api_mode == "chat":
                         message = choice["message"]
-                        reasoning = message.get("reasoning_content") or ""
+                        reasoning = (
+                            message.get("reasoning_content")
+                            or message.get("reasoning")
+                            or ""
+                        )
                         content = message.get("content") or ""
                         outputs[index] = "\n".join(
                             part for part in (reasoning, content) if part
@@ -295,8 +304,13 @@ async def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "num_fewshot": args.num_fewshot if args.task == "gsm8k" else 0,
         "max_tokens": args.max_tokens,
         "max_concurrency": args.max_concurrency,
-        "temperature": 0,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
         "seed": args.seed,
+        "reasoning_effort": args.reasoning_effort,
+        "n": args.n,
+        "stream": False,
         "accuracy": correct / len(records) if records else 0.0,
         "correct": correct,
         "completed": completed,
@@ -340,15 +354,20 @@ def main() -> None:
     parser.add_argument("--max-concurrency", type=int, default=64)
     parser.add_argument("--request-timeout", type=float, default=7200)
     parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--temperature", type=float, default=0.6)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--reasoning-effort", default="xhigh")
+    parser.add_argument("--n", type=int, choices=(1,), default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--metadata", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
     defaults = {
-        "gsm8k": (1319, 4096),
-        "gpqa-diamond": (198, 16384),
-        "aime26": (30, 16384),
+        "gsm8k": (1319, 131072),
+        "gpqa-diamond": (198, 131072),
+        "aime26": (30, 131072),
     }
     default_questions, default_tokens = defaults[args.task]
     if args.num_questions is None:
