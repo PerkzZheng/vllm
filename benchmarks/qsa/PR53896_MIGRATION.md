@@ -52,6 +52,25 @@ Every server run must record the vLLM, FlashInfer, and model revisions; TP;
 KV-cache dtype; MTP setting; backend; launch command; evaluator arguments; and
 raw output directory. Fresh-server first-request smokes precede full runs.
 
+For new E2E accuracy and benchmark runs, use the following generation policy
+for both Triton and PrimTS. Earlier greedy tables in this document remain
+historical checkpoints and must not be mixed with results from this protocol:
+
+```text
+temperature=0.6
+top_p=0.95
+top_k=20
+seed=42
+max_tokens=131072
+reasoning_effort="xhigh"
+n=1
+stream=false
+```
+
+The server context limit must cover the complete prompt plus the 131,072-token
+generation allowance. Smoke tests may use a smaller token cap, but their
+outputs are ABI/kernel gates rather than benchmark scores.
+
 ## Current validation
 
 - Production files pass Python bytecode compilation in the local vLLM
@@ -141,12 +160,12 @@ continue to use the standalone cold-L2 CUDA-graph protocol.
 
 Raw PrimTS artifacts are under
 `qsa_accuracy/pr53896/prims-ts-bf16-mtp0/` in the workspace. The next accuracy
-step is FP8-E4M3 MTP=0, following the blocked MTP=3 gate below.
+step is FP8-E4M3 MTP=0, following the MTP=3 gate below.
 
-## Native Triton BF16/MTP=3 gate
+## BF16/MTP=3 GDN ABI repair and backend gates
 
-The small native-Triton MTP=3 gate did not reach server readiness. During
-CUDA-graph capture, the image's compiled FlashInfer extension rejected the
+The original native-Triton MTP=3 gate did not reach server readiness. During
+CUDA-graph capture, the image's old vLLM stable extension rejected the
 PR-53896 GDN call:
 
 ```text
@@ -154,13 +173,72 @@ _C::fused_gdn_decode_post_conv_mtp() expected at most 14 argument(s)
 but received 15 argument(s)
 ```
 
-This happens on the native Triton route before any QSA inference request, so
-it is a baseline image/source ABI mismatch rather than a PrimTS QSA result.
-The image exposes the older 14-argument fused-GDN op while PR 53896 invokes
-the newer 15-argument interface. Per the qualification policy, the full BF16
-MTP=3 matrix and matching PrimTS MTP=3 gate are skipped for now. The complete
-failure is retained at
-`qsa_accuracy/pr53896/triton-bf16-mtp3-gate/server-official.log`.
+This occurred before any QSA inference request and was a vLLM source/binary
+ABI mismatch, not a FlashInfer Python/JIT or PrimTS failure. The old
+`vllm/_C_stable_libtorch.abi3.so` exposed the 14-argument operator. PR 53896
+calls the current 15-argument schema, whose final arguments are:
+
+```text
+float scale, float norm_eps, str output_gate_activation
+```
+
+The stable extension was rebuilt from the PR-53896 source against the local
+Torch 2.13/CUDA 13 runtime and its `sm_100f` family target, then staged at
+`vllm/_C_stable_libtorch.abi3.so`. `sm_100f` is the Blackwell family binary
+used on the SM103 GB300 node. Local recoverable artifacts are:
+
+| Artifact | SHA256 |
+|---|---|
+| `.runtime/gdn-abi-backup/_C_stable_libtorch.14arg.abi3.so` | `fbcb725abbec191f0e013bf6d37ea55d157f9b8183b401abf7f1cf77712e4c94` |
+| `.runtime/gdn-abi-backup/_C_stable_libtorch.15arg.torch2.13.abi3.so` | `6a82c126726ab81b44a8fbec9a5652af54abe177dbcd88e0075b224dc4c625ad` |
+
+The build tree is `.runtime/vllm-pr53896-gdn-build`. A system-Torch 2.8 build
+attempt is retained separately in `.runtime/vllm-pr53896-gdn-system-build`;
+it cannot build this target because Torch 2.8 lacks the required
+`torch/csrc/stable` headers and is not a valid runtime match.
+
+All 16 focused cases in `tests/kernels/mamba/test_gdn_fused_mtp.py` pass with
+the rebuilt extension. They cover pure fused MTP=3 for both `silu` and
+`sigmoid`, plus mixed prefill/decode fallback cases. One first pass hit the
+container user's default Triton-cache quota; the affected case passed with
+`TRITON_CACHE_DIR` redirected to the workspace.
+
+The repaired extension also passes actual TP=2 BF16/MTP=3 serving on both QSA
+backends:
+
+| Backend | Result | Repeated-MTP evidence |
+|---|---|---|
+| native Triton | Server healthy; `17 + 25` returned `42`; a 64-token completion returned HTTP 200 | MTP metrics reported accepted draft tokens; the short request had mean acceptance length 3.00 |
+| local PrimTS | Server healthy; the same prompt returned `42`; a 64-token `xhigh` reasoning request with temperature 0.6/top-p 0.95/top-k 20/seed 42 returned HTTP 200 | 45/57 drafted tokens accepted, 78.9% draft acceptance, mean acceptance length 3.37 |
+
+Both gates used model revision `de4b8e4`, BF16 KV, MTP=3, TP=2,
+`max_model_len=32768`, and `max_num_seqs=128`. Triton used
+`VLLM_QSA_ATTENTION_BACKEND=triton`. PrimTS used
+`VLLM_QSA_ATTENTION_BACKEND=prims_ts` with
+`QSA_FLASHINFER_SOURCE=/workspace/qwen_next/flashinfer`; runtime warnings from
+the PrimTS task scheduler and the page-4 metadata JIT confirm that the local
+attention overlay executed rather than the Triton sparse-attention kernel.
+
+PrimTS graph profiling initially left only 0.42 GiB for KV at
+`gpu_memory_utilization=0.90`, below the 0.89-GiB minimum for a 32K request.
+This was a capacity check after successful kernel profiling, not a CUDA or
+GDN failure. Raising the setting to 0.91 allowed the identical 32K gate to
+start. The accepted server reported 48.78 GiB available KV after its final
+profile; production runs should pin an explicit measured KV-cache allocation
+instead of depending on this profiler-sensitive percentage.
+
+Raw evidence is retained at:
+
+- `qsa_accuracy/pr53896/triton-bf16-mtp3-gate/server-abi15-brightdelta-r3.log`
+- `qsa_accuracy/pr53896/triton-bf16-mtp3-gate/request-abi15-brightdelta-long.json`
+- `qsa_accuracy/pr53896/prims-ts-bf16-mtp3-gate/server-abi15-brightdelta-r2.log`
+- `qsa_accuracy/pr53896/prims-ts-bf16-mtp3-gate/request-abi15-brightdelta-long.json`
+
+The original ABI failure remains at
+`qsa_accuracy/pr53896/triton-bf16-mtp3-gate/server-official.log`. MTP=3 is no
+longer skipped for ABI reasons. The full Triton/PrimTS accuracy matrix remains
+to be rerun with the new 131,072-token sampling protocol above; the smokes in
+this section are validation gates, not task scores.
 
 ## Native Triton FP8-E4M3/MTP=0 reference
 
