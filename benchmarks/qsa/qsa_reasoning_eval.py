@@ -13,7 +13,7 @@ import statistics
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -200,7 +200,47 @@ def _load_aime26() -> tuple[list[Example], dict[str, str]]:
     return examples, {"aime2026": digest}
 
 
-def _read_longbench_v2(path: Path) -> list[dict[str, Any]]:
+def _read_json_array(path: Path) -> Iterator[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    with path.open() as source:
+        buffer = ""
+        position = 0
+        started = False
+        while True:
+            if position:
+                buffer = buffer[position:]
+                position = 0
+            chunk = source.read(1024 * 1024)
+            buffer += chunk
+            while True:
+                while position < len(buffer) and buffer[position].isspace():
+                    position += 1
+                if not started:
+                    if position == len(buffer):
+                        break
+                    if buffer[position] != "[":
+                        raise ValueError("LongBench v2 JSON must contain an array")
+                    started = True
+                    position += 1
+                    continue
+                while position < len(buffer) and (
+                    buffer[position].isspace() or buffer[position] == ","
+                ):
+                    position += 1
+                if position == len(buffer):
+                    break
+                if buffer[position] == "]":
+                    return
+                try:
+                    row, position = decoder.raw_decode(buffer, position)
+                except json.JSONDecodeError:
+                    break
+                yield row
+            if not chunk:
+                raise ValueError("incomplete LongBench v2 JSON array")
+
+
+def _read_longbench_v2(path: Path) -> list[dict[str, Any]] | Iterator[dict[str, Any]]:
     if path.suffix == ".parquet":
         try:
             import pyarrow.parquet as pq
@@ -210,10 +250,16 @@ def _read_longbench_v2(path: Path) -> list[dict[str, Any]]:
             ) from error
         return pq.read_table(path).to_pylist()
 
-    data = json.loads(path.read_text())
-    if not isinstance(data, list):
-        raise ValueError("LongBench v2 JSON must contain a list of examples")
-    return data
+    return _read_json_array(path)
+
+
+def _within_word_scan_limit(text: str, limit: int) -> bool:
+    words = 0
+    for _ in re.finditer(r"\S+", text):
+        words += 1
+        if words > limit:
+            return False
+    return True
 
 
 def _render_longbench_v2(row: dict[str, Any]) -> str:
@@ -299,17 +345,19 @@ def _load_longbench_v2(
         raise RuntimeError("LongBench v2 selection requires transformers") from error
 
     rows = _read_longbench_v2(args.longbench_dataset)
-    manifest_targets: dict[str, int | None] = {}
+    manifest_records: dict[str, dict[str, Any]] = {}
     requested_ids = args.longbench_ids
     if args.longbench_manifest is not None:
         manifest = json.loads(args.longbench_manifest.read_text())
         requested_ids = [record["id"] for record in manifest["records"]]
-        manifest_targets = {
-            record["id"]: record.get("target_input_tokens")
-            for record in manifest["records"]
-        }
+        manifest_records = {record["id"]: record for record in manifest["records"]}
     if requested_ids:
-        row_by_id = {str(row["_id"]): row for row in rows}
+        requested_id_set = set(requested_ids)
+        row_by_id = {
+            str(row["_id"]): row
+            for row in rows
+            if str(row["_id"]) in requested_id_set
+        }
         missing = [
             example_id
             for example_id in requested_ids
@@ -325,7 +373,32 @@ def _load_longbench_v2(
     )
     examples = []
     for row in rows:
+        if not requested_ids:
+            max_candidate_tokens = int(
+                max(args.longbench_target_tokens)
+                * (1 + args.longbench_tolerance)
+            )
+            if row["length"] == "long" or not _within_word_scan_limit(
+                row["context"], int(max_candidate_tokens * 1.25)
+            ):
+                continue
         prompt = _render_longbench_v2(row)
+        input_tokens = _chat_input_tokens(
+            tokenizer, prompt, args.reasoning_effort
+        )
+        if not requested_ids:
+            keep = any(
+                abs(input_tokens - target)
+                <= target * args.longbench_tolerance
+                for target in args.longbench_target_tokens
+            )
+            if not keep:
+                continue
+        target_input_tokens = (
+            manifest_records[str(row["_id"])].get("target_input_tokens")
+            if manifest_records
+            else None
+        )
         examples.append(
             Example(
                 example_id=str(row["_id"]),
@@ -333,16 +406,27 @@ def _load_longbench_v2(
                 prompt=prompt,
                 label=row["answer"].strip().upper(),
                 choices=tuple(row[f"choice_{letter}"] for letter in LETTERS),
-                input_tokens=_chat_input_tokens(
-                    tokenizer, prompt, args.reasoning_effort
-                ),
-                target_input_tokens=manifest_targets.get(str(row["_id"])),
+                input_tokens=input_tokens,
+                target_input_tokens=target_input_tokens,
                 domain=row["domain"],
                 sub_domain=row["sub_domain"],
                 difficulty=row["difficulty"],
                 length_class=row["length"],
             )
         )
+        if manifest_records:
+            expected = manifest_records[str(row["_id"])]
+            actual_sha256 = hashlib.sha256(prompt.encode()).hexdigest()
+            if actual_sha256 != expected["prompt_sha256"]:
+                raise ValueError(
+                    f"LongBench v2 prompt changed for {row['_id']}: "
+                    f"{actual_sha256} != {expected['prompt_sha256']}"
+                )
+            if input_tokens != expected["input_tokens"]:
+                raise ValueError(
+                    f"LongBench v2 token count changed for {row['_id']}: "
+                    f"{input_tokens} != {expected['input_tokens']}"
+                )
 
     if not requested_ids:
         examples = _select_longbench_v2(
@@ -618,7 +702,7 @@ def main() -> None:
         default=[8192, 16384, 32768],
     )
     parser.add_argument("--longbench-samples-per-target", type=int, default=16)
-    parser.add_argument("--longbench-tolerance", type=float, default=0.25)
+    parser.add_argument("--longbench-tolerance", type=float, default=1.0)
     parser.add_argument("--longbench-ids", nargs="+")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--max-tokens", type=int)
@@ -665,8 +749,8 @@ def main() -> None:
             parser.error(f"--metadata requires KEY=VALUE, got {item!r}")
     if args.longbench_ids and args.longbench_manifest is not None:
         parser.error("--longbench-ids and --longbench-manifest are mutually exclusive")
-    if not 0 <= args.longbench_tolerance < 1:
-        parser.error("--longbench-tolerance must be in [0, 1)")
+    if not 0 <= args.longbench_tolerance <= 1:
+        parser.error("--longbench-tolerance must be in [0, 1]")
 
     result = (
         _prepare_selection(args)

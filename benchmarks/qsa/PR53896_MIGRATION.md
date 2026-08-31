@@ -82,7 +82,9 @@ gate; it does not replace or interrupt the three-task matrix.
 The gate uses the official THUDM LongBench v2 direct-answer prompt and answer
 extractor semantics. The source repository is pinned locally at
 `THUDM/LongBench@2e00731f8d0bff23dc4325161044d0ed8af94c1e`. The Hugging Face
-generated parquet is pinned by SHA256
+raw JSON is pinned by SHA256
+`15d61c22d92c96900b3c4948b6aeea218d3214b676a65df48e7b8555604c7fe2`;
+its generated parquet equivalent is
 `cee77345f57cd74e5ca43e643caef34115e4592f1d5a4051ffd164bdf3ab2c34`.
 LongBench's published `short`/`medium`/`long` classes are word-count ranges
 (`<32K`, `32K--128K`, and `>128K`), so they are not used as model sequence
@@ -90,19 +92,34 @@ lengths. Instead, `qsa_reasoning_eval.py` renders the official prompt, applies
 the exact local Qwen chat template, and selects unique examples near 8,192,
 16,384, and 32,768 input tokens.
 
-Selection is deterministic at seed 42. The initial gate requests 16 examples
-per target within 25 percent of the target. It fails closed if a bucket has
-too few natural examples. A prepare-only manifest freezes IDs, prompt hashes,
-labels, target buckets, and exact tokenizer input lengths. Every backend and
-KV/MTP configuration consumes that same manifest. API-reported prompt-token
-counts are retained per request to detect any offline/server template drift.
+Selection is deterministic at seed 42. The gate requests 16 complete,
+unmodified examples nearest each target. LongBench v2 rejects source documents
+below 8,192 words, and only seven natural Qwen chat prompts fall within 50
+percent of 8,192 tokens. The nominal 8K bucket therefore uses the 16 shortest
+eligible prompts within a two-times upper bound and reports their exact range;
+the 16K and 32K buckets still choose the nearest unused examples. No context is
+truncated or padded. The resulting 48-example manifest has these rendered
+input lengths:
+
+| Nominal target | Examples | Minimum | Mean | Median | Maximum |
+|---:|---:|---:|---:|---:|---:|
+| 8K | 16 | 10,366 | 12,596.6 | 12,729 | 15,674 |
+| 16K | 16 | 15,698 | 16,504.6 | 16,703.5 | 17,336 |
+| 32K | 16 | 30,753 | 32,864.2 | 33,527.5 | 34,370 |
+
+The selector fails closed if a bucket has too few natural examples. A
+prepare-only manifest freezes IDs, prompt hashes, labels, target buckets, and
+exact tokenizer input lengths. Every backend and KV/MTP configuration consumes
+that same manifest. API-reported prompt-token counts are retained per request
+to detect any offline/server template drift. A second prepare-only pass using
+the manifest reproduced all 48 prompt hashes and token counts.
 
 ```bash
 python benchmarks/qsa/qsa_reasoning_eval.py \
   --task longbench-v2 \
   --prepare-only \
   --run-name longbench-v2-8k-16k-32k-seed42 \
-  --longbench-dataset /workspace/qwen_next/datasets/longbench-v2/0000.parquet \
+  --longbench-dataset /workspace/qwen_next/datasets/longbench-v2/data.json \
   --tokenizer /workspace/qwen_next/models/Qwen3.8-Flash-Next-de4b8e4 \
   --output /workspace/qwen_next/qsa_accuracy/pr53896/longbench-v2/manifest.json
 ```
