@@ -71,6 +71,48 @@ The server context limit must cover the complete prompt plus the 131,072-token
 generation allowance. Smoke tests may use a smaller token cap, but their
 outputs are ABI/kernel gates rather than benchmark scores.
 
+## LongBench v2 long-context gate
+
+GSM8K, GPQA-Diamond, and AIME26 have short prompts for this model: their mean
+rendered input lengths are about 789, 307, and 215 tokens, respectively. They
+exercise long autoregressive decode, but they do not directly qualify QSA on a
+long prefill. LongBench v2 is therefore an additional paired Triton/PrimTS
+gate; it does not replace or interrupt the three-task matrix.
+
+The gate uses the official THUDM LongBench v2 direct-answer prompt and answer
+extractor semantics. The source repository is pinned locally at
+`THUDM/LongBench@2e00731f8d0bff23dc4325161044d0ed8af94c1e`. The Hugging Face
+generated parquet is pinned by SHA256
+`cee77345f57cd74e5ca43e643caef34115e4592f1d5a4051ffd164bdf3ab2c34`.
+LongBench's published `short`/`medium`/`long` classes are word-count ranges
+(`<32K`, `32K--128K`, and `>128K`), so they are not used as model sequence
+lengths. Instead, `qsa_reasoning_eval.py` renders the official prompt, applies
+the exact local Qwen chat template, and selects unique examples near 8,192,
+16,384, and 32,768 input tokens.
+
+Selection is deterministic at seed 42. The initial gate requests 16 examples
+per target within 25 percent of the target. It fails closed if a bucket has
+too few natural examples. A prepare-only manifest freezes IDs, prompt hashes,
+labels, target buckets, and exact tokenizer input lengths. Every backend and
+KV/MTP configuration consumes that same manifest. API-reported prompt-token
+counts are retained per request to detect any offline/server template drift.
+
+```bash
+python benchmarks/qsa/qsa_reasoning_eval.py \
+  --task longbench-v2 \
+  --prepare-only \
+  --run-name longbench-v2-8k-16k-32k-seed42 \
+  --longbench-dataset /workspace/qwen_next/datasets/longbench-v2/0000.parquet \
+  --tokenizer /workspace/qwen_next/models/Qwen3.8-Flash-Next-de4b8e4 \
+  --output /workspace/qwen_next/qsa_accuracy/pr53896/longbench-v2/manifest.json
+```
+
+This is a kernel-correctness subset rather than an official 503-example
+leaderboard score. Accuracy, invalid answers, request errors, per-example
+Triton/PrimTS agreement, and input/output/total sequence distributions are
+reported separately for each token bucket. Generation uses the same exact
+sampling policy as the three-task matrix.
+
 ## Published-table reproduction gate
 
 PrimTS is paused until native Triton reproduces the supplied accuracy table.
