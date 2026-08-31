@@ -133,6 +133,23 @@ sampling policy as the three-task matrix. The server must use
 131,072-token generation allowance is 165,442 tokens. The three-task servers
 used 139,264 and are not restarted or repurposed for the full LongBench run.
 
+The existing 139,264-token servers were retained and used only for a
+three-item smoke with `max_tokens=1024`, choosing one frozen item per bucket.
+All three backends reported prompt-token counts exactly equal to the offline
+manifest and completed the 32,713-token item correctly:
+
+| Backend/cache/MTP | Prompts | Request errors | Correct | Invalid | Truncated |
+|---|---:|---:|---:|---:|---:|
+| Triton, FP8, MTP=3 | 3 | 0 | 2 | 0 | 1 |
+| PrimTS, BF16, MTP=0 | 3 | 0 | 1 | 1 | 1 |
+| PrimTS, FP8, MTP=0 | 3 | 0 | 2 | 1 | 1 |
+
+The invalid answers are outputs that reached the deliberately reduced smoke
+cap, not API or kernel failures. A diagnostic attempt to use the required
+131,072-token cap on the old server was rejected before inference because the
+10,366--34,370-token prompts exceed its remaining context allowance. Its 48
+HTTP-400 responses are retained for diagnosis and excluded from accuracy.
+
 ## Published-table reproduction gate
 
 PrimTS is paused until native Triton reproduces the supplied accuracy table.
