@@ -171,6 +171,10 @@ class QSAIndexer(nn.Module):
     def output_width(self) -> int:
         return self.token_topk + self.compress_ratio - 1
 
+    @property
+    def block_topk(self) -> int:
+        return self.token_topk // self.compress_ratio
+
     def _metadata(
         self,
     ) -> tuple[QSAForwardMetadata, QSAForwardMetadata] | None:
@@ -196,16 +200,19 @@ class QSAIndexer(nn.Module):
         hidden_states: torch.Tensor,
         positions: torch.Tensor,
         out: torch.Tensor | None = None,
+        *,
+        compact_blocks: bool = False,
     ) -> torch.Tensor:
-        """Return fixed-width request-relative token indices padded with ``-1``."""
+        """Return request-relative token IDs or compact four-token block IDs."""
 
         metadata = self._metadata()
         if metadata is None:
             # Preserve step-0 indices when later MTP steps reuse the buffer.
             if self.skip_topk and out is not None:
                 return out
+            selection_width = self.block_topk if compact_blocks else self.output_width
             result = torch.full(
-                (hidden_states.shape[0], self.output_width),
+                (hidden_states.shape[0], selection_width),
                 -1,
                 dtype=torch.int32,
                 device=hidden_states.device,
@@ -339,7 +346,8 @@ class QSAIndexer(nn.Module):
                 raise RuntimeError("QSA top-k reuse requires an output buffer")
             return out
 
-        # Score compressed keys, select blocks, then expand them to token indices.
+        # PrimTS consumes page-4 metadata, so it can retain the native 512
+        # selected block IDs and avoid the separate 2,051-token expansion.
         return qsa_select_paged_tokens(
             q,
             compressed_key_cache,
@@ -350,6 +358,7 @@ class QSAIndexer(nn.Module):
             self.token_topk,
             self.compress_ratio,
             out,
+            expand_blocks=not compact_blocks,
         )
 
 

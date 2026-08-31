@@ -302,10 +302,12 @@ class QSAInputs:
     q: torch.Tensor
     k_cache: torch.Tensor
     v_cache: torch.Tensor
+    block_indices: torch.Tensor
     logical_indices: torch.Tensor
     block_table: torch.Tensor
     token_to_req: torch.Tensor
     logical_positions: torch.Tensor
+    sequence_lengths: torch.Tensor
     compact_lengths: torch.Tensor
     adjacent_topk_overlap: float
 
@@ -334,9 +336,11 @@ class BenchmarkResult:
     selected_kv_tokens: int
     kv_bytes_per_token: int
     metadata_us: float
+    legacy_metadata_us: float
     qsa_attention_us: float
     qsa_end_to_end_us: float
     triton_sparse_us: float
+    triton_end_to_end_us: float
     contiguous_us: float
     triton_max_abs_diff: float
 
@@ -389,6 +393,7 @@ class UnionUpperBoundResult:
     launch_max_seq_len: int
     ideal_load_reduction: float
     metadata_us: float
+    legacy_metadata_us: float
     flattened_qsa_us: float
     union_upper_bound_us: float
     union_end_to_end_us: float
@@ -859,6 +864,9 @@ def _make_real_qsa_inputs(
     block_table = trace.block_table.to(device="cuda")
     token_to_req = trace.token_to_req.to(device="cuda")
     logical_positions = trace.logical_positions.to(device="cuda")
+    sequence_lengths = torch.tensor(
+        [trace.context_length], dtype=torch.int32, device="cuda"
+    )
     if topk_pattern == "captured":
         logical_indices = trace.logical_indices.to(device="cuda")
     else:
@@ -877,12 +885,6 @@ def _make_real_qsa_inputs(
             logical_positions,
             trace.storage_page_size,
         )
-        sequence_lengths = torch.full(
-            (1,),
-            trace.context_length,
-            dtype=torch.int32,
-            device="cuda",
-        )
         logical_indices = expand_qsa_block_indices_cuda(
             block_indices,
             logical_positions,
@@ -891,22 +893,27 @@ def _make_real_qsa_inputs(
             _COMPRESS_RATIO,
             _TOKEN_TOPK,
         )
-    selected_blocks = torch.div(
+    block_indices = torch.div(
         logical_indices[:, :_TOKEN_TOPK:_COMPRESS_RATIO],
         _COMPRESS_RATIO,
         rounding_mode="floor",
     )
+    complete_pages = torch.minimum(
+        (logical_positions + 1) // _COMPRESS_RATIO,
+        torch.tensor(_BLOCK_TOPK, dtype=torch.int64, device="cuda"),
+    )
+    block_indices = block_indices.masked_fill(
+        torch.arange(_BLOCK_TOPK, device="cuda").unsqueeze(0)
+        >= complete_pages.unsqueeze(1),
+        -1,
+    )
     adjacent_topk_overlap = _adjacent_topk_overlap(
-        selected_blocks,
+        block_indices,
         logical_positions,
         token_to_req,
         trace.context_length,
     )
     visible_tokens = logical_positions + 1
-    complete_pages = torch.minimum(
-        visible_tokens // _COMPRESS_RATIO,
-        torch.tensor(_BLOCK_TOPK, dtype=torch.int64, device="cuda"),
-    )
     compact_lengths = (
         complete_pages * _COMPRESS_RATIO + visible_tokens % _COMPRESS_RATIO
     ).to(torch.int32)
@@ -914,10 +921,12 @@ def _make_real_qsa_inputs(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
+        block_indices=block_indices,
         logical_indices=logical_indices,
         block_table=block_table,
         token_to_req=token_to_req,
         logical_positions=logical_positions,
+        sequence_lengths=sequence_lengths,
         compact_lengths=compact_lengths,
         adjacent_topk_overlap=adjacent_topk_overlap,
     )
@@ -1065,6 +1074,7 @@ def _run_union_upper_bound(
     flat_logical_indices = inputs.logical_indices.index_select(
         0, row_indices
     ).contiguous()
+    flat_block_indices = inputs.block_indices.index_select(0, row_indices).contiguous()
     flat_token_to_req = inputs.token_to_req.index_select(0, row_indices).contiguous()
     flat_positions = inputs.logical_positions.index_select(0, row_indices).contiguous()
     flat_compact_lengths = inputs.compact_lengths.index_select(
@@ -1079,12 +1089,14 @@ def _run_union_upper_bound(
         device="cuda",
     )
     flat_seq_lens = torch.empty(flat_rows, dtype=torch.int32, device="cuda")
+    flat_expanded_indices = torch.empty_like(flat_logical_indices)
     qsa_build_page4_paged_metadata(
-        flat_logical_indices,
+        flat_block_indices,
         inputs.block_table,
         flat_token_to_req,
         flat_positions,
         trace.storage_page_size,
+        indices_are_blocks=True,
         paged_kv_indptr=flat_indptr,
         paged_kv_indices=flat_indices,
         seq_lens=flat_seq_lens,
@@ -1139,9 +1151,7 @@ def _run_union_upper_bound(
     )
     observed_union_max_seq_len = int(union_seq_lens_cpu.max().item())
     union_max_seq_len = (
-        observed_union_max_seq_len
-        if static_max_seq_len is None
-        else static_max_seq_len
+        observed_union_max_seq_len if static_max_seq_len is None else static_max_seq_len
     )
     if union_max_seq_len < observed_union_max_seq_len:
         raise ValueError(
@@ -1174,6 +1184,7 @@ def _run_union_upper_bound(
         int(union_spec.config.splits_kv) if union_spec.config.use_split_kv else 1
     )
     union_metadata: Callable[[], object] | None = None
+    union_legacy_metadata: Callable[[], object] | None = None
     if membership_mode == "masked":
         (
             union_bitsets,
@@ -1181,18 +1192,44 @@ def _run_union_upper_bound(
             union_indices,
             union_seq_lens,
         ) = qsa_build_page4_grouped_paged_metadata(
-            flat_logical_indices,
+            flat_block_indices,
             inputs.block_table,
             flat_token_to_req,
             flat_positions,
             trace.storage_page_size,
             group_size,
+            indices_are_blocks=True,
         )
 
         def union_metadata() -> object:
             with torch.cuda.nvtx.range("union_metadata"):
                 return qsa_build_page4_grouped_paged_metadata(
-                    flat_logical_indices,
+                    flat_block_indices,
+                    inputs.block_table,
+                    flat_token_to_req,
+                    flat_positions,
+                    trace.storage_page_size,
+                    group_size,
+                    indices_are_blocks=True,
+                    bitset_workspace=union_bitsets,
+                    paged_kv_indptr=union_indptr,
+                    paged_kv_indices=union_indices,
+                    seq_lens=union_seq_lens,
+                )
+
+        def union_legacy_metadata() -> object:
+            with torch.cuda.nvtx.range("union_legacy_metadata"):
+                expand_qsa_block_indices_cuda(
+                    flat_block_indices,
+                    flat_positions,
+                    inputs.sequence_lengths,
+                    flat_token_to_req,
+                    _COMPRESS_RATIO,
+                    _TOKEN_TOPK,
+                    flat_expanded_indices,
+                )
+                return qsa_build_page4_grouped_paged_metadata(
+                    flat_expanded_indices,
                     inputs.block_table,
                     flat_token_to_req,
                     flat_positions,
@@ -1275,10 +1312,12 @@ def _run_union_upper_bound(
         q=flat_q,
         k_cache=inputs.k_cache,
         v_cache=inputs.v_cache,
+        block_indices=flat_block_indices,
         logical_indices=flat_logical_indices,
         block_table=inputs.block_table,
         token_to_req=flat_token_to_req,
         logical_positions=flat_positions,
+        sequence_lengths=inputs.sequence_lengths,
         compact_lengths=flat_compact_lengths,
         adjacent_topk_overlap=inputs.adjacent_topk_overlap,
     )
@@ -1460,7 +1499,12 @@ def _run_union_upper_bound(
     if benchmark_flattened:
         timing_functions["flattened"] = flattened_attention
     if union_metadata is not None:
-        timing_functions = {"metadata": union_metadata, **timing_functions}
+        assert union_legacy_metadata is not None
+        timing_functions = {
+            "metadata": union_metadata,
+            "legacy_metadata": union_legacy_metadata,
+            **timing_functions,
+        }
     timings = _time_cuda_interleaved(timing_functions, **timing_args)
     return UnionUpperBoundResult(
         tp_size=tp_size,
@@ -1480,6 +1524,7 @@ def _run_union_upper_bound(
         launch_max_seq_len=union_max_seq_len,
         ideal_load_reduction=ideal_load_reduction,
         metadata_us=timings.get("metadata", math.nan),
+        legacy_metadata_us=timings.get("legacy_metadata", math.nan),
         flattened_qsa_us=timings.get("flattened", math.nan),
         union_upper_bound_us=timings["union"],
         union_end_to_end_us=timings["union_end_to_end"],
@@ -1621,10 +1666,12 @@ def _make_qsa_inputs(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
+        block_indices=block_indices,
         logical_indices=logical_indices,
         block_table=block_table,
         token_to_req=token_to_req,
         logical_positions=logical_positions,
+        sequence_lengths=sequence_lengths,
         compact_lengths=compact_lengths,
         adjacent_topk_overlap=adjacent_topk_overlap,
     )
@@ -1872,11 +1919,35 @@ def _run_case(
         device="cuda",
     )
     seq_lens = torch.empty(workload.rows, dtype=torch.int32, device="cuda")
+    expanded_indices = torch.empty_like(inputs.logical_indices)
 
     def build_metadata() -> None:
         with torch.cuda.nvtx.range("qsa_metadata"):
             qsa_build_page4_paged_metadata(
-                inputs.logical_indices,
+                inputs.block_indices,
+                inputs.block_table,
+                inputs.token_to_req,
+                inputs.logical_positions,
+                storage_page_size,
+                indices_are_blocks=True,
+                paged_kv_indptr=paged_kv_indptr,
+                paged_kv_indices=paged_kv_indices,
+                seq_lens=seq_lens,
+            )
+
+    def build_legacy_metadata() -> None:
+        with torch.cuda.nvtx.range("qsa_legacy_metadata"):
+            expand_qsa_block_indices_cuda(
+                inputs.block_indices,
+                inputs.logical_positions,
+                inputs.sequence_lengths,
+                inputs.token_to_req,
+                _COMPRESS_RATIO,
+                _TOKEN_TOPK,
+                expanded_indices,
+            )
+            qsa_build_page4_paged_metadata(
+                expanded_indices,
                 inputs.block_table,
                 inputs.token_to_req,
                 inputs.logical_positions,
@@ -1932,6 +2003,27 @@ def _run_case(
                 triton_output,
             )
 
+    def triton_end_to_end() -> None:
+        expand_qsa_block_indices_cuda(
+            inputs.block_indices,
+            inputs.logical_positions,
+            inputs.sequence_lengths,
+            inputs.token_to_req,
+            _COMPRESS_RATIO,
+            _TOKEN_TOPK,
+            expanded_indices,
+        )
+        with torch.cuda.nvtx.range("triton_sparse_attention"):
+            qsa_sparse_paged_attention(
+                inputs.q,
+                triton_k_cache,
+                triton_v_cache,
+                expanded_indices,
+                inputs.block_table,
+                inputs.token_to_req,
+                triton_output,
+            )
+
     (
         baseline_k,
         baseline_v,
@@ -1973,10 +2065,7 @@ def _run_case(
     output_diff = (qsa_output.float() - triton_output.float()).abs()
     triton_max_abs_diff = float(output_diff.max().item())
     comparison_atol = _comparison_atol()
-    if (
-        not math.isfinite(triton_max_abs_diff)
-        or triton_max_abs_diff > comparison_atol
-    ):
+    if not math.isfinite(triton_max_abs_diff) or triton_max_abs_diff > comparison_atol:
         row_diffs = torch.nan_to_num(
             output_diff.flatten(1).amax(dim=1),
             nan=float("inf"),
@@ -2039,9 +2128,11 @@ def _run_case(
     timings = _time_cuda_interleaved(
         {
             "metadata": build_metadata,
+            "legacy_metadata": build_legacy_metadata,
             "qsa": qsa_attention,
             "qsa_end_to_end": qsa_end_to_end,
             "triton": triton_sparse_attention,
+            "triton_end_to_end": triton_end_to_end,
             "contiguous": contiguous_attention,
         },
         **timing_args,
@@ -2061,9 +2152,11 @@ def _run_case(
             2 * num_kv_heads * _HEAD_DIM * inputs.k_cache.element_size()
         ),
         metadata_us=timings["metadata"],
+        legacy_metadata_us=timings["legacy_metadata"],
         qsa_attention_us=timings["qsa"],
         qsa_end_to_end_us=timings["qsa_end_to_end"],
         triton_sparse_us=timings["triton"],
+        triton_end_to_end_us=timings["triton_end_to_end"],
         contiguous_us=timings["contiguous"],
         triton_max_abs_diff=triton_max_abs_diff,
     )
@@ -2072,7 +2165,8 @@ def _run_case(
 def _print_header() -> None:
     header = (
         " phase    TP    route     topk  contig overlap tail   BS    SQ   rows "
-        "compact_KV metadata_us qsa_us qsa_e2e_us triton_us contig_us "
+        "compact_KV metadata_us legacy_meta_us qsa_us qsa_e2e_us "
+        "triton_us triton_e2e_us contig_us "
         "selected_KV nominal_KV_GB qsa_KV_TBps contig_KV_TBps "
         "qsa/contig e2e/contig triton/contig max_diff"
     )
@@ -2097,9 +2191,12 @@ def _print_result(result: BenchmarkResult) -> None:
         f"{end_tail:>4} "
         f"{workload.batch_size:>4} {workload.seq_len_q:>5} "
         f"{workload.rows:>6} {compact_range:>10} "
-        f"{result.metadata_us:>11.2f} {result.qsa_attention_us:>6.2f} "
+        f"{result.metadata_us:>11.2f} {result.legacy_metadata_us:>14.2f} "
+        f"{result.qsa_attention_us:>6.2f} "
         f"{result.qsa_end_to_end_us:>10.2f} "
-        f"{result.triton_sparse_us:>9.2f} {result.contiguous_us:>9.2f} "
+        f"{result.triton_sparse_us:>9.2f} "
+        f"{result.triton_end_to_end_us:>13.2f} "
+        f"{result.contiguous_us:>9.2f} "
         f"{result.selected_kv_tokens:>11} "
         f"{result.selected_kv_gb:>13.2f} "
         f"{result.qsa_effective_kv_tbps:>11.2f} "
@@ -2115,7 +2212,8 @@ def _print_union_header() -> None:
     header = (
         " union TP group membership scope groups split mean_union max_union launch_KV "
         "load_reduction "
-        "metadata_us flat_qsa_us union_us union_e2e_us triton_us swa4_us "
+        "metadata_us legacy_meta_us flat_qsa_us union_us union_e2e_us "
+        "triton_us swa4_us "
         "proj_swa_us speedup "
         "source_KV union_KV swa4_KV nonshared source_GB union_GB "
         "flat_logical_KV_TBps union_logical_KV_TBps "
@@ -2135,6 +2233,7 @@ def _print_union_result(result: UnionUpperBoundResult) -> None:
         f"{result.max_union_blocks:>9} {result.launch_max_seq_len:>9} "
         f"{result.ideal_load_reduction:>14.3f} "
         f"{result.metadata_us:>11.2f} "
+        f"{result.legacy_metadata_us:>14.2f} "
         f"{result.flattened_qsa_us:>11.2f} "
         f"{result.union_upper_bound_us:>8.2f} "
         f"{result.union_end_to_end_us:>12.2f} "
@@ -2417,9 +2516,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _QKV_DTYPE = (
-        torch.bfloat16 if args.qkv_dtype == "bf16" else torch.float8_e4m3fn
-    )
+    _QKV_DTYPE = torch.bfloat16 if args.qkv_dtype == "bf16" else torch.float8_e4m3fn
 
     if not torch.cuda.is_available():
         raise RuntimeError("QSA PrimTS benchmark requires CUDA")
@@ -2661,8 +2758,7 @@ def main() -> None:
             grouped_sizes = tuple(
                 group_size
                 for group_size in args.decode_union_group_sizes
-                if workload.phase == "decode"
-                and workload.seq_len_q % group_size == 0
+                if workload.phase == "decode" and workload.seq_len_q % group_size == 0
             )
             if not (args.decode_union_only and grouped_sizes):
                 result = _run_case(

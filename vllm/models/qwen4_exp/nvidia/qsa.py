@@ -293,6 +293,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         if topk_buffer is None:
             raise RuntimeError("QSA owner did not provide its top-k buffer")
         logical_indices = topk_buffer[:num_tokens]
+        indices_are_blocks = bool(getattr(layer, "qsa_indices_are_blocks", False))
         token_to_req = token_to_req[:num_tokens]
         logical_positions = logical_positions[:num_tokens]
         if query.dtype != torch.bfloat16 or output.dtype != torch.bfloat16:
@@ -307,10 +308,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 raise ValueError("FP8 QSA cache storage must use encoded uint8 bytes")
             kv_cache = kv_cache.view(current_platform.fp8_dtype())
             fp8_query_buffer = getattr(layer, "_qsa_fp8_query_buffer", None)
-            if (
-                fp8_query_buffer is None
-                or fp8_query_buffer.shape[0] < num_tokens
-            ):
+            if fp8_query_buffer is None or fp8_query_buffer.shape[0] < num_tokens:
                 raise RuntimeError("QSA owner did not provide its FP8 query buffer")
             query_for_attention = fp8_query_buffer[:num_tokens]
             custom_ops.scaled_fp8_quant(
@@ -395,7 +393,11 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 query_start_loc_cpu,
             )
             route_rows = route_capacity // group_size
-            page_capacity = (logical_indices.shape[1] + 3) // 4
+            page_capacity = (
+                logical_indices.shape[1] + 1
+                if indices_are_blocks
+                else (logical_indices.shape[1] + 3) // 4
+            )
             indptr_buffer = getattr(layer, "qsa_paged_kv_indptr_buffer", None)
             indices_buffer = getattr(layer, "qsa_paged_kv_indices_buffer", None)
             seq_lens_buffer = getattr(layer, "qsa_seq_lens_buffer", None)
@@ -415,6 +417,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                     token_to_req,
                     logical_positions,
                     prims_key_cache.shape[2],
+                    indices_are_blocks=indices_are_blocks,
                     paged_kv_indptr=paged_kv_indptr,
                     paged_kv_indices=paged_kv_indices,
                     seq_lens=seq_lens,
@@ -436,6 +439,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                     logical_positions,
                     prims_key_cache.shape[2],
                     group_size,
+                    indices_are_blocks=indices_are_blocks,
                     bitset_workspace=bitset_workspace,
                     paged_kv_indptr=paged_kv_indptr,
                     paged_kv_indices=paged_kv_indices,
@@ -645,11 +649,17 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             prefix=f"{prefix}.indexer",
         )
         max_tokens = vllm_config.scheduler_config.max_num_batched_tokens
+        self.qsa_indices_are_blocks = self.impl.use_qsa_prims_ts
+        selection_width = (
+            self.indexer.block_topk
+            if self.qsa_indices_are_blocks
+            else self.indexer.output_width
+        )
         self.register_buffer(
             "topk_indices_buffer",
             torch.empty(
                 max_tokens,
-                self.indexer.output_width,
+                selection_width,
                 dtype=torch.int32,
             ),
             persistent=False,
@@ -699,7 +709,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 torch.full((max_tokens,), -1, dtype=torch.int64),
                 persistent=False,
             )
-            page_capacity = (self.indexer.output_width + 3) // 4
+            page_capacity = self.indexer.block_topk + 1
             self.register_buffer(
                 "qsa_paged_kv_indptr_buffer",
                 torch.empty(max_tokens + 1, dtype=torch.int32),
@@ -774,10 +784,11 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             hidden_states,
             positions,
             self.topk_indices_buffer[:num_tokens],
+            compact_blocks=self.qsa_indices_are_blocks,
         )
         if selected.shape != (
             num_tokens,
-            self.indexer.output_width,
+            self.topk_indices_buffer.shape[1],
         ):
             raise RuntimeError("QSA indexer returned an invalid selection shape")
         impl = cast(Qwen4ExpQSAFlashAttentionImpl, self.impl)

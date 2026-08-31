@@ -801,6 +801,24 @@ def test_qsa_selection_chunks_workspace_and_matches_test_reference(
         token_topk,
         compress_ratio,
     )
+    compact_out = torch.empty(
+        rows,
+        token_topk // compress_ratio,
+        dtype=torch.int32,
+        device="cuda",
+    )
+    compact = qsa_ops.qsa_select_paged_tokens(
+        q,
+        cache,
+        page_table,
+        token_to_req,
+        query_positions,
+        sequence_lengths,
+        token_topk,
+        compress_ratio,
+        compact_out,
+        expand_blocks=False,
+    )
     expected = _qsa_select_paged_tokens_reference(
         q,
         cache,
@@ -813,7 +831,10 @@ def test_qsa_selection_chunks_workspace_and_matches_test_reference(
     )
 
     torch.testing.assert_close(actual.sort().values, expected.sort().values)
-    assert scored_row_counts == [32, 32, 1]
+    expected_blocks = expected[:, :token_topk:compress_ratio] // compress_ratio
+    torch.testing.assert_close(compact.sort().values, expected_blocks.sort().values)
+    assert compact.data_ptr() == compact_out.data_ptr()
+    assert scored_row_counts == [32, 32, 1, 32, 32, 1]
 
 
 @requires_qsa_kernels
@@ -1010,8 +1031,7 @@ def test_qsa_attention_backend_selection(
     else:
         monkeypatch.setenv(_QSA_BACKEND_ENV, backend)
     assert (
-        _resolve_qsa_prims_ts_backend(capable=capable, available=available)
-        is expected
+        _resolve_qsa_prims_ts_backend(capable=capable, available=available) is expected
     )
 
 
@@ -1045,8 +1065,10 @@ def test_qsa_prims_ts_batch_capacity_uses_bounded_power_of_two_buckets() -> None
         _qsa_prims_ts_batch_capacity(16385, 16384)
 
 
+@pytest.mark.parametrize("indices_are_blocks", [False, True])
 def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     monkeypatch: pytest.MonkeyPatch,
+    indices_are_blocks: bool,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
 
@@ -1056,7 +1078,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     num_kv_heads = 1
     head_dim = 256
     storage_page_size = 16
-    selection_width = 2051
+    selection_width = 512 if indices_are_blocks else 2051
     page_capacity = 513
     query = torch.zeros(rows, num_query_heads, head_dim, dtype=torch.bfloat16)
     kv_cache = torch.zeros(
@@ -1071,12 +1093,11 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     token_to_req = torch.tensor([0, 1, 0], dtype=torch.int32)
     logical_positions = torch.tensor([2, 3, 4], dtype=torch.int64)
     layer = SimpleNamespace(
+        qsa_indices_are_blocks=indices_are_blocks,
         topk_indices_buffer=torch.full(
             (route_capacity, selection_width), -1, dtype=torch.int32
         ),
-        qsa_paged_kv_indptr_buffer=torch.empty(
-            route_capacity + 1, dtype=torch.int32
-        ),
+        qsa_paged_kv_indptr_buffer=torch.empty(route_capacity + 1, dtype=torch.int32),
         qsa_paged_kv_indices_buffer=torch.empty(
             route_capacity * page_capacity, dtype=torch.int32
         ),
@@ -1105,13 +1126,12 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     calls: dict[str, object] = {}
 
     def fake_build_metadata(*_args, **buffers) -> None:
+        assert buffers["indices_are_blocks"] is indices_are_blocks
         buffers["paged_kv_indptr"].copy_(
             torch.arange(route_capacity + 1, dtype=torch.int32) * page_capacity
         )
         buffers["paged_kv_indices"].fill_(-1)
-        buffers["seq_lens"].copy_(
-            torch.tensor([3, 1, 1, 1], dtype=torch.int32)
-        )
+        buffers["seq_lens"].copy_(torch.tensor([3, 1, 1, 1], dtype=torch.int32))
         assert _args[0].shape[0] == route_capacity
         assert _args[2].shape == _args[3].shape == (route_capacity,)
         assert int(_args[3][-1]) == -1
@@ -1130,7 +1150,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         )
         assert key_cache.shape == (3, 1, storage_page_size, head_dim)
         assert key_cache.stride(-1) == 1
-        assert max_seq_len == selection_width
+        assert max_seq_len == 2051
         assert out_dtype == torch.bfloat16
         return 128
 
@@ -1149,11 +1169,15 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         bmm2_scale: float,
     ) -> torch.Tensor:
         torch.testing.assert_close(actual_query[:rows], query)
-        assert key_cache.shape == value_cache.shape == (
-            3,
-            1,
-            storage_page_size,
-            head_dim,
+        assert (
+            key_cache.shape
+            == value_cache.shape
+            == (
+                3,
+                1,
+                storage_page_size,
+                head_dim,
+            )
         )
         assert workspace.shape == (128,)
         assert bmm1_scale == head_dim**-0.5
@@ -1388,9 +1412,12 @@ def test_qsa_page4_metadata_matches_test_reference(
         token_topk,
     )
     table_width = math.ceil(4096 / storage_page_size)
-    block_table = torch.arange(
-        3 * table_width, dtype=torch.int32, device="cuda"
-    ).reshape(3, table_width).flip(1).contiguous()
+    block_table = (
+        torch.arange(3 * table_width, dtype=torch.int32, device="cuda")
+        .reshape(3, table_width)
+        .flip(1)
+        .contiguous()
+    )
 
     actual = qsa_ops.qsa_build_page4_paged_metadata(
         logical_indices,
@@ -1398,6 +1425,14 @@ def test_qsa_page4_metadata_matches_test_reference(
         token_to_req,
         logical_positions,
         storage_page_size,
+    )
+    compact_actual = qsa_ops.qsa_build_page4_paged_metadata(
+        blocks,
+        block_table,
+        token_to_req,
+        logical_positions,
+        storage_page_size,
+        indices_are_blocks=True,
     )
     expected = _qsa_page4_paged_metadata_reference(
         logical_indices,
@@ -1408,6 +1443,8 @@ def test_qsa_page4_metadata_matches_test_reference(
     )
 
     for actual_tensor, expected_tensor in zip(actual, expected, strict=True):
+        torch.testing.assert_close(actual_tensor, expected_tensor)
+    for actual_tensor, expected_tensor in zip(compact_actual, expected, strict=True):
         torch.testing.assert_close(actual_tensor, expected_tensor)
 
 
@@ -1420,9 +1457,7 @@ def test_qsa_grouped_page4_metadata_reinitializes_owned_bitsets() -> None:
     positions = torch.tensor(
         [12, 13, 14, 15, 20, 21, 22, 23], dtype=torch.int64, device="cuda"
     )
-    requests = torch.tensor(
-        [0, 0, 0, 0, 1, 1, 1, 1], dtype=torch.int32, device="cuda"
-    )
+    requests = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1], dtype=torch.int32, device="cuda")
     selected_blocks = (
         (0, 2, 4, 6),
         (1, 2, 4, 6),
@@ -1471,7 +1506,6 @@ def test_qsa_grouped_page4_metadata_reinitializes_owned_bitsets() -> None:
         paged_kv_indices=locators,
         seq_lens=seq_lens,
     )
-
     page_capacity = group_size * (token_topk // 4 + 1)
     assert indptr.tolist() == [0, page_capacity, 2 * page_capacity]
     for group in range(2):
@@ -1496,3 +1530,64 @@ def test_qsa_grouped_page4_metadata_reinitializes_owned_bitsets() -> None:
             torch.tensor(expected, dtype=torch.int32),
         )
         assert int(seq_lens[group].item()) == 4 * len(expected)
+
+
+@requires_qsa_triton
+def test_qsa_grouped_compact_metadata_matches_real_expansion() -> None:
+    group_size = 4
+    token_topk = 2048
+    compress_ratio = 4
+    storage_page_size = 16
+    positions = torch.tensor(
+        [2047, 2048, 2049, 2050, 2051, 2052, 2053, 2054],
+        dtype=torch.int64,
+        device="cuda",
+    )
+    requests = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1], dtype=torch.int32, device="cuda")
+    sequence_lengths = torch.tensor([4096, 4096], dtype=torch.int32, device="cuda")
+    base_blocks = torch.arange(token_topk // 4, dtype=torch.int32, device="cuda")
+    compact_blocks = torch.stack(
+        [torch.roll(base_blocks, row) for row in range(positions.numel())]
+    )
+    expanded_tokens = qsa_ops.expand_qsa_block_indices_cuda(
+        compact_blocks,
+        positions,
+        sequence_lengths,
+        requests,
+        compress_ratio,
+        token_topk,
+    )
+    table_width = 4096 // storage_page_size
+    block_table = torch.arange(
+        2 * table_width, dtype=torch.int32, device="cuda"
+    ).reshape(2, table_width)
+
+    expanded = qsa_ops.qsa_build_page4_grouped_paged_metadata(
+        expanded_tokens,
+        block_table,
+        requests,
+        positions,
+        storage_page_size,
+        group_size,
+    )
+    compact = qsa_ops.qsa_build_page4_grouped_paged_metadata(
+        compact_blocks,
+        block_table,
+        requests,
+        positions,
+        storage_page_size,
+        group_size,
+        indices_are_blocks=True,
+    )
+
+    _, expanded_indptr, expanded_locators, expanded_seq_lens = expanded
+    _, compact_indptr, compact_locators, compact_seq_lens = compact
+    torch.testing.assert_close(compact_indptr, expanded_indptr)
+    torch.testing.assert_close(compact_seq_lens, expanded_seq_lens)
+    for group in range(positions.numel() // group_size):
+        begin = int(expanded_indptr[group].item())
+        live_pages = (int(expanded_seq_lens[group].item()) + 3) // 4
+        torch.testing.assert_close(
+            compact_locators[begin : begin + live_pages],
+            expanded_locators[begin : begin + live_pages],
+        )
