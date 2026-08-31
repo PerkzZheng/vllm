@@ -640,18 +640,28 @@ and
 `qsa_compact_metadata_bf16_decode_q4_tp12_cold_graph_10w100i_job624558.log`
 in the workspace root.
 
-The BF16 Q1 checkpoint is unchanged by the FP8 work:
+The BF16 Q1 checkpoint is superseded by the output-row-parallel FP32 reducer,
+physical KV64 virtual-BLOCK_N16 route, and one-wave native-KV64 split policy.
+The table uses the same cold-L2, CUDA-graph, interleaved 10-warmup/100-sample
+protocol. Ranges cover tails zero and three; times are microseconds.
 
 | TP | BS | PrimTS | Triton | contiguous SWA2K |
 |---:|---:|---:|---:|---:|
-| 1 | 1 | 32.71--32.82 | 17.80--18.03 | 26.26--26.39 |
-| 1 | 8 | 61.21--61.61 | 28.53--28.70 | 28.57--28.62 |
-| 1 | 64 | 92.18--92.60 | 79.89--80.19 | 61.08--61.13 |
-| 1 | 256 | 244.02--245.65 | 211.48--212.18 | 182.02 |
-| 2 | 1 | 31.11--31.73 | 16.30--16.63 | 25.57--25.90 |
-| 2 | 8 | 39.14--40.85 | about 24.67 | 26.82--28.15 |
-| 2 | 64 | 59.53--60.08 | about 55.68 | 39.56--39.90 |
-| 2 | 256 | 161.20--162.63 | 124.95--126.32 | 103.40--103.64 |
+| 1 | 1 | 18.64--18.70 | 17.49--18.11 | 26.05--26.34 |
+| 1 | 8 | 20.78--22.55 | 28.67--28.72 | 28.58--28.69 |
+| 1 | 64 | 68.21--69.53 | 79.90--80.98 | 61.02--61.09 |
+| 1 | 256 | 208.73--211.92 | 211.36--212.11 | 181.88--181.99 |
+| 2 | 1 | 18.39--18.41 | 16.18--16.56 | 26.39--26.41 |
+| 2 | 8 | 19.38--20.14 | about 24.67 | 27.14--27.69 |
+| 2 | 64 | 44.79--45.27 | 55.41--55.62 | 40.02--40.38 |
+| 2 | 256 | 114.58--116.15 | 124.95--125.06 | 103.24--103.74 |
+
+At BS64/256 the worst attention/contiguous ratio is `1.164x`; the worst
+compact-metadata-inclusive ratio is `1.180x`. BS1/8 is faster than contiguous,
+and PrimTS is faster than Triton except at BS1. All rows have maximum
+difference at or below `0.00098`. The full vLLM QSA reference suite passes
+(`57 passed`). The accepted raw log is
+`qsa_bf16_q1_onewave_native_kv64_tp12_full_cold_graph_10w100i_job624558.log`.
 
 The FP8 audit found that production Q1 used one loader warp, while a separate
 multi-warp `SmemKvResource` path replayed all 32 page-fragment TMAs from every
@@ -703,9 +713,11 @@ Rejected experiments are kept out of production:
 - Four-to-eight Q1 loader warps is correct but slower at 32.1--37.1
   microseconds; sixteen loader warps do not make forward progress in the task
   graph.
-- BF16 physical KV64 produces a 0.153564 maximum error even after membership
-  and tail-mask fixes, locating the incompatibility below masking in the
-  score/PV schedule.
+- The initial BF16 physical-KV64 BLOCK_N16 experiment produced a 0.153564
+  maximum error because per-tile staging multiplied a raw page-unit base by
+  `pages_per_tile` a second time. Correct page-unit addressing and inert
+  padding locators reduce the maximum difference below 0.001; physical KV64
+  is now the qualified route.
 - FP8 virtual BLOCK_N32 improves low-grid timing to roughly 29--37
   microseconds but exceeds the accepted numerical tolerance on randomized
   routes and tails, so the production recurrence remains unchanged.
