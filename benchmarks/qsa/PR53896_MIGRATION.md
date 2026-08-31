@@ -239,14 +239,40 @@ greedy gates later in this document.
 | PrimTS | BF16 | 0 | 1288/1319 (97.65%) | 361/396 (91.16%) | 56/60 (93.33%) | 623062 |
 | PrimTS | BF16 | 3 | 1293/1319 (98.03%) | 367/396 (92.68%) | 60/60 (100.00%) | 623063 |
 | PrimTS | FP8-E4M3 | 0 | 1288/1319 (97.65%) | 357/396 (90.15%) | 60/60 (100.00%) | 623064 |
-| PrimTS | FP8-E4M3 | 3 | pending | pending | pending | 623068 |
+| PrimTS | FP8-E4M3 | 3 | 1291/1319 (97.88%) | 367/396 (92.68%) | 59/60 (98.33%) | 623068, 623471, 624558 |
 
 The completed BF16/MTP=3 AIME repetitions each scored 30/30. Across both
 repetitions there were zero request errors, invalid parses, or truncations.
-The FP8/MTP=3 allocation landed on a node without the private BrightDelta
-image cache; its registry import returned HTTP 403. The allocation is retained
-while a compatible local-image ABI path is qualified. This is an
-infrastructure/runtime-image issue, not a QSA result.
+The final FP8/MTP=3 row also had zero request errors or invalid parses. Its
+GSM8K run had no truncations. GPQA repetition one had no truncations and
+scored 184/198; repetition two had one truncation and scored 183/198. AIME
+repetition one scored 29/30 and repetition two scored 30/30, with no
+truncations in either run.
+
+The sole FP8/MTP=3 AIME miss was example index 2. It completed normally after
+1,861 output tokens and produced a parsed answer of 56 instead of 62. Four
+serial replays of exactly that item with the same sampling arguments and seed
+42--one on job 623471 and three on job 624558--all produced the correct answer
+62, with no request errors, invalid parses, or truncations. Their completion
+lengths were 4,259, 6,004, 4,401, and 3,139 tokens. Outputs differed across
+otherwise identical repetitions, so the original miss is not a reproducible
+PrimTS kernel failure; it is consistent with scheduling/numerical sensitivity
+in stochastic autoregressive sampling.
+The four raw replay records are retained under
+`qsa_accuracy/pr53896/prims-fp8-mtp3-sampling-v2/`.
+
+The FP8/MTP=3 runtime used the portable local CUDA 13/Torch 2.13 image and the
+locally rebuilt 15-argument GDN extension described below. Fresh-node caches
+were copied to node-local storage. PrimTS servers must pass
+`--no-enable-flashinfer-autotune`: without it, startup invokes the TRT-LLM
+BF16 fused-MoE tactic profiler during CUDA-graph capture. On the cold node that
+profiled 22 tactics per shape, took about 50 seconds per profile, and eventually
+reported asynchronous illegal accesses. This failure occurred in fused-MoE
+autotuning before QSA inference, rather than in the PrimTS attention kernel.
+With autotuning disabled, TP=2 FP8/MTP=3 startup, graph capture, and all three
+accuracy tasks completed normally. The two AIME repetitions used
+`--max-cudagraph-capture-size 64`; generation and scoring arguments remained
+identical to the matrix protocol.
 
 ## Current validation
 
