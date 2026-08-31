@@ -557,6 +557,10 @@ async def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
                         args.url, json=payload
                     ) as response:
                         body = await response.text()
+                        if response.status >= 400:
+                            raise RuntimeError(
+                                f"HTTP {response.status}: {body[:2000]}"
+                            )
                         response.raise_for_status()
                     result = json.loads(body)
                     choice = result["choices"][0]

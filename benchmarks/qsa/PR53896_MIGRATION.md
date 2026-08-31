@@ -128,7 +128,10 @@ This is a kernel-correctness subset rather than an official 503-example
 leaderboard score. Accuracy, invalid answers, request errors, per-example
 Triton/PrimTS agreement, and input/output/total sequence distributions are
 reported separately for each token bucket. Generation uses the same exact
-sampling policy as the three-task matrix.
+sampling policy as the three-task matrix. The server must use
+`--max-model-len 196608` or greater: the largest frozen prompt plus the
+131,072-token generation allowance is 165,442 tokens. The three-task servers
+used 139,264 and are not restarted or repurposed for the full LongBench run.
 
 ## Published-table reproduction gate
 
