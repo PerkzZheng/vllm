@@ -299,8 +299,11 @@ identical to the matrix protocol.
 - `benchmarks/qsa/runtime_overlay/sitecustomize.py` keeps the image's
   ABI-matched FlashInfer root, GDN, fused-MoE, cubins, and vLLM extensions. It
   overlays only the local FlashInfer attention package and attention trace
-  templates, then exports the three page-4 PrimTS APIs through
-  `flashinfer.decode`. Set `QSA_FLASHINFER_SOURCE` and
+  templates, then exports the native-CSR and unified QSA PrimTS APIs through
+  `flashinfer.decode`. The unified exports include workspace sizing, compact
+  metadata construction, and the high-level attention call; omitting these
+  symbols silently disables the PrimTS backend in vLLM's optional capability
+  resolver. Set `QSA_FLASHINFER_SOURCE` and
   `QSA_CUTLASS_DSL_PACKAGES` to enable these two narrow overlays.
 - A cold-L2 eager decode smoke at TP=2, BS=1, SQ=1, pre-sparse KV=8192 ran the
   real compiled PrimTS kernel successfully. Its maximum difference from the

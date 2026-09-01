@@ -104,6 +104,17 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
     ):
         setattr(public_decode, name, getattr(prims_decode, name))
 
+    qsa_metadata = importlib.import_module(
+        "flashinfer.attention.prims_ts.qsa_metadata"
+    )
+    for name in (
+        "build_prims_ts_qsa_page4_metadata",
+        "get_prims_ts_qsa_metadata_workspace_size",
+        "get_prims_ts_qsa_workspace_size",
+        "prims_ts_qsa_attention",
+    ):
+        setattr(public_decode, name, getattr(qsa_metadata, name))
+
 
 if packages := os.environ.get("QSA_CUTLASS_DSL_PACKAGES"):
     _overlay_cutlass_dsl(Path(packages).resolve())
