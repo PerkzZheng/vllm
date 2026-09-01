@@ -53,11 +53,9 @@ from vllm.models.qwen4_exp.nvidia.ops.qsa import (
     has_qsa_prims_ts_attention,
     qsa_build_page4_grouped_paged_metadata,
     qsa_build_page4_paged_metadata,
-    qsa_prims_ts_attention,
     qsa_prims_ts_build_page4_metadata,
     qsa_prims_ts_metadata_workspace_size,
     qsa_prims_ts_paged_attention,
-    qsa_prims_ts_unified_workspace_size,
     qsa_prims_ts_workspace_size,
     qsa_sparse_paged_attention,
 )
@@ -343,7 +341,6 @@ class BenchmarkResult:
     legacy_metadata_us: float
     qsa_attention_us: float
     qsa_end_to_end_us: float
-    qsa_unified_end_to_end_us: float
     triton_sparse_us: float
     triton_end_to_end_us: float
     contiguous_us: float
@@ -412,7 +409,6 @@ class UnionUpperBoundResult:
     flattened_qsa_us: float
     union_upper_bound_us: float
     union_end_to_end_us: float
-    unified_end_to_end_us: float
     triton_sparse_us: float
     triton_end_to_end_us: float
     grouped_swa_us: float
@@ -1235,9 +1231,6 @@ def _run_union_upper_bound(
     )
     union_metadata: Callable[[], object] | None = None
     union_legacy_metadata: Callable[[], object] | None = None
-    unified_workspace: torch.Tensor | None = None
-    unified_indptr: torch.Tensor | None = None
-    unified_seq_lens: torch.Tensor | None = None
     if membership_mode == "masked":
         union_page_capacity = group_size * (_BLOCK_TOPK + 1)
         union_indptr = torch.empty(num_groups + 1, dtype=torch.int32, device="cuda")
@@ -1269,28 +1262,6 @@ def _run_union_upper_bound(
             union_indices,
             union_seq_lens,
         )
-        unified_workspace = torch.empty(
-            qsa_prims_ts_unified_workspace_size(
-                union_q,
-                inputs.k_cache,
-                inputs.block_table,
-                _BLOCK_TOPK,
-                out_dtype=_output_dtype(),
-            ),
-            dtype=torch.uint8,
-            device="cuda",
-        )
-        unified_indptr = torch.empty(
-            num_groups + 1,
-            dtype=torch.int32,
-            device="cuda",
-        )
-        unified_seq_lens = torch.empty(
-            num_groups,
-            dtype=torch.int32,
-            device="cuda",
-        )
-
         def union_metadata() -> object:
             with torch.cuda.nvtx.range("union_metadata"):
                 return qsa_prims_ts_build_page4_metadata(
@@ -1372,9 +1343,6 @@ def _run_union_upper_bound(
         device="cuda",
     )
     union_output = _empty_output_like(union_q)
-    unified_output = (
-        _empty_output_like(union_q) if membership_mode == "masked" else None
-    )
 
     def union_attention() -> None:
         with torch.cuda.nvtx.range("union_attention"):
@@ -1398,27 +1366,6 @@ def _run_union_upper_bound(
         if union_metadata is not None:
             union_metadata()
         union_attention()
-
-    def unified_end_to_end() -> None:
-        assert unified_workspace is not None
-        assert unified_indptr is not None
-        assert unified_seq_lens is not None
-        assert unified_output is not None
-        with torch.cuda.nvtx.range("union_unified_end_to_end"):
-            qsa_prims_ts_attention(
-                union_q,
-                inputs.k_cache,
-                inputs.v_cache,
-                flat_block_indices,
-                inputs.block_table,
-                flat_token_to_req,
-                flat_positions,
-                unified_indptr,
-                unified_seq_lens,
-                unified_workspace,
-                out=unified_output,
-                bmm1_scale=_HEAD_DIM**-0.5,
-            )
 
     subset_inputs = QSAInputs(
         q=flat_q,
@@ -1484,22 +1431,8 @@ def _run_union_upper_bound(
     if union_metadata is not None:
         union_metadata()
     union_attention()
-    if unified_workspace is not None:
-        unified_end_to_end()
     grouped_swa_attention()
     torch.cuda.synchronize()
-    if unified_workspace is not None:
-        assert unified_indptr is not None
-        assert unified_seq_lens is not None
-        assert unified_output is not None
-        torch.testing.assert_close(unified_indptr, union_indptr)
-        torch.testing.assert_close(unified_seq_lens, union_seq_lens)
-        torch.testing.assert_close(
-            unified_output.float(),
-            union_output.float(),
-            rtol=_comparison_atol(),
-            atol=_comparison_atol(),
-        )
     # PyTorch does not implement isfinite for float8 tensors.  Convert only for
     # validation; the measured kernel still writes the requested output dtype.
     finite_output = torch.isfinite(union_output.float())
@@ -1630,7 +1563,6 @@ def _run_union_upper_bound(
         timing_functions = {
             "metadata": union_metadata,
             "legacy_metadata": union_legacy_metadata,
-            "unified_end_to_end": unified_end_to_end,
             **timing_functions,
         }
     timings = _time_cuda_interleaved(timing_functions, **timing_args)
@@ -1656,7 +1588,6 @@ def _run_union_upper_bound(
         flattened_qsa_us=timings.get("flattened", math.nan),
         union_upper_bound_us=timings["union"],
         union_end_to_end_us=timings["union_end_to_end"],
-        unified_end_to_end_us=timings.get("unified_end_to_end", math.nan),
         triton_sparse_us=timings["triton"],
         triton_end_to_end_us=timings["triton_end_to_end"],
         grouped_swa_us=timings["contiguous"],
@@ -2100,28 +2031,6 @@ def _run_case(
         device="cuda",
     )
     qsa_output = _empty_output_like(inputs.q)
-    unified_workspace = torch.empty(
-        qsa_prims_ts_unified_workspace_size(
-            inputs.q,
-            inputs.k_cache,
-            inputs.block_table,
-            _BLOCK_TOPK,
-            out_dtype=_output_dtype(),
-        ),
-        dtype=torch.uint8,
-        device="cuda",
-    )
-    unified_indptr = torch.empty(
-        workload.rows + 1,
-        dtype=torch.int32,
-        device="cuda",
-    )
-    unified_seq_lens = torch.empty(
-        workload.rows,
-        dtype=torch.int32,
-        device="cuda",
-    )
-    unified_output = _empty_output_like(inputs.q)
     triton_output = _empty_output_like(inputs.q)
     triton_k_cache = inputs.k_cache.permute(0, 2, 1, 3)
     triton_v_cache = inputs.v_cache.permute(0, 2, 1, 3)
@@ -2143,23 +2052,6 @@ def _run_case(
     def qsa_end_to_end() -> None:
         build_metadata()
         qsa_attention()
-
-    def qsa_unified_end_to_end() -> None:
-        with torch.cuda.nvtx.range("qsa_unified_end_to_end"):
-            qsa_prims_ts_attention(
-                inputs.q,
-                inputs.k_cache,
-                inputs.v_cache,
-                inputs.block_indices,
-                inputs.block_table,
-                inputs.token_to_req,
-                inputs.logical_positions,
-                unified_indptr,
-                unified_seq_lens,
-                unified_workspace,
-                out=unified_output,
-                bmm1_scale=_HEAD_DIM**-0.5,
-            )
 
     def triton_sparse_attention() -> None:
         with torch.cuda.nvtx.range("triton_sparse_attention"):
@@ -2230,17 +2122,8 @@ def _run_case(
             )
 
     qsa_attention()
-    qsa_unified_end_to_end()
     triton_sparse_attention()
     torch.cuda.synchronize()
-    torch.testing.assert_close(unified_indptr, paged_kv_indptr)
-    torch.testing.assert_close(unified_seq_lens, seq_lens)
-    torch.testing.assert_close(
-        unified_output.float(),
-        qsa_output.float(),
-        rtol=_comparison_atol(),
-        atol=_comparison_atol(),
-    )
     output_diff = (qsa_output.float() - triton_output.float()).abs()
     triton_max_abs_diff = float(output_diff.max().item())
     comparison_atol = _comparison_atol()
@@ -2310,7 +2193,6 @@ def _run_case(
             "legacy_metadata": build_legacy_metadata,
             "qsa": qsa_attention,
             "qsa_end_to_end": qsa_end_to_end,
-            "qsa_unified_end_to_end": qsa_unified_end_to_end,
             "triton": triton_sparse_attention,
             "triton_end_to_end": triton_end_to_end,
             "contiguous": contiguous_attention,
@@ -2335,7 +2217,6 @@ def _run_case(
         legacy_metadata_us=timings["legacy_metadata"],
         qsa_attention_us=timings["qsa"],
         qsa_end_to_end_us=timings["qsa_end_to_end"],
-        qsa_unified_end_to_end_us=timings["qsa_unified_end_to_end"],
         triton_sparse_us=timings["triton"],
         triton_end_to_end_us=timings["triton_end_to_end"],
         contiguous_us=timings["contiguous"],
@@ -2346,7 +2227,7 @@ def _run_case(
 def _print_header() -> None:
     header = (
         " phase    TP    route     topk  contig overlap tail   BS    SQ   rows "
-        "compact_KV metadata_us legacy_meta_us qsa_us qsa_e2e_us unified_e2e_us "
+        "compact_KV metadata_us legacy_meta_us qsa_us qsa_e2e_us "
         "triton_us triton_e2e_us contig_us "
         "selected_KV nominal_KV_GB qsa_KV_TBps contig_KV_TBps "
         "qsa/contig qsa_e2e/contig triton/contig triton_e2e/contig "
@@ -2376,7 +2257,6 @@ def _print_result(result: BenchmarkResult) -> None:
         f"{result.metadata_us:>11.2f} {result.legacy_metadata_us:>14.2f} "
         f"{result.qsa_attention_us:>6.2f} "
         f"{result.qsa_end_to_end_us:>10.2f} "
-        f"{result.qsa_unified_end_to_end_us:>14.2f} "
         f"{result.triton_sparse_us:>9.2f} "
         f"{result.triton_end_to_end_us:>13.2f} "
         f"{result.contiguous_us:>9.2f} "
@@ -2397,7 +2277,7 @@ def _print_union_header() -> None:
     header = (
         " union TP group membership scope groups split mean_union max_union launch_KV "
         "load_reduction "
-        "metadata_us legacy_meta_us flat_qsa_us union_us union_e2e_us unified_e2e_us "
+        "metadata_us legacy_meta_us flat_qsa_us union_us union_e2e_us "
         "triton_us triton_e2e_us swa4_us "
         "proj_swa_us speedup "
         "source_KV union_KV swa4_KV nonshared source_GB union_GB "
@@ -2423,7 +2303,6 @@ def _print_union_result(result: UnionUpperBoundResult) -> None:
         f"{result.flattened_qsa_us:>11.2f} "
         f"{result.union_upper_bound_us:>8.2f} "
         f"{result.union_end_to_end_us:>12.2f} "
-        f"{result.unified_end_to_end_us:>14.2f} "
         f"{result.triton_sparse_us:>9.2f} "
         f"{result.triton_end_to_end_us:>13.2f} "
         f"{result.grouped_swa_us:>7.2f} "

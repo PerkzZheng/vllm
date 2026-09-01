@@ -932,8 +932,8 @@ old two-step path, and CUDA graph replay. With the ABI-matched PR 53896 runtime
 overlay and test dependencies, the vLLM owner/reference suite has 56 passing
 tests.
 
-The benchmark harness now reports the high-level unified call beside the
-explicit metadata+attention path. On GB300 with BF16, cold L2 (258 MiB
+At this historical checkpoint, the benchmark harness reported the high-level
+unified call beside the explicit metadata+attention path. On GB300 with BF16, cold L2 (258 MiB
 eviction), CUDA graphs, 10 warmups, and 100 interleaved samples, the unified
 wrapper adds no material latency:
 
@@ -999,6 +999,46 @@ on the pre-unified explicit metadata buffer plus attention workspace and the
 original graph-stable power-of-two route buckets. Its reference suite passes
 all 56 cases; the sustained FP8/MTP3 model-level gate is the remaining
 qualification.
+
+The integration revert in `9f49b7824` intentionally removed the vLLM unified
+workspace wrappers, but the standalone benchmark still imported and timed
+them. The benchmark now follows the production two-step contract again:
+caller-owned metadata buffers plus the standalone attention workspace. The
+historical unified measurements above remain useful as direct FlashInfer API
+qualification, but they are no longer mislabeled as the active vLLM path.
+
+## Graph-safe FP8 Q1 S4 accuracy route
+
+The restored Q64/KV128 S8 route is graph-safe and fast, but it is not the
+accuracy-qualified production choice. Under the exact FP8/MTP3 sampling
+configuration, AIME26 problem ID 10 answers correctly in two of two Triton
+replays and two of two locator-fixed S2 replays, but incorrectly in both S8
+replays. Holding the workspace, metadata, Q64/KV128 Keeps profile, and normal
+asynchronous graph capture fixed while changing only split fanout from eight
+to four restores the correct answer in two of two identical-seed replays.
+This isolates the trajectory change to the attention/reduction profile rather
+than workspace ownership.
+
+S4 also completes the normal TP2 model graph-capture sequence, including the
+final two-token graph. The focused resolver, numerical-oracle, and graph suite
+passes all 11 selected cases across TP1/TP2 and batch one/eight. The resolver
+shows the relevant arithmetic boundary: S4 uses the compact four-part reducer,
+whereas S8 uses the eight-part output-row reducer.
+
+The accuracy choice has a measurable low-grid cost. The matched FP8, TP2,
+BS1, SQ1 cold-L2 CUDA-graph comparison uses 10 warmups and 100 interleaved
+samples:
+
+| tail | route | attention (us) | metadata + attention (us) | contiguous (us) | attention / contiguous | end-to-end / contiguous |
+|---:|:---|---:|---:|---:|---:|---:|
+| 0 | S4 | 18.80 | 21.29 | 16.51 | 1.139x | 1.290x |
+| 0 | S8 | 16.36 | 18.59 | 16.34 | 1.001x | 1.137x |
+| 3 | S4 | 20.56 | 22.49 | 17.73 | 1.159x | 1.269x |
+| 3 | S8 | 17.19 | 18.97 | 18.11 | 0.949x | 1.047x |
+
+S4 remains within 20 percent for attention alone, but its metadata-inclusive
+BS1 result remains outside the target. Accuracy takes precedence; the existing
+SQ1 metadata-elision item below is now the first performance follow-up.
 
 ## Remaining performance and integration signoff
 
