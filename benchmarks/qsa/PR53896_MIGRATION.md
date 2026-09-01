@@ -952,10 +952,11 @@ model-level failure.
 Power-of-two route padding was then removed as an independent variable. With
 19 requests continuously resident, every attention row was live and the route
 shape remained compatible with Q2, yet MTP acceptance declined from about 57
-percent to 17--21 percent. Thus inactive rows are not the root cause. The next
-qualification run rolls the vLLM owner back to the pre-unified explicit
-metadata buffer plus attention workspace while keeping the conservative
-kernel policy and exact-live routing unchanged.
+percent to 17--21 percent. Thus inactive rows are not the root cause. The vLLM
+owner is now rolled back to the pre-unified explicit metadata buffer plus
+attention workspace while keeping the conservative kernel policy and
+exact-live routing unchanged. Its reference suite passes all 56 cases; the
+sustained FP8/MTP3 model-level gate is the remaining qualification.
 
 ## Remaining performance and integration signoff
 

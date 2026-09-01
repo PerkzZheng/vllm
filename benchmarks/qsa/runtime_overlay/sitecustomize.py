@@ -110,8 +110,6 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
     for name in (
         "build_prims_ts_qsa_page4_metadata",
         "get_prims_ts_qsa_metadata_workspace_size",
-        "get_prims_ts_qsa_workspace_size",
-        "prims_ts_qsa_attention",
     ):
         setattr(public_decode, name, getattr(qsa_metadata, name))
 
