@@ -816,6 +816,45 @@ Primary artifacts are under
 and
 `qsa_accuracy/pr53896/prims-fp8-mtp3-s8-locatorfix-68fd2bf5-job631364`.
 
+### Restored-S8 post-workspace accuracy requalification
+
+The later locator-fixed, restored-S8 integration was rerun on vLLM
+`4f9b1f241`, model `de4b8e4`, TP2, FP8-E4M3 KV, and MTP=3 with the same
+prescribed sampling configuration. All requests completed without errors,
+invalid predictions, or truncations.
+
+| Benchmark | restored S8 | FP8/MTP3 Triton reference | delta |
+|---|---:|---:|---:|
+| GSM8K | 1297/1319 (98.33%) | 1290/1319 (97.80%) | +7 |
+| GPQA-Diamond, two repetitions | 365/396 (92.17%) | 363/396 (91.67%) | +2 |
+| AIME26, two repetitions | 58/60 (96.67%) | 60/60 (100.00%) | -2 |
+
+The AIME delta is concentrated entirely in problem ID 10: both restored-S8
+runs answer 165, while the gold answer is 156. The dataset prompt has lost
+prime marks in the perpendicular-line condition, making this item especially
+sensitive to small numerical changes in the sampled reasoning trajectory.
+This is nevertheless reproducibly route-sensitive under the exact control:
+
+- current-PR Triton answers 156 in 2/2 isolated replays;
+- locator-fixed S2 (`503783f3`) answers 156 in 2/2 isolated replays; and
+- restored Q64/KV128 S8 answers 165 in 0/2 full-run observations.
+
+The S2 model control uses `CUDA_LAUNCH_BLOCKING=1` to avoid its separate
+cross-shape CUDA-graph ordering failure; it is an arithmetic/trajectory
+control, not a deployable policy. The public unified-workspace CUDA-graph
+equivalence test passes with metadata PDL both disabled and enabled, and the
+vLLM model path still uses explicit metadata outputs plus a standalone
+attention workspace. Therefore the item-10 result does not justify reverting
+the workspace interface. Accuracy qualification remains open on the S8 route
+pending a numerically closer profile or a graph-safe S2 fallback.
+
+Artifacts are under
+`qsa_accuracy/pr53896/primary-q1fix-s8-job633973`,
+`qsa_accuracy/pr53896/primary-q1fix-s8-job635017`,
+`qsa_accuracy/pr53896/primary-q1fix-s8-job635397`,
+`qsa_accuracy/pr53896/current-triton-fp8-mtp3-job635397`, and
+`qsa_accuracy/pr53896/s2-503-fp8-mtp3-job635017`.
+
 SQ4 must be compared with the exact grouped Q4 union, not with four flattened
 Q1 launches or an unadjusted shared SWA window. The table below reports the
 measured sparse union and metadata-inclusive time, Triton, grouped SWA2K, and
