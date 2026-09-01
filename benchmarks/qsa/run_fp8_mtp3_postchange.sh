@@ -2,8 +2,8 @@
 set -euo pipefail
 
 qsa_workspace=${QSA_WORKSPACE:-/workspace}
-qsa_repo=${qsa_workspace}/vllm-pr53896-qsa
-qsa_flashinfer=${qsa_workspace}/flashinfer
+qsa_repo=${QSA_REPO:-${qsa_workspace}/vllm-pr53896-qsa}
+qsa_flashinfer=${QSA_FLASHINFER_SOURCE:-${qsa_workspace}/flashinfer}
 qsa_model=${qsa_workspace}/models/Qwen3.8-Flash-Next-de4b8e4
 qsa_runtime_overlay=${qsa_repo}/benchmarks/qsa/runtime_overlay
 qsa_cutlass_packages=${qsa_workspace}/.runtime/cutlass-dsl-4.7.1/nvidia_cutlass_dsl/dsl_packages
