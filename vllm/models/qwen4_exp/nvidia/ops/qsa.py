@@ -21,6 +21,8 @@ _QSA_PAGE_MEMBERSHIP_BITS = 4
 _QSAPrimsTSAPIs = tuple[
     Callable[..., int],
     Callable[..., int],
+    Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    Callable[..., int],
     Callable[..., torch.Tensor],
 ]
 
@@ -1420,7 +1422,9 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
 
     try:
         from flashinfer.decode import (
+            build_prims_ts_qsa_page4_metadata,
             get_prims_ts_batch_decode_workspace_size,
+            get_prims_ts_qsa_metadata_workspace_size,
             get_prims_ts_qsa_group_size,
             prims_ts_batch_decode_with_kv_cache,
         )
@@ -1436,6 +1440,8 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
         return None
     return (
         get_prims_ts_qsa_group_size,
+        get_prims_ts_qsa_metadata_workspace_size,
+        build_prims_ts_qsa_page4_metadata,
         get_prims_ts_batch_decode_workspace_size,
         prims_ts_batch_decode_with_kv_cache,
     )
@@ -1459,7 +1465,7 @@ def qsa_prims_ts_workspace_size(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    _, get_workspace_size, _ = apis
+    _, _, _, get_workspace_size, _ = apis
     if q.ndim == 3:
         batch_size, num_qo_heads, head_dim = q.shape
         seq_len_q = 1
@@ -1514,7 +1520,7 @@ def qsa_prims_ts_group_size(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    get_group_size, _, _ = apis
+    get_group_size, _, _, _, _ = apis
     return int(
         get_group_size(
             query_start_loc_cpu,
@@ -1523,6 +1529,60 @@ def qsa_prims_ts_group_size(
             k_cache.shape[1],
             device=q.device,
         )
+    )
+
+
+def qsa_prims_ts_metadata_workspace_size(
+    num_query_tokens: int,
+    block_table: torch.Tensor,
+    storage_page_size: int,
+    group_size: int,
+) -> int:
+    """Return bytes required by FlashInfer's fused compact metadata builder."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide fused QSA metadata")
+    _, get_workspace_size, _, _, _ = apis
+    return int(
+        get_workspace_size(
+            num_query_tokens,
+            block_table.shape[1],
+            storage_page_size,
+            group_size,
+        )
+    )
+
+
+def qsa_prims_ts_build_page4_metadata(
+    block_indices: torch.Tensor,
+    block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    logical_positions: torch.Tensor,
+    storage_page_size: int,
+    group_size: int,
+    workspace_buffer: torch.Tensor | None,
+    paged_kv_indptr: torch.Tensor,
+    paged_kv_indices: torch.Tensor,
+    seq_lens: torch.Tensor,
+    enable_pdl: bool | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build compact Q1/Q2/Q4 metadata with FlashInfer's PDL chain."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide fused QSA metadata")
+    _, _, build_metadata, _, _ = apis
+    return build_metadata(
+        block_indices,
+        block_table,
+        token_to_req,
+        logical_positions,
+        workspace_buffer,
+        group_size=group_size,
+        storage_page_size=storage_page_size,
+        out=(paged_kv_indptr, paged_kv_indices, seq_lens),
+        enable_pdl=enable_pdl,
     )
 
 
@@ -1545,7 +1605,7 @@ def qsa_prims_ts_paged_attention(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    _, _, run_attention = apis
+    _, _, _, _, run_attention = apis
     if q.ndim == 3:
         seq_len_q = 1
     elif q.ndim == 4 and q.shape[1] in (2, 4):
@@ -1971,6 +2031,11 @@ __all__ = [
     "expand_qsa_block_indices_cuda",
     "qsa_compress_groups_with_ratio",
     "qsa_mqa_paged",
+    "qsa_prims_ts_build_page4_metadata",
+    "qsa_prims_ts_group_size",
+    "qsa_prims_ts_metadata_workspace_size",
+    "qsa_prims_ts_paged_attention",
+    "qsa_prims_ts_workspace_size",
     "qsa_select_paged_tokens",
     "qsa_sparse_paged_attention",
     "qsa_store_cache_rows",

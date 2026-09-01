@@ -1065,10 +1065,8 @@ def test_qsa_prims_ts_batch_capacity_uses_bounded_power_of_two_buckets() -> None
         _qsa_prims_ts_batch_capacity(16385, 16384)
 
 
-@pytest.mark.parametrize("indices_are_blocks", [False, True])
 def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     monkeypatch: pytest.MonkeyPatch,
-    indices_are_blocks: bool,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
 
@@ -1078,7 +1076,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     num_kv_heads = 1
     head_dim = 256
     storage_page_size = 16
-    selection_width = 512 if indices_are_blocks else 2051
+    selection_width = 512
     page_capacity = 513
     query = torch.zeros(rows, num_query_heads, head_dim, dtype=torch.bfloat16)
     kv_cache = torch.zeros(
@@ -1093,7 +1091,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     token_to_req = torch.tensor([0, 1, 0], dtype=torch.int32)
     logical_positions = torch.tensor([2, 3, 4], dtype=torch.int64)
     layer = SimpleNamespace(
-        qsa_indices_are_blocks=indices_are_blocks,
+        qsa_indices_are_blocks=True,
         topk_indices_buffer=torch.full(
             (route_capacity, selection_width), -1, dtype=torch.int32
         ),
@@ -1125,16 +1123,29 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     metadata = SimpleNamespace(num_actual_tokens=rows, block_table=block_table)
     calls: dict[str, object] = {}
 
-    def fake_build_metadata(*_args, **buffers) -> None:
-        assert buffers["indices_are_blocks"] is indices_are_blocks
-        buffers["paged_kv_indptr"].copy_(
+    def fake_build_metadata(
+        block_indices: torch.Tensor,
+        _block_table: torch.Tensor,
+        actual_token_to_req: torch.Tensor,
+        actual_positions: torch.Tensor,
+        actual_storage_page_size: int,
+        actual_group_size: int,
+        workspace: torch.Tensor | None,
+        paged_kv_indptr: torch.Tensor,
+        paged_kv_indices: torch.Tensor,
+        seq_lens: torch.Tensor,
+    ) -> None:
+        assert workspace is None
+        assert actual_storage_page_size == storage_page_size
+        assert actual_group_size == 1
+        paged_kv_indptr.copy_(
             torch.arange(route_capacity + 1, dtype=torch.int32) * page_capacity
         )
-        buffers["paged_kv_indices"].fill_(-1)
-        buffers["seq_lens"].copy_(torch.tensor([3, 1, 1, 1], dtype=torch.int32))
-        assert _args[0].shape[0] == route_capacity
-        assert _args[2].shape == _args[3].shape == (route_capacity,)
-        assert int(_args[3][-1]) == -1
+        paged_kv_indices.fill_(-1)
+        seq_lens.copy_(torch.tensor([3, 1, 1, 1], dtype=torch.int32))
+        assert block_indices.shape[0] == route_capacity
+        assert actual_token_to_req.shape == actual_positions.shape == (route_capacity,)
+        assert int(actual_positions[-1]) == -1
 
     def fake_workspace_size(
         actual_query: torch.Tensor,
@@ -1186,7 +1197,9 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         calls["workspace"] = workspace
         return actual_output
 
-    monkeypatch.setattr(qsa_ops, "qsa_build_page4_paged_metadata", fake_build_metadata)
+    monkeypatch.setattr(
+        qsa_ops, "qsa_prims_ts_build_page4_metadata", fake_build_metadata
+    )
     monkeypatch.setattr(qsa_ops, "qsa_prims_ts_group_size", lambda *_args: 1)
     monkeypatch.setattr(qsa_ops, "qsa_prims_ts_workspace_size", fake_workspace_size)
     monkeypatch.setattr(qsa_ops, "qsa_prims_ts_paged_attention", fake_attention)
@@ -1295,7 +1308,13 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     monkeypatch.setattr(
         qsa_ops,
         "_qsa_prims_ts_apis",
-        lambda: (lambda *_args, **_kwargs: 1, fake_workspace_size, fake_attention),
+        lambda: (
+            lambda *_args, **_kwargs: 1,
+            lambda *_args, **_kwargs: 0,
+            lambda *_args, **_kwargs: (),
+            fake_workspace_size,
+            fake_attention,
+        ),
     )
     assert (
         qsa_ops.qsa_prims_ts_workspace_size(

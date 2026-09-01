@@ -53,6 +53,8 @@ from vllm.models.qwen4_exp.nvidia.ops.qsa import (
     has_qsa_prims_ts_attention,
     qsa_build_page4_grouped_paged_metadata,
     qsa_build_page4_paged_metadata,
+    qsa_prims_ts_build_page4_metadata,
+    qsa_prims_ts_metadata_workspace_size,
     qsa_prims_ts_paged_attention,
     qsa_prims_ts_workspace_size,
     qsa_sparse_paged_attention,
@@ -357,6 +359,16 @@ class BenchmarkResult:
         return self.qsa_end_to_end_us / self.contiguous_us
 
     @property
+    def triton_end_to_end_ratio(self) -> float:
+        return self.triton_end_to_end_us / self.contiguous_us
+
+    @property
+    def prims_ts_speedup_over_triton(self) -> float:
+        """Compare metadata+attention against expansion+attention."""
+
+        return self.triton_end_to_end_us / self.qsa_end_to_end_us
+
+    @property
     def selected_kv_gb(self) -> float:
         return _selected_kv_gb(
             self.selected_kv_tokens,
@@ -398,6 +410,7 @@ class UnionUpperBoundResult:
     union_upper_bound_us: float
     union_end_to_end_us: float
     triton_sparse_us: float
+    triton_end_to_end_us: float
     grouped_swa_us: float
     max_abs_diff: float
     triton_max_abs_diff: float
@@ -431,8 +444,18 @@ class UnionUpperBoundResult:
         return self.triton_sparse_us / self.grouped_swa_us
 
     @property
+    def triton_grouped_swa_end_to_end_ratio(self) -> float:
+        return self.triton_end_to_end_us / self.grouped_swa_us
+
+    @property
     def union_triton_ratio(self) -> float:
         return self.union_upper_bound_us / self.triton_sparse_us
+
+    @property
+    def prims_ts_speedup_over_triton(self) -> float:
+        """Compare compact metadata+attention against expansion+attention."""
+
+        return self.triton_end_to_end_us / self.union_end_to_end_us
 
     @property
     def projected_contiguous_ratio(self) -> float:
@@ -1090,16 +1113,17 @@ def _run_union_upper_bound(
     )
     flat_seq_lens = torch.empty(flat_rows, dtype=torch.int32, device="cuda")
     flat_expanded_indices = torch.empty_like(flat_logical_indices)
-    qsa_build_page4_paged_metadata(
+    qsa_prims_ts_build_page4_metadata(
         flat_block_indices,
         inputs.block_table,
         flat_token_to_req,
         flat_positions,
         trace.storage_page_size,
-        indices_are_blocks=True,
-        paged_kv_indptr=flat_indptr,
-        paged_kv_indices=flat_indices,
-        seq_lens=flat_seq_lens,
+        1,
+        None,
+        flat_indptr,
+        flat_indices,
+        flat_seq_lens,
     )
     flat_workspace = torch.zeros(
         qsa_prims_ts_workspace_size(
@@ -1137,6 +1161,28 @@ def _run_union_upper_bound(
                 triton_k_cache,
                 triton_v_cache,
                 flat_logical_indices,
+                inputs.block_table,
+                flat_token_to_req,
+                triton_output,
+            )
+
+    def triton_end_to_end() -> None:
+        with torch.cuda.nvtx.range("union_triton_expand_indices"):
+            expand_qsa_block_indices_cuda(
+                flat_block_indices,
+                flat_positions,
+                inputs.sequence_lengths,
+                flat_token_to_req,
+                _COMPRESS_RATIO,
+                _TOKEN_TOPK,
+                flat_expanded_indices,
+            )
+        with torch.cuda.nvtx.range("union_triton_sparse_attention"):
+            qsa_sparse_paged_attention(
+                flat_q,
+                triton_k_cache,
+                triton_v_cache,
+                flat_expanded_indices,
                 inputs.block_table,
                 flat_token_to_req,
                 triton_output,
@@ -1186,35 +1232,50 @@ def _run_union_upper_bound(
     union_metadata: Callable[[], object] | None = None
     union_legacy_metadata: Callable[[], object] | None = None
     if membership_mode == "masked":
-        (
-            union_bitsets,
-            union_indptr,
-            union_indices,
-            union_seq_lens,
-        ) = qsa_build_page4_grouped_paged_metadata(
+        union_page_capacity = group_size * (_BLOCK_TOPK + 1)
+        union_indptr = torch.empty(num_groups + 1, dtype=torch.int32, device="cuda")
+        union_indices = torch.empty(
+            num_groups * union_page_capacity,
+            dtype=torch.int32,
+            device="cuda",
+        )
+        union_seq_lens = torch.empty(num_groups, dtype=torch.int32, device="cuda")
+        union_metadata_workspace = torch.empty(
+            qsa_prims_ts_metadata_workspace_size(
+                flat_rows,
+                inputs.block_table,
+                trace.storage_page_size,
+                group_size,
+            ),
+            dtype=torch.uint8,
+            device="cuda",
+        )
+        qsa_prims_ts_build_page4_metadata(
             flat_block_indices,
             inputs.block_table,
             flat_token_to_req,
             flat_positions,
             trace.storage_page_size,
             group_size,
-            indices_are_blocks=True,
+            union_metadata_workspace,
+            union_indptr,
+            union_indices,
+            union_seq_lens,
         )
 
         def union_metadata() -> object:
             with torch.cuda.nvtx.range("union_metadata"):
-                return qsa_build_page4_grouped_paged_metadata(
+                return qsa_prims_ts_build_page4_metadata(
                     flat_block_indices,
                     inputs.block_table,
                     flat_token_to_req,
                     flat_positions,
                     trace.storage_page_size,
                     group_size,
-                    indices_are_blocks=True,
-                    bitset_workspace=union_bitsets,
-                    paged_kv_indptr=union_indptr,
-                    paged_kv_indices=union_indices,
-                    seq_lens=union_seq_lens,
+                    union_metadata_workspace,
+                    union_indptr,
+                    union_indices,
+                    union_seq_lens,
                 )
 
         def union_legacy_metadata() -> object:
@@ -1235,7 +1296,7 @@ def _run_union_upper_bound(
                     flat_positions,
                     trace.storage_page_size,
                     group_size,
-                    bitset_workspace=union_bitsets,
+                    bitset_workspace=union_metadata_workspace.view(torch.int32),
                     paged_kv_indptr=union_indptr,
                     paged_kv_indices=union_indices,
                     seq_lens=union_seq_lens,
@@ -1246,7 +1307,6 @@ def _run_union_upper_bound(
         gpu_seq_lens = union_seq_lens.cpu()
         if not torch.equal(gpu_seq_lens, union_seq_lens_cpu):
             raise AssertionError("grouped GPU metadata sequence lengths mismatch")
-        union_page_capacity = group_size * (_BLOCK_TOPK + 1)
         for group_index in range(num_groups):
             live_pages = int(union_indptr_cpu[group_index + 1].item()) - int(
                 union_indptr_cpu[group_index].item()
@@ -1494,6 +1554,7 @@ def _run_union_upper_bound(
         "union": union_attention,
         "union_end_to_end": union_end_to_end,
         "triton": triton_sparse_attention,
+        "triton_end_to_end": triton_end_to_end,
         "contiguous": grouped_swa_attention,
     }
     if benchmark_flattened:
@@ -1529,6 +1590,7 @@ def _run_union_upper_bound(
         union_upper_bound_us=timings["union"],
         union_end_to_end_us=timings["union_end_to_end"],
         triton_sparse_us=timings["triton"],
+        triton_end_to_end_us=timings["triton_end_to_end"],
         grouped_swa_us=timings["contiguous"],
         max_abs_diff=max_abs_diff,
         triton_max_abs_diff=triton_max_abs_diff,
@@ -1923,16 +1985,17 @@ def _run_case(
 
     def build_metadata() -> None:
         with torch.cuda.nvtx.range("qsa_metadata"):
-            qsa_build_page4_paged_metadata(
+            qsa_prims_ts_build_page4_metadata(
                 inputs.block_indices,
                 inputs.block_table,
                 inputs.token_to_req,
                 inputs.logical_positions,
                 storage_page_size,
-                indices_are_blocks=True,
-                paged_kv_indptr=paged_kv_indptr,
-                paged_kv_indices=paged_kv_indices,
-                seq_lens=seq_lens,
+                1,
+                None,
+                paged_kv_indptr,
+                paged_kv_indices,
+                seq_lens,
             )
 
     def build_legacy_metadata() -> None:
@@ -2168,7 +2231,8 @@ def _print_header() -> None:
         "compact_KV metadata_us legacy_meta_us qsa_us qsa_e2e_us "
         "triton_us triton_e2e_us contig_us "
         "selected_KV nominal_KV_GB qsa_KV_TBps contig_KV_TBps "
-        "qsa/contig e2e/contig triton/contig max_diff"
+        "qsa/contig qsa_e2e/contig triton/contig triton_e2e/contig "
+        "prims_speedup max_diff"
     )
     print(header, flush=True)
     print("-" * len(header), flush=True)
@@ -2203,6 +2267,8 @@ def _print_result(result: BenchmarkResult) -> None:
         f"{result.contiguous_effective_kv_tbps:>14.2f} "
         f"{result.qsa_ratio:>10.3f} {result.end_to_end_ratio:>10.3f} "
         f"{result.triton_ratio:>13.3f} "
+        f"{result.triton_end_to_end_ratio:>18.3f} "
+        f"{result.prims_ts_speedup_over_triton:>13.3f} "
         f"{result.triton_max_abs_diff:>8.5f}",
         flush=True,
     )
@@ -2213,11 +2279,12 @@ def _print_union_header() -> None:
         " union TP group membership scope groups split mean_union max_union launch_KV "
         "load_reduction "
         "metadata_us legacy_meta_us flat_qsa_us union_us union_e2e_us "
-        "triton_us swa4_us "
+        "triton_us triton_e2e_us swa4_us "
         "proj_swa_us speedup "
         "source_KV union_KV swa4_KV nonshared source_GB union_GB "
         "flat_logical_KV_TBps union_logical_KV_TBps "
-        "union/swa4 e2e/swa4 triton/swa4 union/triton union/proj e2e/proj "
+        "union/swa4 e2e/swa4 triton/swa4 triton_e2e/swa4 "
+        "union/triton prims_speedup union/proj e2e/proj "
         "union_diff triton_diff"
     )
     print(header, flush=True)
@@ -2238,6 +2305,7 @@ def _print_union_result(result: UnionUpperBoundResult) -> None:
         f"{result.union_upper_bound_us:>8.2f} "
         f"{result.union_end_to_end_us:>12.2f} "
         f"{result.triton_sparse_us:>9.2f} "
+        f"{result.triton_end_to_end_us:>13.2f} "
         f"{result.grouped_swa_us:>7.2f} "
         f"{result.projected_grouped_swa_us:>11.2f} {result.speedup:>7.3f} "
         f"{result.source_kv_tokens:>9} {result.union_kv_tokens:>8} "
@@ -2249,7 +2317,9 @@ def _print_union_result(result: UnionUpperBoundResult) -> None:
         f"{result.grouped_swa_ratio:>10.3f} "
         f"{result.grouped_swa_end_to_end_ratio:>8.3f} "
         f"{result.triton_grouped_swa_ratio:>11.3f} "
+        f"{result.triton_grouped_swa_end_to_end_ratio:>17.3f} "
         f"{result.union_triton_ratio:>12.3f} "
+        f"{result.prims_ts_speedup_over_triton:>13.3f} "
         f"{result.projected_contiguous_ratio:>10.3f} "
         f"{result.projected_end_to_end_ratio:>8.3f} "
         f"{result.max_abs_diff:>10.5f} "

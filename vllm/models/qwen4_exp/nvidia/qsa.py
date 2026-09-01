@@ -235,31 +235,37 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             layer._qsa_prims_ts_workspace = workspace
         return workspace
 
-    def _get_qsa_grouped_bitset_workspace(
+    def _get_qsa_metadata_workspace(
         self,
         layer: torch.nn.Module,
         num_tokens: int,
         block_table: torch.Tensor,
         storage_page_size: int,
+        group_size: int,
     ) -> torch.Tensor:
         """Return graph-stable scratch for exact grouped page unions."""
 
-        logical_page_capacity = block_table.shape[1] * storage_page_size // 4
-        bitset_words = (logical_page_capacity + 31) // 32
-        required_words = num_tokens * bitset_words
-        workspace = getattr(layer, "_qsa_grouped_bitset_workspace", None)
+        from .ops.qsa import qsa_prims_ts_metadata_workspace_size
+
+        required_bytes = qsa_prims_ts_metadata_workspace_size(
+            num_tokens,
+            block_table,
+            storage_page_size,
+            group_size,
+        )
+        workspace = getattr(layer, "_qsa_metadata_workspace", None)
         if (
             workspace is None
             or workspace.device != block_table.device
-            or workspace.numel() < required_words
+            or workspace.numel() < required_bytes
         ):
             workspace = torch.empty(
-                required_words,
-                dtype=torch.int32,
+                required_bytes,
+                dtype=torch.uint8,
                 device=block_table.device,
             )
-            layer._qsa_grouped_bitset_workspace = workspace
-        return workspace[:required_words]
+            layer._qsa_metadata_workspace = workspace
+        return workspace[:required_bytes]
 
     def forward_qsa(
         self,
@@ -327,11 +333,15 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
 
         if self.use_qsa_prims_ts:
             from .ops.qsa import (
-                qsa_build_page4_grouped_paged_metadata,
-                qsa_build_page4_paged_metadata,
+                qsa_prims_ts_build_page4_metadata,
                 qsa_prims_ts_group_size,
                 qsa_prims_ts_paged_attention,
             )
+
+            if not indices_are_blocks:
+                raise RuntimeError(
+                    "PrimTS QSA requires the indexer compact page-four block output"
+                )
 
             # PR 53896 stores the combined cache as [P,Hkv,N,2D]. The common
             # transpose/split above gives Triton's [P,N,Hkv,D] views; PrimTS
@@ -410,41 +420,32 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             paged_kv_indptr = indptr_buffer[: route_rows + 1]
             paged_kv_indices = indices_buffer[: route_capacity * page_capacity]
             seq_lens = seq_lens_buffer[:route_rows]
-            if group_size == 1:
-                qsa_build_page4_paged_metadata(
-                    logical_indices,
-                    attn_metadata.block_table,
-                    token_to_req,
-                    logical_positions,
-                    prims_key_cache.shape[2],
-                    indices_are_blocks=indices_are_blocks,
-                    paged_kv_indptr=paged_kv_indptr,
-                    paged_kv_indices=paged_kv_indices,
-                    seq_lens=seq_lens,
-                )
-                route_query = query_for_attention
-                route_output = prims_output
-                max_seq_len = _QSA_Q1_MAX_SEQ_LEN
-            else:
-                bitset_workspace = self._get_qsa_grouped_bitset_workspace(
+            metadata_workspace = None
+            if group_size > 1:
+                metadata_workspace = self._get_qsa_metadata_workspace(
                     layer,
                     route_capacity,
                     attn_metadata.block_table,
                     prims_key_cache.shape[2],
-                )
-                qsa_build_page4_grouped_paged_metadata(
-                    logical_indices,
-                    attn_metadata.block_table,
-                    token_to_req,
-                    logical_positions,
-                    prims_key_cache.shape[2],
                     group_size,
-                    indices_are_blocks=indices_are_blocks,
-                    bitset_workspace=bitset_workspace,
-                    paged_kv_indptr=paged_kv_indptr,
-                    paged_kv_indices=paged_kv_indices,
-                    seq_lens=seq_lens,
                 )
+            qsa_prims_ts_build_page4_metadata(
+                logical_indices,
+                attn_metadata.block_table,
+                token_to_req,
+                logical_positions,
+                prims_key_cache.shape[2],
+                group_size,
+                metadata_workspace,
+                paged_kv_indptr,
+                paged_kv_indices,
+                seq_lens,
+            )
+            if group_size == 1:
+                route_query = query_for_attention
+                route_output = prims_output
+                max_seq_len = _QSA_Q1_MAX_SEQ_LEN
+            else:
                 route_query = query_for_attention.view(
                     route_rows,
                     group_size,
@@ -676,7 +677,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 persistent=False,
             )
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
-        self._qsa_grouped_bitset_workspace: torch.Tensor | None = None
+        self._qsa_metadata_workspace: torch.Tensor | None = None
         if self.impl.use_qsa_prims_ts:
             if not is_quantized_kv_cache(self.kv_cache_dtype):
                 self.register_buffer(
