@@ -875,17 +875,36 @@ Query rank selects Q1 (`[B,Hq,D]`) or Q2/Q4 (`[B,2|4,Hq,D]`).
 The arena uses lifetime-aware partial reuse. Its page-index prefix remains live
 from metadata packing through attention. Only the scratch suffix is shared:
 group bitmaps occupy it during metadata, then split-KV partials, statistics,
-and counters occupy it during attention. A single stream-ordered reset clears
-only the contiguous attention control tail (counters, fixed-Q placeholder, and
-sink scalar); output-only partial O/statistics are not cleared. This sequence
-is CUDA-graph capturable.
+and counters occupy it during attention. The 768-byte attention control tail
+(counters, fixed-Q placeholder, and sink scalar) is cleared by the metadata
+kernel itself; output-only partial O/statistics are not cleared. Q1 assigns the
+reset to CTA zero. Q2/Q4 distribute aliased words to the pack CTA that has
+already consumed the corresponding bitmap rows, avoiding both a cross-CTA
+race and a separate memset launch. This sequence is CUDA-graph capturable.
 
 For 8K Q, 128K maximum KV capacity, top-k 512, and Q4, the allocation is
 50,364,416 bytes (48.03125 MiB): 16,809,984 bytes of persistent page indices
 plus a 32 MiB bitmap-dominated shared suffix. The focused SM103 validation has
-17 passing FlashInfer tests, including PDL on/off, real Q4 equivalence with the
+19 passing FlashInfer tests, including PDL on/off, real Q4 equivalence with the
 old two-step path, and CUDA graph replay. The vLLM owner/reference suite has 29
 passing and 27 architecture-dependent skipped tests.
+
+The benchmark harness now reports the high-level unified call beside the
+explicit metadata+attention path. On GB300 with BF16, cold L2 (258 MiB
+eviction), CUDA graphs, 10 warmups, and 100 interleaved samples, the unified
+wrapper adds no material latency:
+
+| TP | BS | explicit metadata + attention (us) | unified call (us) | delta (us) |
+|---:|---:|---:|---:|---:|
+| 1 | 1 | 20.42 | 20.47 | +0.05 |
+| 1 | 8 | 23.17 | 23.37 | +0.20 |
+| 2 | 1 | 20.35 | 20.56 | +0.21 |
+| 2 | 8 | 20.51 | 20.68 | +0.17 |
+
+A grouped-Q4 smoke matrix also places unified latency within measurement
+noise of the explicit path (from 2.0 us faster to 0.8 us slower across TP1/TP2
+and one/eight groups). All unified outputs are checked against the explicit
+path before timing.
 
 ## Remaining performance and integration signoff
 
