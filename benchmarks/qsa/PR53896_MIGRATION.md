@@ -885,7 +885,7 @@ race and a separate memset launch. This sequence is CUDA-graph capturable.
 For 8K Q, 128K maximum KV capacity, top-k 512, and Q4, the allocation is
 50,364,416 bytes (48.03125 MiB): 16,809,984 bytes of persistent page indices
 plus a 32 MiB bitmap-dominated shared suffix. The focused SM103 validation has
-19 passing FlashInfer tests, including PDL on/off, real Q4 equivalence with the
+20 passing FlashInfer tests, including PDL on/off, real Q4 equivalence with the
 old two-step path, and CUDA graph replay. The vLLM owner/reference suite has 29
 passing and 27 architecture-dependent skipped tests.
 
@@ -906,11 +906,36 @@ noise of the explicit path (from 2.0 us faster to 0.8 us slower across TP1/TP2
 and one/eight groups). All unified outputs are checked against the explicit
 path before timing.
 
+The follow-up PDL path connects metadata directly to attention instead of
+only connecting the grouped bitmap builder to the union packer. Q1 signals
+attention at mapper entry; Q2/Q4 form a bitmap -> pack -> attention chain.
+Attention waits before its first CSR or aliased-control read. The generic
+native-CSR API keeps this behavior opt-in, while the high-level QSA call
+enables it automatically on supported devices. This remains CUDA-graph safe.
+
+The same stable Q1 protocol shows a useful low-grid reduction, especially at
+TP1/BS8:
+
+| TP | BS | explicit metadata + attention (us) | unified PDL (us) | prior unified (us) | PDL gain (us) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 20.54 | 20.39 | 20.47 | 0.08 |
+| 1 | 8 | 23.47 | 22.56 | 23.37 | 0.81 |
+| 2 | 1 | 20.44 | 20.41 | 20.56 | 0.15 |
+| 2 | 8 | 20.57 | 20.50 | 20.68 | 0.18 |
+
+For grouped Q4, unified PDL remains neutral: unified versus explicit is
+83.81/83.47 us and 86.02/86.08 us for TP1 one/eight groups, and 81.86/81.75
+us and 84.51/84.20 us for TP2. One multi-configuration run stopped emitting
+output in its final TP2/eight-group case, but an isolated 10-warmup,
+100-sample rerun completed at 84.51 us, and the graph/reference tests did not
+reproduce a deadlock.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
 
-1. Remove the standalone Q1 metadata launch. SQ1 has no grouped union or
+1. If measured framework-level low-batch latency still misses the acceptance
+   target, remove the standalone Q1 metadata launch. SQ1 has no grouped union or
    membership mask: retain a fixed 513-entry row stride, consume or emit the
    512 encoded physical page-4 locators directly, reserve entry 512 for the
    zero-to-three-token causal tail, preinitialize the fixed CSR indptr, and
