@@ -8,7 +8,7 @@
   gate used implementation revision `8dd467f74`. Each production port commit
   carries its original `Cherry-picked-from` revision.
 - Compact PrimTS metadata integration: vLLM revision `778d2bd87`.
-- FlashInfer kernel branch: `qsa-page4-prims-ts` at `7eacf5856b47`.
+- FlashInfer kernel branch: `qsa-page4-prims-ts` at `68fd2bf5`.
 - Accuracy model: [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/main)
   revision `de4b8e4`, staged locally as `models/Qwen3.8-Flash-Next-de4b8e4`.
   The model config identifies the implementation as `qwen4_exp`, uses 24 Q
@@ -681,7 +681,72 @@ reducer, and output arithmetic are unchanged.
 This is a 1.68--1.93x Q1 kernel speedup. TP1/BS8 is now faster than Triton and
 TP2/BS8 is within 15.5 percent, but BS1 remains 42--63 percent slower than
 Triton. Against the raw 2K contiguous kernel, Q1 remains 30--47 percent over
-target, so the low-grid decode performance task is improved but not closed.
+target. This S2 checkpoint is superseded for the exact model-facing BF16-output
+shape by the qualified S8 profile below.
+
+The candidate low-grid FP8 Q1 route uses grouped Keeps Q64/KV128, one KV
+instruction, eight static KV splits, four loader warps, and the standalone
+one-CTA/eight-split reducer. It is deliberately narrow: ratio-12 GQA, D256,
+BF16 output, an encoded page-4 route with a 2048--2051 compact KV extent, and
+`batch_size * num_heads_kv < 32`. Generic FP8 Q1 and FP16-output routes retain
+the S2 profile. The four loader warps partition the 32 page-fragment TMA loads;
+they do not replay the same transactions.
+
+The following table is retained as a historical pre-fix timing record. Its
+S8 output was not correct, so neither its maximum differences nor its timing
+ratios are an accepted result.
+
+| TP | BS | PrimTS | compact metadata + PrimTS | Triton | contiguous SWA2K | pre-fix max diff |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 17.46--17.76 | 18.98--20.04 | 16.21--17.85 | 18.18--18.28 | 0.02930 |
+| 1 | 8 | 18.73--19.02 | 20.50--20.58 | 31.10--31.86 | 18.42--18.55 | 0.03009 |
+| 2 | 1 | 16.39--16.55 | 18.43--19.60 | 16.31--16.41 | 18.28--18.41 | 0.02398 |
+| 2 | 8 | 18.41--18.42 | 20.43--20.44 | 22.97--23.44 | 18.40--18.44 | 0.02479 |
+
+The pre-fix timing had a worst attention/contiguous ratio of `1.033x` and a
+worst metadata-inclusive ratio of `1.113x`. The corrected kernel must repeat
+the cold-L2 CUDA-graph measurement before the 20-percent target can be signed
+off. The diagnostic raw log is
+`qsa_fp8_q1_kv128_keeps_s8_load4_tp12_bs18_cold_graph_10w100i_job624558.log`.
+
+### Held-locator S8 correctness fix
+
+Standalone token-identity sentinels exposed a loader bug hidden by the earlier
+randomized aggregate comparison. For page-4/KV128, one K/V tile owns 32 page
+locators. When a split owns at most eight K/V tiles, the page-table producer
+stores the complete CTA-local locator window in shared memory. The vector
+`page_ids()` consumer did not recognize that held-window layout. It instead
+used `(tile_idx * 32) & 31`, which is always zero, so S4 and S8 replayed the
+first KV128 tile in each CTA for every local tile iteration. S1 and S2 escaped
+the defect because their 17- and 9-tile local spans use per-tile staging rather
+than the at-most-eight-tile held window.
+
+FlashInfer revision `68fd2bf5` passes the explicit CTA-local tile index to all
+vector page-ID consumers and addresses held storage as
+`stage_base + local_tile_idx * pages_per_tile`. The scalar locator path already
+used this addressing rule. The standalone regression fixes the physical
+Q64/KV128, D256, FP8-to-BF16 kernel while varying only S1/S2/S4/S8. It uses
+random nonidentity page maps and causal lengths 2048/2049/2050/2051:
+
+- With Q and K zero and V encoding logical token rank, every split and tail is
+  exact after the fix. Before the fix, S4 and S8 had maximum errors of 3.0 and
+  repeated their first local KV tile.
+- Random inputs match a split-aware FP8-P1 oracle, including BF16 partial-O
+  publication and LSE-weighted reduction, with maximum absolute error at or
+  below `3.1e-5`.
+- The S8 caller-workspace path passes CUDA-graph capture and replay, then
+  passes a second replay after changing the live page-ID tensor in place.
+- The automatic production policy passes TP1 and TP2 at BS1 and BS8. The
+  broader affected-loader matrix passes all seven TP geometries across compact,
+  packed-HND, and packed-NHD storage (21 cases), plus 32 Q4/KV128/KV256 tail,
+  mask, batch, and issuer cases. The final focused policy/oracle rerun is
+  13/13, and Ruff reports no lint errors.
+
+Recent S8-enabled FP8/MTP=3 results of 1292/1319 GSM8K, 365/396 aggregate
+GPQA-Diamond, and 57/60 aggregate AIME26 were produced by the faulty loader and
+are invalidated. They are not part of the accepted paired table above. No e2e
+accuracy conclusion should be drawn from them; rerun FP8/MTP=3 only after the
+corrected standalone cold-L2 performance checkpoint is recorded.
 
 SQ4 must be compared with the exact grouped Q4 union, not with four flattened
 Q1 launches or an unadjusted shared SWA window. The table below reports the
