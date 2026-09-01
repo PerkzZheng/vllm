@@ -25,8 +25,8 @@ case "$1" in
     export QSA_FLASHINFER_SOURCE=${qsa_flashinfer}
     export QSA_CUTLASS_DSL_PACKAGES=${qsa_cutlass_packages}
     export VLLM_QSA_ATTENTION_BACKEND=prims_ts
-    export TRITON_CACHE_DIR=${qsa_workspace}/.triton-cache/${qsa_cache_tag}
-    export VLLM_CACHE_ROOT=${qsa_workspace}/.vllm-cache/${qsa_cache_tag}
+    export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${qsa_workspace}/.triton-cache/${qsa_cache_tag}}
+    export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-${qsa_workspace}/.vllm-cache/${qsa_cache_tag}}
     export PYTHONNOUSERSITE=1
     export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1800
     mkdir -p "${TRITON_CACHE_DIR}" "${VLLM_CACHE_ROOT}"

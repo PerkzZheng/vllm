@@ -952,11 +952,14 @@ model-level failure.
 Power-of-two route padding was then removed as an independent variable. With
 19 requests continuously resident, every attention row was live and the route
 shape remained compatible with Q2, yet MTP acceptance declined from about 57
-percent to 17--21 percent. Thus inactive rows are not the root cause. The vLLM
-owner is now rolled back to the pre-unified explicit metadata buffer plus
-attention workspace while keeping the conservative kernel policy and
-exact-live routing unchanged. Its reference suite passes all 56 cases; the
-sustained FP8/MTP3 model-level gate is the remaining qualification.
+percent to 17--21 percent. Thus inactive rows are not sufficient to explain
+the regression. Exact-live routing is itself not a qualified CUDA-graph
+contract, however: vLLM captures the outer graph at a bucket capacity while
+the internal QSA view then changes with the live count. The owner is now back
+on the pre-unified explicit metadata buffer plus attention workspace and the
+original graph-stable power-of-two route buckets. Its reference suite passes
+all 56 cases; the sustained FP8/MTP3 model-level gate is the remaining
+qualification.
 
 ## Remaining performance and integration signoff
 

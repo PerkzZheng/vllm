@@ -1052,12 +1052,12 @@ def test_qsa_attention_backend_selection_rejects_unsupported(
         _resolve_qsa_prims_ts_backend(capable=True, available=True)
 
 
-def test_qsa_prims_ts_batch_capacity_preserves_exact_live_rows() -> None:
+def test_qsa_prims_ts_batch_capacity_uses_bounded_power_of_two_buckets() -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import _qsa_prims_ts_batch_capacity
 
     assert _qsa_prims_ts_batch_capacity(1, 16384) == 1
     assert _qsa_prims_ts_batch_capacity(64, 16384) == 64
-    assert _qsa_prims_ts_batch_capacity(65, 16384) == 65
+    assert _qsa_prims_ts_batch_capacity(65, 16384) == 128
     assert _qsa_prims_ts_batch_capacity(12000, 12000) == 12000
     with pytest.raises(ValueError, match="fit the staging capacity"):
         _qsa_prims_ts_batch_capacity(0, 16384)
@@ -1071,7 +1071,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
 
     rows = 3
-    route_capacity = rows
+    route_capacity = 4
     num_query_heads = 6
     num_kv_heads = 1
     head_dim = 256
@@ -1142,10 +1142,10 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
             torch.arange(route_capacity + 1, dtype=torch.int32) * page_capacity
         )
         paged_kv_indices.fill_(-1)
-        seq_lens.copy_(torch.tensor([3, 1, 1], dtype=torch.int32))
+        seq_lens.copy_(torch.tensor([3, 1, 1, 1], dtype=torch.int32))
         assert block_indices.shape[0] == route_capacity
         assert actual_token_to_req.shape == actual_positions.shape == (route_capacity,)
-        assert int(actual_positions[-1]) == int(logical_positions[-1])
+        assert int(actual_positions[-1]) == -1
 
     def fake_workspace_size(
         actual_query: torch.Tensor,
