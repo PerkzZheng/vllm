@@ -63,12 +63,13 @@ owner passes their live slices to the ordinary PrimTS arguments:
  paged_kv_indptr, paged_kv_indices, seq_lens)
 ```
 
-Workspace is allocated lazily at the exact policy size and reused while the
-semantic launch key is stable. The key includes the query-group size, token
-count, and physical page extent. Switching it re-zeros the buffer because
-PrimTS section offsets can change. Warmed CUDA graph replays keep both the key
-and storage address stable. The previous Triton sparse-attention path remains
-the fallback on other architectures or when the page-4 API is absent.
+Workspace is allocated lazily at the exact policy size and pooled by semantic
+launch key. The key includes the query-group size, token count, and physical
+page extent. Each key receives a separately zero-initialized allocation because
+PrimTS section offsets can change; this also keeps every warmed CUDA graph's
+storage address stable when the scheduler alternates graph buckets. The
+previous Triton sparse-attention path remains the fallback on other
+architectures or when the page-4 API is absent.
 
 The production owner now chooses one request-safe route for the complete
 launch. Q1 keeps one independent CSR row per query token. Q2/Q4 reshape Q and O

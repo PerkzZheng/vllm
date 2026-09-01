@@ -1229,7 +1229,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     assert layer._qsa_prims_ts_workspace is calls["workspace"]
 
 
-def test_qsa_prims_ts_workspace_resets_when_semantic_key_changes(
+def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
@@ -1265,7 +1265,7 @@ def test_qsa_prims_ts_workspace_resets_when_semantic_key_changes(
         torch.bfloat16,
     )
 
-    assert second.data_ptr() == first.data_ptr()
+    assert second.data_ptr() != first.data_ptr()
     assert torch.all(second == 0)
 
     second.fill_(0x5A)
@@ -1287,6 +1287,7 @@ def test_qsa_prims_ts_workspace_resets_when_semantic_key_changes(
         torch.bfloat16,
     )
     assert larger.numel() == 256
+    assert larger.data_ptr() not in (first.data_ptr(), second.data_ptr())
     assert torch.all(larger == 0)
 
 

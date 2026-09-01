@@ -217,7 +217,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             max_seq_len,
             out_dtype=out_dtype,
         )
-        workspace = getattr(layer, "_qsa_prims_ts_workspace", None)
         seq_len_q = query.shape[1] if query.ndim == 4 else 1
         workspace_key = (
             query.device,
@@ -228,24 +227,24 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             out_dtype,
             required_bytes,
         )
-        previous_key = getattr(layer, "_qsa_prims_ts_workspace_key", None)
-        if (
-            workspace is None
-            or workspace.device != query.device
-            or workspace.numel() < required_bytes
-        ):
+        workspace_pool = getattr(layer, "_qsa_prims_ts_workspace_pool", None)
+        if workspace_pool is None:
+            workspace_pool = {}
+            layer._qsa_prims_ts_workspace_pool = workspace_pool
+        workspace = workspace_pool.get(workspace_key)
+        if workspace is None:
+            # CUDA graphs replay without re-entering this Python owner. Give
+            # every semantic graph key its own zero-initialized allocation so
+            # section layouts cannot alias as the scheduler changes buckets.
             workspace = torch.zeros(
                 required_bytes,
                 dtype=torch.uint8,
                 device=query.device,
             )
-            layer._qsa_prims_ts_workspace = workspace
-        elif previous_key != workspace_key:
-            # FlashInfer's standalone workspace layout depends on the semantic
-            # launch key. Reset before rebinding a retained allocation so stale
-            # control or partial-reduction state cannot cross graph buckets.
-            workspace.zero_()
-        layer._qsa_prims_ts_workspace_key = workspace_key
+            workspace_pool[workspace_key] = workspace
+        # Retain the last allocation under the historical attribute for
+        # diagnostics and integrations that inspect it.
+        layer._qsa_prims_ts_workspace = workspace
         return workspace
 
     def _get_qsa_metadata_workspace(
@@ -690,9 +689,10 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 persistent=False,
             )
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
-        self._qsa_prims_ts_workspace_key: (
-            tuple[torch.device, int, int, int, torch.dtype, torch.dtype, int] | None
-        ) = None
+        self._qsa_prims_ts_workspace_pool: dict[
+            tuple[torch.device, int, int, int, torch.dtype, torch.dtype, int],
+            torch.Tensor,
+        ] = {}
         self._qsa_metadata_workspace: torch.Tensor | None = None
         if self.impl.use_qsa_prims_ts:
             if not is_quantized_kv_cache(self.kv_cache_dtype):
