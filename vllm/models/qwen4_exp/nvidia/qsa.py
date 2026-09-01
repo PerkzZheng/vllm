@@ -64,11 +64,16 @@ _QSA_BACKEND_ENV = "VLLM_QSA_ATTENTION_BACKEND"
 
 
 def _qsa_prims_ts_batch_capacity(num_tokens: int, max_tokens: int) -> int:
-    """Bucket live routes so continuous prefill does not JIT every row count."""
+    """Return the exact live-route count supported by the staging capacity.
+
+    PrimTS attention currently requires every routed row to be live.  Padding
+    continuous batches to power-of-two buckets can introduce inactive rows in
+    the same CTA as live rows, which is not yet a qualified kernel contract.
+    """
 
     if not 0 < num_tokens <= max_tokens:
         raise ValueError("QSA PrimTS live rows must fit the staging capacity")
-    return min(1 << (num_tokens - 1).bit_length(), max_tokens)
+    return num_tokens
 
 
 def _resolve_qsa_prims_ts_backend(*, capable: bool, available: bool) -> bool:

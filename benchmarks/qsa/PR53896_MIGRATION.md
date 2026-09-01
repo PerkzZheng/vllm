@@ -940,13 +940,22 @@ Q4 replay first stopped accepting all three MTP draft positions, then produced
 unbounded GSM8K reasoning without EOS. A controlled first-64 replay with all
 PDL disabled scored 63/64 with zero errors/truncations and completed in 104.9
 seconds. Retaining bitmap-to-pack PDL while disabling only pack-to-attention
-still failed after 60/64 responses. Disabling both grouped dependencies in the
-production policy restored 63/64, zero errors/truncations, normal nonzero MTP
-acceptance, and complete EOS termination in 131.6 seconds. Q1 retains its
-single mapper-to-attention PDL dependency; Q2/Q4 are stream ordered. The
-roughly 2--4 us grouped-metadata cost is accepted because Q4 was already
-neutral for full chaining and the standalone end-to-end policy remains within
-the 20-percent target.
+still failed after 60/64 responses. Disabling both grouped dependencies
+restored 63/64, zero errors/truncations, normal nonzero MTP acceptance, and
+complete EOS termination in 131.6 seconds on the first replay, but a later
+sustained replay still degraded. The isolation policy therefore stream-orders
+Q1 as well as Q2/Q4, explicitly resets every attention control tail, and
+retains the qualified S2 FP8 reducer instead of the experimental S8 promotion.
+These changes pass the focused standalone tests but do not cure the
+model-level failure.
+
+Power-of-two route padding was then removed as an independent variable. With
+19 requests continuously resident, every attention row was live and the route
+shape remained compatible with Q2, yet MTP acceptance declined from about 57
+percent to 17--21 percent. Thus inactive rows are not the root cause. The next
+qualification run rolls the vLLM owner back to the pre-unified explicit
+metadata buffer plus attention workspace while keeping the conservative
+kernel policy and exact-live routing unchanged.
 
 ## Remaining performance and integration signoff
 
