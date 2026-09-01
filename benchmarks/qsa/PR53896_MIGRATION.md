@@ -706,7 +706,7 @@ ratios are an accepted result.
 The pre-fix timing had a worst attention/contiguous ratio of `1.033x` and a
 worst metadata-inclusive ratio of `1.113x`. The corrected kernel must repeat
 the cold-L2 CUDA-graph measurement before the 20-percent target can be signed
-off. The diagnostic raw log is
+off; that corrected checkpoint is recorded below. The diagnostic raw log is
 `qsa_fp8_q1_kv128_keeps_s8_load4_tp12_bs18_cold_graph_10w100i_job624558.log`.
 
 ### Held-locator S8 correctness fix
@@ -747,6 +747,71 @@ GPQA-Diamond, and 57/60 aggregate AIME26 were produced by the faulty loader and
 are invalidated. They are not part of the accepted paired table above. No e2e
 accuracy conclusion should be drawn from them; rerun FP8/MTP=3 only after the
 corrected standalone cold-L2 performance checkpoint is recorded.
+
+### Corrected S8 performance and FP8/MTP=3 accuracy qualification
+
+FlashInfer `68fd2bf5` and vLLM `17e214c57` were qualified after the held-
+locator fix. The standalone benchmark uses cold L2 (258 MiB flush), CUDA graph
+replay, interleaved measurements, and 10 warmup/100 measured iterations on
+GB300 job 630633. Times are microseconds. `e2e` includes the compact Q1
+metadata builder and attention.
+
+| TP | BS | causal tail | PrimTS | e2e | Triton | contiguous SWA2K | PrimTS/contiguous | e2e/contiguous |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 18.44 | 20.40 | 16.40 | 18.20 | 1.013x | 1.121x |
+| 1 | 1 | 3 | 18.43 | 20.68 | 17.39 | 18.38 | 1.003x | 1.125x |
+| 1 | 8 | 0 | 20.48 | 22.47 | 31.42 | 18.59 | 1.102x | 1.209x |
+| 1 | 8 | 3 | 20.49 | 22.55 | 30.88 | 18.44 | 1.111x | 1.223x |
+| 2 | 1 | 0 | 18.25 | 20.43 | 16.29 | 18.22 | 1.002x | 1.121x |
+| 2 | 1 | 3 | 18.46 | 20.54 | 16.29 | 18.44 | 1.001x | 1.114x |
+| 2 | 8 | 0 | 18.57 | 20.57 | 22.65 | 18.36 | 1.012x | 1.121x |
+| 2 | 8 | 3 | 19.34 | 20.71 | 23.23 | 18.45 | 1.048x | 1.122x |
+
+The corrected attention kernel is within 11.1 percent of contiguous at every
+point and is faster than Triton at BS8. Metadata-inclusive TP1/BS8 is the only
+remaining miss against the 20-percent target: 20.9--22.3 percent, or 0.9--2.3
+percentage points beyond the limit. All TP1/BS1 and TP2 cases are within
+11.4--12.5 percent. The compact Q1 builder measures roughly eight microseconds
+in isolation but adds about two microseconds to this end-to-end graph. The raw
+log is
+`qsa_fp8_q1_s8_locatorfix_tp12_bs18_cold_graph_10w100i_job630633.log`.
+
+The corrected end-to-end accuracy gate uses the local Qwen3.8-Flash-Next
+`de4b8e4` weights, TP2, FP8-E4M3 KV cache, MTP=3, chat mode, and exactly
+`temperature=0.6`, `top_p=0.95`, `top_k=20`, `seed=42`,
+`max_tokens=131072`, `reasoning_effort=xhigh`, `n=1`, and `stream=false`.
+Jobs 630633 and 631364 used isolated TP2 servers and independent cache
+directories.
+
+| Benchmark | Triton FP8/MTP3 | corrected PrimTS FP8/MTP3 | delta |
+|---|---:|---:|---:|
+| GSM8K | 1290/1319 (97.80%) | 1292/1319 (97.95%) | +2 |
+| GPQA-Diamond, two repetitions | 363/396 (91.67%) | 362/396 (91.41%) | -1 |
+| AIME26, two repetitions | 60/60 (100.00%) | 59/60 (98.33%) | -1 |
+
+Both corrected GPQA repetitions score 181/198. AIME scores 30/30 and 29/30.
+There are no request errors or invalid predictions in any primary run and no
+GSM8K or GPQA truncations. The only AIME miss is item 11 in repetition two:
+it reaches the 131,072-token cap. The same item is correct in corrected
+PrimTS repetition one (43,912 tokens), both Triton repetitions (44,298 and
+33,985), and both prior PrimTS repetitions. An isolated rerun on the corrected
+kernel also returns the correct answer, 896, with a normal stop after 23,518
+tokens. The primary table intentionally remains 59/60 rather than replacing
+the prespecified full-run observation with the diagnostic rerun.
+
+The paired item audit further shows stochastic sampling variation rather than
+a coherent backend failure. Relative to the corresponding Triton repetition,
+GSM8K has 6 regressions and 8 improvements, GPQA-r1 has 7 and 7, GPQA-r2 has
+5 and 4, AIME-r1 has none, and AIME-r2 has only the diagnosed length outlier.
+Output token distributions explain the long wall time: GSM8K has mean 509 and
+p99 3,059 (range 127--13,281); GPQA repetitions have means 13.9K/13.7K,
+p90 45.1K/38.3K, and maxima 93.5K/122.7K; AIME repetitions have means
+17.5K/21.0K, p90 41.3K/40.9K, and maxima 67.5K/131.1K.
+
+Primary artifacts are under
+`qsa_accuracy/pr53896/prims-fp8-mtp3-s8-locatorfix-68fd2bf5-job630633`
+and
+`qsa_accuracy/pr53896/prims-fp8-mtp3-s8-locatorfix-68fd2bf5-job631364`.
 
 SQ4 must be compared with the exact grouped Q4 union, not with four flattened
 Q1 launches or an unadjusted shared SWA window. The table below reports the
@@ -796,16 +861,26 @@ runtime qualification still requires access to an SM100 node.
 
 Work proceeds in this order:
 
-1. Profile and close the remaining standalone attention gap against matched
-   Triton and grouped SWA controls; keep metadata-inclusive latency in every
-   acceptance table.
-2. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after the
-   performance changes.
-3. Measure matched Triton/PrimTS end-to-end prefill and decode speedups with
+1. Remove the standalone Q1 metadata launch. SQ1 has no grouped union or
+   membership mask: retain a fixed 513-entry row stride, consume or emit the
+   512 encoded physical page-4 locators directly, reserve entry 512 for the
+   zero-to-three-token causal tail, preinitialize the fixed CSR indptr, and
+   derive the live compact length from the query position. CUDA-graph padding
+   rows must keep locator -1 and length one. Prefer fusing logical-block to
+   physical-locator translation into the indexer/top-k output; otherwise
+   quantify repeated block-table translation across heads and K/V splits.
+   Keep the existing CSR-facing attention interface. Q2/Q4 continue to use
+   grouped-union metadata.
+2. Profile and close the remaining standalone attention and Q1 end-to-end gap
+   against matched Triton and grouped SWA controls; keep metadata-inclusive
+   latency in every acceptance table.
+3. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after any
+   subsequent kernel or metadata changes.
+4. Measure matched Triton/PrimTS end-to-end prefill and decode speedups with
    8K, 16K, 32K, and 64K natural input lengths. Decode uses MTP=3 and batch
    sizes 1, 8, 64, and 512; prefill and decode timings are reported
    separately.
-4. Promote the compact metadata builders into a public FlashInfer integration
+5. Promote the compact metadata builders into a public FlashInfer integration
    API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
    caller-owned output/workspace buffers, no host synchronization or replay-
    time allocation, and stable capacities suitable for CUDA graph capture.
