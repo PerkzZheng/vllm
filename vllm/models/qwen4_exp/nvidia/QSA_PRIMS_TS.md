@@ -1,39 +1,41 @@
 # QSA PrimTS integration
 
-This integration keeps the QSA indexer's compact block output and adapts it to
-FlashInfer PrimTS native page-four metadata. Prefill, decode, and MTP use one
-interface; the query rank selects Q1, Q2, or Q4 grouping.
+This integration keeps the QSA indexer's existing fixed-width token output and
+adapts it to FlashInfer PrimTS native paged-KV metadata. It does not add a
+kernel-specific top-k argument.
 
 ## Metadata route
 
-For the model configuration (`token_topk=2048` and semantic page size `4`),
-the indexer returns `[R, 512]` logical page-four IDs: one row for every
-flattened query token and one entry for every selected four-token block. It
-does not expand those blocks into 2,048 token IDs.
+Each query token is flattened into one independent `SQ=1` attention row. For
+the model configuration (`token_topk=2048`, compression ratio and semantic page
+size `4`), the indexer returns `[R, 2051]` logical token IDs:
 
-The FlashInfer metadata builder maps every selected logical page through the
-request's existing vLLM block table and writes the encoded locator expected by
-PrimTS:
+- up to 512 complete selected groups, with four adjacent IDs per group;
+- an optional causal tail of one to three IDs;
+- `-1` padding after the live prefix.
+
+`qsa_build_page4_paged_metadata` reads only column `4 * page_rank`, maps that
+logical token through the request's existing vLLM block table, and writes the
+encoded locator expected by FlashInfer:
 
 ```text
 subpages_per_storage_page = storage_page_size / 4
 locator = physical_page * subpages_per_storage_page + token_offset / 4
 ```
 
-For Q1, every query owns a fixed 513-entry CSR row: up to 512 selected pages
-plus one causal tail page. For Q2/Q4, adjacent request-safe query rows share an
-exact union. Each packed index carries a four-bit membership mask identifying
-which grouped queries selected that page:
+The generated tensors are:
 
 ```text
-packed_index = (locator << 4) | query_membership
+paged_kv_indptr: [R + 1]
+paged_kv_indices: [R * 513]
+seq_lens: [R]
 ```
 
-The builder emits caller-owned `qsa_page_indptr` and `qsa_seq_lens`. The larger
-`qsa_page_indices` tensor is an internal persistent prefix of the unified byte
-workspace and is not allocated or passed by vLLM. The length selects the live
-token prefix, including the zero-to-three-token tail. This keeps decode, MTP,
-variable-length prefill, and CUDA graph replay allocation-free after warmup.
+CSR rows have fixed capacity 513, so `indptr[r] = r * 513`. `seq_lens[r]`
+selects the live prefix: `min(floor((position + 1) / 4), 512) * 4` complete
+tokens plus `(position + 1) % 4` tail tokens. This makes the same buffers usable
+for decode, MTP, variable-length prefill, and CUDA graph replay without a host
+synchronization or per-forward allocation.
 
 The eventual PrimTS call uses `mask_type="causal"`. A flattened row's compact
 query offset is `seq_lens[r] - 1`; therefore complete selected groups are fully
@@ -53,42 +55,28 @@ FlashInfer exposes encoded page-4 support. PR 53896 exposes the combined vLLM
 cache as `[physical_page, storage_page_size, Hkv, 2D]`. The owner creates a
 zero-copy transposed view, splits K/V on the final dimension, and
 canonicalizes the resulting `[physical_page, Hkv, storage_page_size, D]`
-strides. The owner writes indptr and lengths into registered maximum-token
-buffers and uses the high-level FlashInfer QSA call:
+strides. The adapter writes into registered maximum-token buffers, and the
+owner passes their live slices to the ordinary PrimTS arguments:
 
 ```text
-(query, (k_cache, v_cache), block_indices, block_table,
- token_to_request, query_positions, qsa_page_indptr,
- qsa_seq_lens, workspace)
+(query, (k_cache, v_cache), workspace,
+ paged_kv_indptr, paged_kv_indices, seq_lens)
 ```
 
-Before graph capture, vLLM asks FlashInfer for one workspace size. The arena is
-partitioned by lifetime:
-
-```text
-unified QSA workspace
-├── persistent qsa_page_indices prefix
-│   metadata writes --------------------> attention reads
-└── reusable scratch suffix
-    bitmap union -> reset control tail -> split-KV partials/stats/counters
-```
-
-Only the suffix is reused. The page-index prefix remains live through the
-attention launch. The stream-ordered control-tail reset is graph capturable,
-prevents the split-KV completion counters from inheriting bitmap bits, and
-does not clear output-only partial O/statistics. The allocation
-is `align256(indices) + max(align256(bitmaps), attention_scratch)`, not the sum
-of three independent buffers. The previous Triton sparse-attention path
-remains the fallback on other architectures or when the QSA API is absent.
+Workspace is allocated lazily at the exact policy size and reused while the
+semantic launch key is stable. The key includes the query-group size, token
+count, and physical page extent. Switching it re-zeros the buffer because
+PrimTS section offsets can change. Warmed CUDA graph replays keep both the key
+and storage address stable. The previous Triton sparse-attention path remains
+the fallback on other architectures or when the page-4 API is absent.
 
 The production owner now chooses one request-safe route for the complete
 launch. Q1 keeps one independent CSR row per query token. Q2/Q4 reshape Q and O
 to `[route, 2|4, Hq, D]`, build the exact union of the member rows, and encode
-per-query membership in the high nibble of each internal
-`qsa_page_indices` entry. The public call still receives the indexer's compact
-blocks as ordinary semantic input; it does not add a second expanded-index
-input. Grouped launches use fixed bounds of 4,104 and 8,208 tokens; Q1 uses
-2,051.
+per-query membership in the high nibble of each ordinary
+`paged_kv_indices` entry. They therefore keep the existing PrimTS interface and
+do not add a top-k argument. Grouped launches use fixed graph bounds of 4,104
+and 8,208 tokens; Q1 uses 2,051.
 
 CPU query boundaries gate grouping. Every nonempty request and any inert CUDA
 graph suffix must begin and end on the selected group boundary, preventing a
@@ -97,31 +85,37 @@ Zero-length padding requests are ignored. `fast_build` adaptive-verification
 metadata deliberately omits its CPU boundaries because only its total is
 authoritative; it consequently takes Q1. Other variable-length prefill/MTP
 batches also remain functional through Q1 when no common grouping is safe.
-
-The policy first caps grouping so all local Q heads belonging to a grouped set
-fit TileQ64:
-
-```text
-max_group = min(4, floor(64 / (local_q_heads / local_kv_heads)))
-```
-
-It then tests Q4 and Q2 from largest to smallest. A candidate must preserve
-every request boundary, keep the real/padded boundary aligned, and retain at
-least one estimated SM wave after grouping:
+Before evaluating those shapes, the owner computes a stable grouping-work
+estimate
 
 ```text
 estimated_kv_tasks = flattened_query_rows * local_kv_heads * 4
-estimated_kv_tasks >= group_size * num_sms
 ```
 
-The factor four is the assumed maximum split-KV opportunity, not the resolved
-runtime split count. Flattened rows make the same rule apply to decode, MTP,
-and prefill. A TODO in FlashInfer records that scattered page-four loading and
-union-metadata cost should later be added to the dense PrimTS candidate model.
+The factor four is the assumed split-KV opportunity for this profitability
+policy; it is not the dynamically resolved Q1 split count. If the estimate is
+no larger than the CUDA device's SM count, the complete launch stays on Q1
+because there is too little potential work to amortize union metadata.
+Flattened query rows, rather than request count alone, are used because each
+MTP/prefill query token is an independent Q1 route. The remaining qualified
+whole-launch policy, applied only after this one-wave gate, is:
 
-The owner lazily retains the largest required unified byte workspace plus
-registered maximum-token indptr and length buffers. Their addresses remain
-stable after warmup, so CUDA graph replay does not allocate or resize them.
+- Q4 at 256 or more Q4 groups for every TP;
+- Q4 at 64 or more Q4 groups for TP1, TP2, and TP8;
+- Q2 at that 64-group crossover for TP4 (128 Q2 groups);
+- Q4 at eight or more Q4 groups for TP1 and TP2;
+- Q2 for aligned SQ2 routes at 512 groups on TP1/TP2 or 128 groups on
+  TP4/TP8;
+- Q1 otherwise.
+
+On the 152-SM GB300 checkpoint, TP1's two local KV heads cross the gate above
+19 flattened rows, while the one-local-KV-head TP2/TP4/TP8 shapes cross above
+38 rows. Request alignment and the measured Q2/Q4 crossover thresholds still
+apply after that gate. SM100 uses its own device SM count.
+
+The owner lazily retains an exact-size Int32 bitmap workspace for grouped
+metadata and reuses the registered maximum-token CSR buffers. Both addresses
+are stable after warmup, so capture does not allocate or resize them.
 
 ## Validation status
 

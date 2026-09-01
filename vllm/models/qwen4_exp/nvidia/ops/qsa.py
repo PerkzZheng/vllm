@@ -24,8 +24,6 @@ _QSAPrimsTSAPIs = tuple[
     Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
     Callable[..., int],
     Callable[..., torch.Tensor],
-    Callable[..., int],
-    Callable[..., torch.Tensor],
 ]
 
 
@@ -1427,10 +1425,8 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
             build_prims_ts_qsa_page4_metadata,
             get_prims_ts_batch_decode_workspace_size,
             get_prims_ts_qsa_metadata_workspace_size,
-            get_prims_ts_qsa_workspace_size,
             get_prims_ts_qsa_group_size,
             prims_ts_batch_decode_with_kv_cache,
-            prims_ts_qsa_attention,
         )
     except (AttributeError, ImportError):
         return None
@@ -1446,8 +1442,6 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
         get_prims_ts_qsa_group_size,
         get_prims_ts_qsa_metadata_workspace_size,
         build_prims_ts_qsa_page4_metadata,
-        get_prims_ts_qsa_workspace_size,
-        prims_ts_qsa_attention,
         get_prims_ts_batch_decode_workspace_size,
         prims_ts_batch_decode_with_kv_cache,
     )
@@ -1471,7 +1465,7 @@ def qsa_prims_ts_workspace_size(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    _, _, _, _, _, get_workspace_size, _ = apis
+    _, _, _, get_workspace_size, _ = apis
     if q.ndim == 3:
         batch_size, num_qo_heads, head_dim = q.shape
         seq_len_q = 1
@@ -1504,31 +1498,6 @@ def qsa_prims_ts_workspace_size(
     )
 
 
-def qsa_prims_ts_unified_workspace_size(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    block_table: torch.Tensor,
-    block_topk: int,
-    *,
-    out_dtype: torch.dtype | None = None,
-) -> int:
-    """Return bytes for page indices, metadata, and attention scratch."""
-
-    apis = _qsa_prims_ts_apis()
-    if apis is None:
-        raise RuntimeError("FlashInfer does not provide unified QSA workspace")
-    _, _, _, get_workspace_size, _, _, _ = apis
-    return int(
-        get_workspace_size(
-            q,
-            k_cache,
-            block_table,
-            block_topk=block_topk,
-            out_dtype=out_dtype,
-        )
-    )
-
-
 def qsa_prims_ts_group_size(
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -1551,7 +1520,7 @@ def qsa_prims_ts_group_size(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    get_group_size, _, _, _, _, _, _ = apis
+    get_group_size, _, _, _, _ = apis
     return int(
         get_group_size(
             query_start_loc_cpu,
@@ -1574,7 +1543,7 @@ def qsa_prims_ts_metadata_workspace_size(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide fused QSA metadata")
-    _, get_workspace_size, _, _, _, _, _ = apis
+    _, get_workspace_size, _, _, _ = apis
     return int(
         get_workspace_size(
             num_query_tokens,
@@ -1593,8 +1562,8 @@ def qsa_prims_ts_build_page4_metadata(
     storage_page_size: int,
     group_size: int,
     workspace_buffer: torch.Tensor | None,
-    qsa_page_indptr: torch.Tensor,
-    qsa_page_indices: torch.Tensor,
+    paged_kv_indptr: torch.Tensor,
+    paged_kv_indices: torch.Tensor,
     seq_lens: torch.Tensor,
     enable_pdl: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1603,7 +1572,7 @@ def qsa_prims_ts_build_page4_metadata(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide fused QSA metadata")
-    _, _, build_metadata, _, _, _, _ = apis
+    _, _, build_metadata, _, _ = apis
     return build_metadata(
         block_indices,
         block_table,
@@ -1612,48 +1581,7 @@ def qsa_prims_ts_build_page4_metadata(
         workspace_buffer,
         group_size=group_size,
         storage_page_size=storage_page_size,
-        out=(qsa_page_indptr, qsa_page_indices, seq_lens),
-        enable_pdl=enable_pdl,
-    )
-
-
-def qsa_prims_ts_attention(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    block_indices: torch.Tensor,
-    block_table: torch.Tensor,
-    token_to_req: torch.Tensor,
-    logical_positions: torch.Tensor,
-    qsa_page_indptr: torch.Tensor,
-    seq_lens: torch.Tensor,
-    workspace_buffer: torch.Tensor,
-    *,
-    out: torch.Tensor,
-    bmm1_scale: float | None = None,
-    bmm2_scale: float = 1.0,
-    enable_pdl: bool | None = None,
-) -> torch.Tensor:
-    """Build QSA metadata and run PrimTS through one workspace."""
-
-    apis = _qsa_prims_ts_apis()
-    if apis is None:
-        raise RuntimeError("FlashInfer does not provide unified QSA attention")
-    _, _, _, _, run_qsa, _, _ = apis
-    return run_qsa(
-        q,
-        (k_cache, v_cache),
-        block_indices,
-        block_table,
-        token_to_req,
-        logical_positions,
-        qsa_page_indptr,
-        seq_lens,
-        workspace_buffer,
-        bmm1_scale=bmm1_scale,
-        bmm2_scale=bmm2_scale,
-        out=out,
-        out_dtype=out.dtype,
+        out=(paged_kv_indptr, paged_kv_indices, seq_lens),
         enable_pdl=enable_pdl,
     )
 
@@ -1663,8 +1591,8 @@ def qsa_prims_ts_paged_attention(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
     workspace_buffer: torch.Tensor,
-    qsa_page_indptr: torch.Tensor,
-    qsa_page_indices: torch.Tensor,
+    paged_kv_indptr: torch.Tensor,
+    paged_kv_indices: torch.Tensor,
     seq_lens: torch.Tensor,
     max_seq_len: int,
     out: torch.Tensor,
@@ -1677,7 +1605,7 @@ def qsa_prims_ts_paged_attention(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    _, _, _, _, _, _, run_attention = apis
+    _, _, _, _, run_attention = apis
     if q.ndim == 3:
         seq_len_q = 1
     elif q.ndim == 4 and q.shape[1] in (2, 4):
@@ -1690,8 +1618,8 @@ def qsa_prims_ts_paged_attention(
         q,
         (k_cache, v_cache),
         workspace_buffer,
-        qsa_page_indptr,
-        qsa_page_indices,
+        paged_kv_indptr,
+        paged_kv_indices,
         seq_lens,
         max_seq_len,
         seq_len_q=seq_len_q,
@@ -2103,12 +2031,10 @@ __all__ = [
     "expand_qsa_block_indices_cuda",
     "qsa_compress_groups_with_ratio",
     "qsa_mqa_paged",
-    "qsa_prims_ts_attention",
     "qsa_prims_ts_build_page4_metadata",
     "qsa_prims_ts_group_size",
     "qsa_prims_ts_metadata_workspace_size",
     "qsa_prims_ts_paged_attention",
-    "qsa_prims_ts_unified_workspace_size",
     "qsa_prims_ts_workspace_size",
     "qsa_select_paged_tokens",
     "qsa_sparse_paged_attention",

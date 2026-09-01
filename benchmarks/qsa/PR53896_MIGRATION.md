@@ -860,7 +860,7 @@ matrices pass with unchanged error, and the complete TP1/TP2 SQ4 and grouped
 union matrices pass. SM100 compiles are supported by the existing profiles;
 runtime qualification still requires access to an SM100 node.
 
-## Unified public QSA workspace checkpoint
+## Rejected unified public QSA workspace checkpoint
 
 FlashInfer now exposes a common two-call integration surface:
 
@@ -981,7 +981,9 @@ Work proceeds in this order:
    8K, 16K, 32K, and 64K natural input lengths. Decode uses MTP=3 and batch
    sizes 1, 8, 64, and 512; prefill and decode timings are reported
    separately.
-5. Keep the public QSA surface framework-neutral while optimizing metadata:
-   add a standalone integration example, preserve the two-call graph-capture
-   contract, and avoid exposing internal bitmap, page-index, or split-KV
-   workspace partitions to other frameworks.
+5. Promote the compact metadata builders into a public FlashInfer integration
+   API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
+   caller-owned output/workspace buffers, no host synchronization or replay-
+   time allocation, and stable capacities suitable for CUDA graph capture.
+   The vLLM path becomes the reference integration, with standalone examples
+   documenting the contract for other frameworks.
