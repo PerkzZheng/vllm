@@ -71,6 +71,16 @@ storage address stable when the scheduler alternates graph buckets. The
 previous Triton sparse-attention path remains the fallback on other
 architectures or when the page-4 API is absent.
 
+This per-key pool replaced a short-lived diagnostic implementation that shared
+one uninitialized attention scratch allocation across all captured graph
+shapes. The shared implementation produced one intermittent FP8/MTP3
+sustained-decode stall at 28/30 AIME26 requests. Unchanged S4/load4 with the
+per-key pool subsequently completed 30/30 with no request failures, but the
+original failure was intermittent, so a repeated sustained gate remains part
+of graph-safety signoff. The vLLM owner still uses explicit registered metadata
+buffers plus separate attention scratch; it does not call FlashInfer's public
+unified-workspace entry point.
+
 The production owner now chooses one request-safe route for the complete
 launch. Q1 keeps one independent CSR row per query token. Q2/Q4 reshape Q and O
 to `[route, 2|4, Hq, D]`, build the exact union of the member rows, and encode

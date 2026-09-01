@@ -1007,7 +1007,7 @@ caller-owned metadata buffers plus the standalone attention workspace. The
 historical unified measurements above remain useful as direct FlashInfer API
 qualification, but they are no longer mislabeled as the active vLLM path.
 
-## Graph-safe FP8 Q1 S4 accuracy route
+## FP8 Q1 S4 accuracy route
 
 The restored Q64/KV128 S8 route is graph-safe and fast, but it is not the
 accuracy-qualified production choice. Under the exact FP8/MTP3 sampling
@@ -1039,6 +1039,40 @@ samples:
 S4 remains within 20 percent for attention alone, but its metadata-inclusive
 BS1 result remains outside the target. Accuracy takes precedence; the existing
 SQ1 metadata-elision item below is now the first performance follow-up.
+
+### Workspace-lifetime requalification
+
+The initial S4 qualification was reopened after one full FP8, TP2, MTP3
+AIME26 repetition stopped at 28/30 requests with zero forward throughput.
+Another run using the same kernel and shared explicit attention scratch
+completed, making the failure intermittent. This path is not using
+FlashInfer's public unified QSA workspace interface: vLLM writes metadata into
+registered buffers and supplies a separate attention scratch allocation.
+Reverting that public interface would therefore not be a valid A/B test.
+
+Commit `951e539e2` had removed the prior semantic-launch-key reset and changed
+the shared attention scratch allocation from `torch.zeros` to `torch.empty`.
+The production owner now pools a distinct, zero-initialized scratch allocation
+for each semantic graph key. The key covers device, flattened query-row count,
+SQ, storage page size, input/output dtype, and required byte extent. This
+prevents graphs with different section layouts from sharing stale control or
+partial storage while keeping every captured address stable.
+
+With vLLM `e9369c8e7`, FlashInfer `2bb8d808`, unchanged S4/load4, and the
+per-key pool, the exact-sampling AIME26 gate completed 30/30 with zero errors,
+invalid predictions, or truncations in 1,072.7 seconds and 551,838 completion
+tokens. The result is under
+`qsa_accuracy/pr53896/s4-load4-workspace-pool-fp8-mtp3-job635397`.
+One clean run does not prove that an intermittent stall is eliminated, so the
+same sustained gate must pass again before S4/load4 is called graph-safe.
+
+A corrected S4/load1 control also completed 30/30, but it misses the latency
+target badly. The matched TP2/BS1/SQ1 cold-L2 CUDA-graph result is 24.57 us
+attention and 26.61 us metadata-inclusive for tail zero, and 26.77/28.68 us
+for tail three, versus 16.40/17.07 us contiguous. A prior run labeled load1
+was actually load4 because a later resolver update overwrote the first
+assignment; both assignments are fixed in the diagnostic worktree. Keep true
+load1 as a safety control rather than the default.
 
 ## Remaining performance and integration signoff
 
