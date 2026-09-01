@@ -71,7 +71,7 @@ case "$1" in
       --n 1 \
       --max-concurrency 64 \
       --metadata vllm=a9b9c9d19 \
-      --metadata flashinfer=49921104 \
+      --metadata flashinfer=bd3863b8 \
       --metadata model=de4b8e4 \
       --metadata backend=prims_ts \
       --metadata kv_cache=fp8_e4m3 \

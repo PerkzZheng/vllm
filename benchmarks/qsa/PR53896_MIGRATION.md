@@ -889,8 +889,9 @@ For 8K Q, 128K maximum KV capacity, top-k 512, and Q4, the allocation is
 50,364,416 bytes (48.03125 MiB): 16,809,984 bytes of persistent page indices
 plus a 32 MiB bitmap-dominated shared suffix. The focused SM103 validation has
 20 passing FlashInfer tests, including PDL on/off, real Q4 equivalence with the
-old two-step path, and CUDA graph replay. The vLLM owner/reference suite has 29
-passing and 27 architecture-dependent skipped tests.
+old two-step path, and CUDA graph replay. With the ABI-matched PR 53896 runtime
+overlay and test dependencies, the vLLM owner/reference suite has 56 passing
+tests.
 
 The benchmark harness now reports the high-level unified call beside the
 explicit metadata+attention path. On GB300 with BF16, cold L2 (258 MiB
@@ -932,6 +933,20 @@ us and 84.51/84.20 us for TP2. One multi-configuration run stopped emitting
 output in its final TP2/eight-group case, but an isolated 10-warmup,
 100-sample rerun completed at 84.51 us, and the graph/reference tests did not
 reproduce a deadlock.
+
+Model-level FP8/MTP3 qualification subsequently rejected grouped PDL even
+though these isolated timing and graph checks passed. On job 633335, sustained
+Q4 replay first stopped accepting all three MTP draft positions, then produced
+unbounded GSM8K reasoning without EOS. A controlled first-64 replay with all
+PDL disabled scored 63/64 with zero errors/truncations and completed in 104.9
+seconds. Retaining bitmap-to-pack PDL while disabling only pack-to-attention
+still failed after 60/64 responses. Disabling both grouped dependencies in the
+production policy restored 63/64, zero errors/truncations, normal nonzero MTP
+acceptance, and complete EOS termination in 131.6 seconds. Q1 retains its
+single mapper-to-attention PDL dependency; Q2/Q4 are stream ordered. The
+roughly 2--4 us grouped-metadata cost is accepted because Q4 was already
+neutral for full chaining and the standalone end-to-end policy remains within
+the 20-percent target.
 
 ## Remaining performance and integration signoff
 
