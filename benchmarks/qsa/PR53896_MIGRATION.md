@@ -857,6 +857,36 @@ matrices pass with unchanged error, and the complete TP1/TP2 SQ4 and grouped
 union matrices pass. SM100 compiles are supported by the existing profiles;
 runtime qualification still requires access to an SM100 node.
 
+## Unified public QSA workspace checkpoint
+
+FlashInfer now exposes a common two-call integration surface:
+
+```text
+get_prims_ts_qsa_workspace_size(...)
+prims_ts_qsa_attention(...)
+```
+
+Frameworks continue to provide Q, K/V, compact `[R, 512]` block indices, the
+block table, request mapping, query positions, caller-owned indptr/lengths, and
+output. They allocate one byte workspace; the internal `qsa_page_indices`
+array is no longer a second framework allocation or public attention input.
+Query rank selects Q1 (`[B,Hq,D]`) or Q2/Q4 (`[B,2|4,Hq,D]`).
+
+The arena uses lifetime-aware partial reuse. Its page-index prefix remains live
+from metadata packing through attention. Only the scratch suffix is shared:
+group bitmaps occupy it during metadata, then split-KV partials, statistics,
+and counters occupy it during attention. A single stream-ordered reset clears
+only the contiguous attention control tail (counters, fixed-Q placeholder, and
+sink scalar); output-only partial O/statistics are not cleared. This sequence
+is CUDA-graph capturable.
+
+For 8K Q, 128K maximum KV capacity, top-k 512, and Q4, the allocation is
+50,364,416 bytes (48.03125 MiB): 16,809,984 bytes of persistent page indices
+plus a 32 MiB bitmap-dominated shared suffix. The focused SM103 validation has
+17 passing FlashInfer tests, including PDL on/off, real Q4 equivalence with the
+old two-step path, and CUDA graph replay. The vLLM owner/reference suite has 29
+passing and 27 architecture-dependent skipped tests.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
@@ -880,9 +910,7 @@ Work proceeds in this order:
    8K, 16K, 32K, and 64K natural input lengths. Decode uses MTP=3 and batch
    sizes 1, 8, 64, and 512; prefill and decode timings are reported
    separately.
-5. Promote the compact metadata builders into a public FlashInfer integration
-   API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
-   caller-owned output/workspace buffers, no host synchronization or replay-
-   time allocation, and stable capacities suitable for CUDA graph capture.
-   The vLLM path becomes the reference integration, with standalone examples
-   documenting the contract for other frameworks.
+5. Keep the public QSA surface framework-neutral while optimizing metadata:
+   add a standalone integration example, preserve the two-call graph-capture
+   contract, and avoid exposing internal bitmap, page-index, or split-KV
+   workspace partitions to other frameworks.

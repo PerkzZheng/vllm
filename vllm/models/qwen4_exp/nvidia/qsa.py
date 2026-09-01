@@ -60,10 +60,6 @@ from ..common.qsa_cache import QSAForwardMetadata
 from . import model
 from .indexer_qsa import QSAIndexer
 
-_QSA_Q1_MAX_SEQ_LEN = 2051
-_QSA_Q2_MAX_SEQ_LEN = 4104
-_QSA_Q4_MAX_SEQ_LEN = 8208
-
 _QSA_BACKEND_ENV = "VLLM_QSA_ATTENTION_BACKEND"
 
 
@@ -206,15 +202,19 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         layer: torch.nn.Module,
         query: torch.Tensor,
         key_cache: torch.Tensor,
-        max_seq_len: int,
+        block_table: torch.Tensor,
+        block_topk: int,
         out_dtype: torch.dtype,
     ) -> torch.Tensor:
-        from .ops.qsa import qsa_prims_ts_workspace_size
+        """Return graph-stable storage for QSA metadata and attention."""
 
-        required_bytes = qsa_prims_ts_workspace_size(
+        from .ops.qsa import qsa_prims_ts_unified_workspace_size
+
+        required_bytes = qsa_prims_ts_unified_workspace_size(
             query,
             key_cache,
-            max_seq_len,
+            block_table,
+            block_topk,
             out_dtype=out_dtype,
         )
         workspace = getattr(layer, "_qsa_prims_ts_workspace", None)
@@ -223,10 +223,9 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             or workspace.device != query.device
             or workspace.numel() < required_bytes
         ):
-            # The standalone PrimTS interface treats this buffer as output-only
-            # scratch: the main kernel overwrites live partials before the
-            # reducer consumes them.  Do not record a full-buffer memset into
-            # every vLLM CUDA graph merely because its static batch shape differs.
+            # Live page indices occupy a stable prefix. Metadata bitmaps and
+            # split-KV attention reuse the remaining scratch region in stream
+            # order, so no shape-dependent full-buffer memset is required.
             workspace = torch.empty(
                 required_bytes,
                 dtype=torch.uint8,
@@ -234,38 +233,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             )
             layer._qsa_prims_ts_workspace = workspace
         return workspace
-
-    def _get_qsa_metadata_workspace(
-        self,
-        layer: torch.nn.Module,
-        num_tokens: int,
-        block_table: torch.Tensor,
-        storage_page_size: int,
-        group_size: int,
-    ) -> torch.Tensor:
-        """Return graph-stable scratch for exact grouped page unions."""
-
-        from .ops.qsa import qsa_prims_ts_metadata_workspace_size
-
-        required_bytes = qsa_prims_ts_metadata_workspace_size(
-            num_tokens,
-            block_table,
-            storage_page_size,
-            group_size,
-        )
-        workspace = getattr(layer, "_qsa_metadata_workspace", None)
-        if (
-            workspace is None
-            or workspace.device != block_table.device
-            or workspace.numel() < required_bytes
-        ):
-            workspace = torch.empty(
-                required_bytes,
-                dtype=torch.uint8,
-                device=block_table.device,
-            )
-            layer._qsa_metadata_workspace = workspace
-        return workspace[:required_bytes]
 
     def forward_qsa(
         self,
@@ -333,9 +300,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
 
         if self.use_qsa_prims_ts:
             from .ops.qsa import (
-                qsa_prims_ts_build_page4_metadata,
+                qsa_prims_ts_attention,
                 qsa_prims_ts_group_size,
-                qsa_prims_ts_paged_attention,
             )
 
             if not indices_are_blocks:
@@ -403,48 +369,15 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 query_start_loc_cpu,
             )
             route_rows = route_capacity // group_size
-            page_capacity = (
-                logical_indices.shape[1] + 1
-                if indices_are_blocks
-                else (logical_indices.shape[1] + 3) // 4
-            )
-            indptr_buffer = getattr(layer, "qsa_paged_kv_indptr_buffer", None)
-            indices_buffer = getattr(layer, "qsa_paged_kv_indices_buffer", None)
+            indptr_buffer = getattr(layer, "qsa_page_indptr_buffer", None)
             seq_lens_buffer = getattr(layer, "qsa_seq_lens_buffer", None)
-            if (
-                indptr_buffer is None
-                or indices_buffer is None
-                or seq_lens_buffer is None
-            ):
+            if indptr_buffer is None or seq_lens_buffer is None:
                 raise RuntimeError("QSA owner did not provide PrimTS metadata buffers")
-            paged_kv_indptr = indptr_buffer[: route_rows + 1]
-            paged_kv_indices = indices_buffer[: route_capacity * page_capacity]
+            qsa_page_indptr = indptr_buffer[: route_rows + 1]
             seq_lens = seq_lens_buffer[:route_rows]
-            metadata_workspace = None
-            if group_size > 1:
-                metadata_workspace = self._get_qsa_metadata_workspace(
-                    layer,
-                    route_capacity,
-                    attn_metadata.block_table,
-                    prims_key_cache.shape[2],
-                    group_size,
-                )
-            qsa_prims_ts_build_page4_metadata(
-                logical_indices,
-                attn_metadata.block_table,
-                token_to_req,
-                logical_positions,
-                prims_key_cache.shape[2],
-                group_size,
-                metadata_workspace,
-                paged_kv_indptr,
-                paged_kv_indices,
-                seq_lens,
-            )
             if group_size == 1:
                 route_query = query_for_attention
                 route_output = prims_output
-                max_seq_len = _QSA_Q1_MAX_SEQ_LEN
             else:
                 route_query = query_for_attention.view(
                     route_rows,
@@ -453,26 +386,26 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                     query.shape[2],
                 )
                 route_output = prims_output.view_as(route_query)
-                max_seq_len = (
-                    _QSA_Q2_MAX_SEQ_LEN if group_size == 2 else _QSA_Q4_MAX_SEQ_LEN
-                )
             workspace = self._get_qsa_prims_ts_workspace(
                 layer,
                 route_query,
                 prims_key_cache,
-                max_seq_len,
+                attn_metadata.block_table,
+                logical_indices.shape[1],
                 route_output.dtype,
             )
-            qsa_prims_ts_paged_attention(
+            qsa_prims_ts_attention(
                 route_query,
                 prims_key_cache,
                 prims_value_cache,
-                workspace,
-                paged_kv_indptr,
-                paged_kv_indices,
+                logical_indices,
+                attn_metadata.block_table,
+                token_to_req,
+                logical_positions,
+                qsa_page_indptr,
                 seq_lens,
-                max_seq_len,
-                route_output,
+                workspace,
+                out=route_output,
                 bmm1_scale=bmm1_scale,
                 bmm2_scale=bmm2_scale,
             )
@@ -677,7 +610,6 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 persistent=False,
             )
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
-        self._qsa_metadata_workspace: torch.Tensor | None = None
         if self.impl.use_qsa_prims_ts:
             if not is_quantized_kv_cache(self.kv_cache_dtype):
                 self.register_buffer(
@@ -710,15 +642,9 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 torch.full((max_tokens,), -1, dtype=torch.int64),
                 persistent=False,
             )
-            page_capacity = self.indexer.block_topk + 1
             self.register_buffer(
-                "qsa_paged_kv_indptr_buffer",
+                "qsa_page_indptr_buffer",
                 torch.empty(max_tokens + 1, dtype=torch.int32),
-                persistent=False,
-            )
-            self.register_buffer(
-                "qsa_paged_kv_indices_buffer",
-                torch.empty(max_tokens * page_capacity, dtype=torch.int32),
                 persistent=False,
             )
             self.register_buffer(
