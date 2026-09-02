@@ -1198,6 +1198,15 @@ also uses PR 53896 rather than accidentally falling back to the image's Python
 package. PrimTS imports only the local FlashInfer attention/trace overlay, so
 the image-only GDN and MoE modules remain intact.
 
+Pyxis mounts the host NFS home at `/root`, so the runner must not rely on
+library defaults under `~/.cache`. `QSA_CACHE_ROOT` now defaults to a
+run-tagged directory under `/workspace/.cache` and explicitly owns the XDG,
+Hugging Face, Torch, CUDA-driver, and FlashInfer JIT caches. FlashInfer needs
+its own `FLASHINFER_WORKSPACE_BASE` setting because it does not follow
+`XDG_CACHE_HOME`. Triton and vLLM retain their existing workspace-backed cache
+roots. This keeps package/runtime state persistent and prevents benchmark
+launches from reading or writing the host-home cache.
+
 Job 638504 provided the first paired TP2 smoke test on one GB300 node. Both
 servers completed cold compilation and CUDA-graph capture, reached the health
 endpoint, and completed every request. The 8K measurements use one distinct

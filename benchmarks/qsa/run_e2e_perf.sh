@@ -28,6 +28,7 @@ usage:
 
 Environment overrides:
   QSA_PORT, QSA_OUTPUT_ROOT, QSA_CACHE_TAG, QSA_PYTHON,
+  QSA_CACHE_ROOT,
   QSA_PREFILL_PROMPTS, QSA_DECODE_OUTPUT_LEN, QSA_TP_SIZE,
   QSA_DECODE_WARMUP_PROMPTS,
   QSA_GPU_MEMORY_UTILIZATION, QSA_MAX_NUM_BATCHED_TOKENS,
@@ -49,6 +50,7 @@ fi
 
 cache_tag=${QSA_CACHE_TAG:-e2e-perf-${backend}}
 result_dir=${qsa_output_root}/${cache_tag}
+qsa_cache_root=${QSA_CACHE_ROOT:-${qsa_workspace}/.cache/${cache_tag}}
 mkdir -p "${result_dir}"
 
 # Use the PR 53896 Python sources for both the server and benchmark client,
@@ -59,6 +61,20 @@ export PYTHONPATH=${qsa_runtime_overlay}:${qsa_repo}
 export QSA_USE_IMAGE_DSL_STACK=1
 export QSA_CUTLASS_DSL_PACKAGES=${qsa_cutlass_packages}
 export PYTHONNOUSERSITE=1
+export XDG_CACHE_HOME=${qsa_cache_root}/xdg
+export HF_HOME=${qsa_cache_root}/huggingface
+export TORCH_HOME=${qsa_cache_root}/torch
+export CUDA_CACHE_PATH=${qsa_cache_root}/cuda
+# FlashInfer does not use XDG_CACHE_HOME.  It appends .cache/flashinfer to
+# FLASHINFER_WORKSPACE_BASE, so pin the base separately to avoid the host-home
+# bind that Pyxis exposes as /root.
+export FLASHINFER_WORKSPACE_BASE=${qsa_cache_root}/flashinfer-workspace
+mkdir -p \
+  "${XDG_CACHE_HOME}" \
+  "${HF_HOME}" \
+  "${TORCH_HOME}" \
+  "${CUDA_CACHE_PATH}" \
+  "${FLASHINFER_WORKSPACE_BASE}"
 
 common_bench_args=(
   --backend openai
