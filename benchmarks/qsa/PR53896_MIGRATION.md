@@ -1546,8 +1546,29 @@ predictions, or truncations. Item-level correctness exactly matches the prior
 qualified S4 production run: the sole miss is question ID 12. Output hashes
 are not identical, as expected for a sampled run, but there are no correctness
 transitions. Artifacts are under
-`qsa_accuracy/pr53896/post-q5-fp8-mtp3-job642187`; the complete GSM8K rerun is
-in progress before GPQA-diamond and AIME26.
+`qsa_accuracy/pr53896/post-q5-fp8-mtp3-job642187`.
+
+The complete post-Q5 accuracy matrix also passes. All runs use FP8-E4M3 KV,
+MTP=3, TP2, the exact sampling policy above, and the reduced capture list:
+
+| benchmark | PR53896 Triton FP8/MTP3 | prior S4/load4 PrimTS | post-Q5 PrimTS |
+|---|---:|---:|---:|
+| GSM8K | 1290/1319 (97.80%) | 1292/1319 (97.95%) | 1291/1319 (97.88%) |
+| GPQA-diamond, 2 reps | 363/396 (91.67%) | 359/396 (90.66%) | 362/396 (91.41%) |
+| AIME26, 2 reps | 60/60 (100.00%) | 60/60 (100.00%) | 60/60 (100.00%) |
+
+Every post-Q5 request completed, with zero API errors and zero invalid
+predictions. GSM8K and AIME have no truncations; GPQA has one response at the
+prescribed 131,072-token cap. GSM8K has five prior-correct/new-wrong and four
+prior-wrong/new-correct transitions, a net loss of one, which is consistent
+with sampled trajectory variation. GPQA repetitions score 179/198 and
+183/198. The AIME scorer initially crashed after inference because a fallback
+numeric match overflowed to floating-point infinity. Commit `c25501c72`
+normalizes only finite integral AIME-range values and treats pathological
+numbers as invalid predictions; the clean 30/30 rerun is the table entry.
+Complete artifacts are split across
+`qsa_accuracy/pr53896/post-q5-fp8-mtp3-job642187` and
+`qsa_accuracy/pr53896/post-q5-fp8-mtp3-job643015`.
 
 ## Remaining performance and integration signoff
 
@@ -1565,8 +1586,9 @@ Work proceeds in this order:
    Prefer fusing logical-block to physical-locator translation into the
    indexer/top-k output. Keep the existing CSR-facing attention interface;
    Q2/Q4 continue to use grouped-union metadata.
-2. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after any
-   subsequent kernel or metadata changes.
+2. Completed after Q5 on jobs 642187 and 643015: the full PrimTS
+   FP8-E4M3/MTP=3 gate matches the Triton distribution. Rerun it after any
+   subsequent arithmetic, kernel, or metadata changes.
 3. Extend the initial matched TP2 end-to-end matrix using warmed Triton and
    PrimTS compile caches. Add the remaining BS64 and BS512 points at 8K, 16K,
    32K, and 64K where the matched physical KV capacity permits; keep prefill
