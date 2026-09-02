@@ -1512,6 +1512,43 @@ the 20% target and localizes the next investigation to all-layer/framework
 overhead rather than Q5 correctness. Raw JSON is in
 `qsa_e2e_perf/job642187-mtp4`.
 
+### Exact high-batch decode feasibility and post-Q5 accuracy gate
+
+The requested independent-context TP2 BS256 decode points cannot be reported
+honestly with the current model/cache configuration. At 95% device-memory
+utilization the BF16 MTP3 server exposes 1,820,379 KV tokens, while 256
+independent 8,192-token prompts require 2,097,152 tokens before generating one
+decode token. Raising utilization to 99% fails cache allocation: vLLM requests
+76.63 GiB with only 75.06 GiB free. FP8 exposes 2,841,453 tokens, but the
+scheduler admits only about 121 of 256 independent 8K requests concurrently;
+earlier requests finish before the final prompts enter decode. Treating this
+as BS256 would measure scheduler waves rather than a simultaneous cohort. FP8
+BS256/16K is also physically infeasible: the full-device projected capacity is
+about 3.93M tokens versus 4.19M prompt tokens. These points remain TODO for a
+larger TP/cache configuration or a decode-only state injection harness.
+
+The first post-Q5 FP8/MTP3 PrimTS server initially exposed a separate graph
+capture issue in the image-provided TRT-LLM BF16 MoE batched GEMM. With
+`CUDA_LAUNCH_BLOCKING=1`, the failure is synchronous in
+`flashinfer.fused_moe.trtllm_bf16_moe` for the `M=1, N=2560, K=384` case; the
+QSA metadata and attention launches complete before it. A focused FlashInfer
+regression now covers FP8 Q/K/V, BF16 output, rows 1 and 2, and three prepared
+QSA CUDA-graph replays. Both cases pass on SM103. Capturing either tiny shape
+alone, or shapes 1 and 2 together, also starts the complete server normally.
+This rules out a basic tiny-Q1 QSA bounds or workspace-lifetime fault and
+identifies a cross-shape TRT-LLM MoE graph-capture interaction.
+
+As a serving workaround, the capture list omits only sizes 1 and 2 and keeps
+sizes 4 through 256. The server then completes target and MTP-speculator graph
+capture and becomes healthy. Under the required sampling policy, the first 64
+GSM8K questions complete at 63/64 (98.4375%), with zero request errors, invalid
+predictions, or truncations. Item-level correctness exactly matches the prior
+qualified S4 production run: the sole miss is question ID 12. Output hashes
+are not identical, as expected for a sampled run, but there are no correctness
+transitions. Artifacts are under
+`qsa_accuracy/pr53896/post-q5-fp8-mtp3-job642187`; the complete GSM8K rerun is
+in progress before GPQA-diamond and AIME26.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
