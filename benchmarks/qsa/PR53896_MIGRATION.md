@@ -1063,8 +1063,26 @@ per-key pool, the exact-sampling AIME26 gate completed 30/30 with zero errors,
 invalid predictions, or truncations in 1,072.7 seconds and 551,838 completion
 tokens. The result is under
 `qsa_accuracy/pr53896/s4-load4-workspace-pool-fp8-mtp3-job635397`.
-One clean run does not prove that an intermittent stall is eliminated, so the
-same sustained gate must pass again before S4/load4 is called graph-safe.
+Job 636732 added two consecutive disjoint-GPU A/B repetitions. A diagnostic
+runtime at `a99f54360` differed only by restoring one shared uninitialized
+scratch allocation; its two runs both completed 30/30 with zero request
+failures (515,704 and 563,027 completion tokens). The per-key pool also
+completed both repetitions. Its first scored 30/30 with 511,422 completion
+tokens; its second completed every request with no errors or truncations but
+scored 28/30 with 496,795 completion tokens. The misses were AIME IDs 10 and
+30 after normal EOS, so they are sampling-trajectory accuracy variation rather
+than a workspace liveness failure. Combined with the first run above, the pool
+has completed three sustained gates.
+
+The two clean shared controls mean the historical stall is not deterministic
+and this A/B does not prove workspace causality. Keep the per-key pool anyway:
+it provides the correct graph-lifetime invariant by construction at negligible
+capacity cost, while the production route has passed all three liveness gates.
+Do not revert the independent public unified-workspace API. If the stall
+recurs, record the blocked graph key and kernel role state before changing TMA
+issuer count or assigning the failure to scratch ownership. Raw artifacts are
+under `qsa_accuracy/pr53896/s4-load4-workspace-pool-fp8-mtp3-job636732` and
+`qsa_accuracy/pr53896/s4-load4-shared-workspace-fp8-mtp3-job636732`.
 
 A corrected S4/load1 control also completed 30/30, but it misses the latency
 target badly. The matched TP2/BS1/SQ1 cold-L2 CUDA-graph result is 24.57 us

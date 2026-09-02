@@ -75,11 +75,14 @@ This per-key pool replaced a short-lived diagnostic implementation that shared
 one uninitialized attention scratch allocation across all captured graph
 shapes. The shared implementation produced one intermittent FP8/MTP3
 sustained-decode stall at 28/30 AIME26 requests. Unchanged S4/load4 with the
-per-key pool subsequently completed 30/30 with no request failures, but the
-original failure was intermittent, so a repeated sustained gate remains part
-of graph-safety signoff. The vLLM owner still uses explicit registered metadata
-buffers plus separate attention scratch; it does not call FlashInfer's public
-unified-workspace entry point.
+per-key pool subsequently completed three sustained gates without a liveness
+failure. A one-variable A/B also completed two consecutive 30/30 runs with the
+old shared allocation, so scratch reuse is not proven to be the historical
+stall's root cause. The pool remains the production invariant because it
+prevents cross-shape semantic layouts from aliasing at negligible memory cost.
+The vLLM owner still uses explicit registered metadata buffers plus separate
+attention scratch; it does not call FlashInfer's public unified-workspace entry
+point.
 
 The production owner now chooses one request-safe route for the complete
 launch. Q1 keeps one independent CSR row per query token. Q2/Q4 reshape Q and O
