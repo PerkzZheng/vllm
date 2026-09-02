@@ -293,9 +293,10 @@ identical to the matrix protocol.
 - The Qwen runtime image carries CUTLASS DSL 4.6.2, while the current PrimTS
   task-scheduling implementation requires `cutlass.experimental.cuda` from
   CUTLASS DSL 4.7. The runtime qualification uses 4.7.1 from a workspace-local
-  wheel target and exposes only its `nvidia_cutlass_dsl/dsl_packages`
-  directory. This avoids shadowing the image's NumPy, protobuf, CUDA Python,
-  and other runtime dependencies.
+  wheel target. It exposes the wheel's
+  `nvidia_cutlass_dsl/dsl_packages` directory for the Python DSL and its wheel
+  root for the matching `cu12`/`cu13` runtime libraries, without replacing the
+  image's NumPy, protobuf, CUDA Python, or other runtime dependencies.
 - `benchmarks/qsa/runtime_overlay/sitecustomize.py` keeps the image's
   ABI-matched FlashInfer root, GDN, fused-MoE, cubins, and vLLM extensions. It
   overlays only the local FlashInfer attention package and attention trace
@@ -1258,14 +1259,22 @@ mean TTFT is 13.57 seconds versus 6.14 seconds for Triton even though ITL is
 only 14.3 percent slower. This points first to batched prefill/scheduling and
 metadata integration rather than the steady decode attention kernel alone.
 
-There is also a memory-signoff gap. With the same TP2 server limits, the
-warmed Triton profile reserves 55.9 GiB for 5.36M KV tokens, while the cold
-PrimTS profile reports a 48.5-GiB peak activation and leaves 9.21 GiB for
-0.88M tokens. This prevents the requested BS512 sweep and several longer BS64
-points on the current route. Quantify the per-layer/per-semantic-key attention
-workspace pool, then reduce safe graph-stable duplication before expanding
-the high-concurrency matrix. Do not weaken the per-key lifetime invariant that
-passed the accuracy/liveness gates.
+The initially apparent memory gap was a cold-versus-warm profiling artifact,
+not a PrimTS workspace-capacity loss. The first cold Triton and PrimTS launches
+both reported about 48.5 GiB of peak activation and only about 9 GiB of usable
+KV cache. After their compile caches were populated, matched restarts reported
+2.02/2.04 GiB peak activation and 55.9/55.67 GiB usable KV cache for
+Triton/PrimTS, respectively. PrimTS then held 5,343,452 KV tokens versus about
+5.36M for Triton.
+
+The exact TP2 QSA attention-workspace query also rules out the workspace as the
+source of the apparent 46-GiB difference. For the model's Hq=12, Hkv=1, D=256,
+FP8-KV/BF16-output geometry, the maximum Q1 and Q2 requests are 96.782 and
+96.766 MiB per layer, or 1.229 and 1.228 GiB across 13 layers. The direct Q4
+request is 1,280 bytes, and captured Q4 bucket workspaces through 64 live query
+tokens remain below 3.2 MiB per layer. Keep the per-semantic-key lifetime
+invariant that passed the accuracy/liveness gates; use warmed profile numbers
+when determining the remaining BS64/BS512 matrix points.
 
 ## Remaining performance and integration signoff
 
@@ -1285,10 +1294,11 @@ Work proceeds in this order:
    Q2/Q4 continue to use grouped-union metadata.
 2. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after any
    subsequent kernel or metadata changes.
-3. Extend the initial matched TP2 end-to-end matrix above after fixing the
-   PrimTS workspace-capacity loss. Add the remaining BS64 and BS512 points at
-   8K, 16K, 32K, and 64K where physical KV capacity permits; keep prefill and
-   decode timings separate and preserve independent contexts.
+3. Extend the initial matched TP2 end-to-end matrix using warmed Triton and
+   PrimTS compile caches. Add the remaining BS64 and BS512 points at 8K, 16K,
+   32K, and 64K where the matched physical KV capacity permits; keep prefill
+   and decode timings separate and preserve independent contexts. The current
+   5.34M-token PrimTS capacity fits BS64 through 64K and BS512 at 8K.
 4. Promote the compact metadata builders into a public FlashInfer integration
    API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
    caller-owned output/workspace buffers, no host synchronization or replay-
