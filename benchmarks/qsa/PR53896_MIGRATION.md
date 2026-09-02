@@ -1344,12 +1344,44 @@ optimization is to capture the prepared metadata-plus-attention sequence as
 one framework graph region (or otherwise reduce the eager split boundary) and
 then remeasure rank alignment.
 
+The cold-request explanation was tested directly with an exact request-four
+profile. The server health endpoint was checked manually, the benchmark's
+automatic readiness request was disabled, prefix caching remained disabled,
+and one benchmark invocation issued three serialized 8K prefill warmups before
+starting the profiler for its single measured request. Thus startup, first-use
+compilation, and requests one through three are all outside the captured
+range. `QSA_PREFILL_WARMUP_PROMPTS` and `QSA_READY_CHECK_TIMEOUT_SEC` make this
+protocol explicit in the benchmark driver.
+
+| warmed request-four measurement | Triton rank 0 / rank 1 | prepared PrimTS rank 0 / rank 1 |
+|---|---:|---:|
+| QSA attention plus required metadata | 38.396 / 38.400 ms | 7.183 / 7.180 ms |
+| all non-all-reduce kernels | 150.914 / 150.945 ms | 118.964 / 118.139 ms |
+| all-reduce kernel residency | 23.509 / 9.158 ms | 62.326 / 9.020 ms |
+| full request GPU span | 203.684 / 203.697 ms | 203.245 / 204.043 ms |
+| endpoint TTFT | 232.03 ms | 235.39 ms |
+
+The warmed QSA result is balanced to one microsecond across ranks and remains
+5.35x faster than Triton after including both metadata kernels. Its 31.2 ms
+all-layer saving also appears in the non-all-reduce kernel totals. Warmup
+therefore does not remove the end-to-end mismatch: the full GPU spans remain
+equal because synchronization absorbs the saving. Across the 97 all-reduces,
+rank 0 starts before rank 1 by 0.550 ms on average for PrimTS versus 0.150 ms
+for Triton, producing 53.305 ms versus 14.350 ms of excess rank-0 collective
+residency. This points to repeated rank enqueue/arrival skew outside the QSA
+GPU kernels (and potentially profiler perturbation), rather than slow metadata,
+an unbalanced attention kernel, or a cold request. The next trace should
+separate framework/rank enqueue timing from GPU work before changing the QSA
+kernel again.
+
 Artifacts are
 `qsa_nsys/job640295/pfprepared-prims-fp8.{nsys-rep,sqlite}` and
 `qsa_nsys/job640295/pfprepared-triton-fp8.{nsys-rep,sqlite}` inside the
-persistent workspace. The complete FlashInfer QSA metadata test file passes
-26 tests; the explicit fused-split prepared-plan graph test also passes from a
-nonzero initial counter.
+persistent workspace. Warmed request-four artifacts are
+`qsa_nsys/job641262/warm4-prims-fp8.{nsys-rep,sqlite}` and
+`qsa_nsys/job641343/warm4-triton-fp8.{nsys-rep,sqlite}`. The complete
+FlashInfer QSA metadata test file passes 26 tests; the explicit fused-split
+prepared-plan graph test also passes from a nonzero initial counter.
 
 ## Remaining performance and integration signoff
 

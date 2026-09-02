@@ -23,6 +23,7 @@ qsa_mtp_tokens=${QSA_MTP_TOKENS:-3}
 qsa_max_model_len=${QSA_MAX_MODEL_LEN:-139264}
 qsa_profile=${QSA_PROFILE:-false}
 qsa_enable_prefix_caching=${QSA_ENABLE_PREFIX_CACHING:-true}
+qsa_ready_check_timeout_sec=${QSA_READY_CHECK_TIMEOUT_SEC:-1800}
 
 case "${qsa_kv_cache_dtype}" in
   auto)
@@ -41,6 +42,10 @@ if ! [[ ${qsa_mtp_tokens} =~ ^[0-9]+$ ]]; then
   echo "QSA_MTP_TOKENS must be a non-negative integer" >&2
   exit 2
 fi
+if ! [[ ${qsa_ready_check_timeout_sec} =~ ^[0-9]+$ ]]; then
+  echo "QSA_READY_CHECK_TIMEOUT_SEC must be a non-negative integer" >&2
+  exit 2
+fi
 if [[ ${qsa_profile} != true && ${qsa_profile} != false ]] ||
   [[ ${qsa_enable_prefix_caching} != true && ${qsa_enable_prefix_caching} != false ]]; then
   echo "QSA_PROFILE and QSA_ENABLE_PREFIX_CACHING must be true or false" >&2
@@ -57,12 +62,14 @@ usage:
 Environment overrides:
   QSA_PORT, QSA_OUTPUT_ROOT, QSA_CACHE_TAG, QSA_PYTHON,
   QSA_CACHE_ROOT,
-  QSA_PREFILL_PROMPTS, QSA_DECODE_OUTPUT_LEN, QSA_TP_SIZE,
+  QSA_PREFILL_PROMPTS, QSA_PREFILL_WARMUP_PROMPTS,
+  QSA_DECODE_OUTPUT_LEN, QSA_TP_SIZE,
   QSA_DECODE_WARMUP_PROMPTS,
   QSA_GPU_MEMORY_UTILIZATION, QSA_MAX_NUM_BATCHED_TOKENS,
   QSA_MAX_NUM_SEQS, QSA_CUDAGRAPH_CAPTURE_SIZES,
   QSA_KV_CACHE_DTYPE (auto or fp8_e4m3), QSA_MTP_TOKENS,
   QSA_MAX_MODEL_LEN, QSA_PROFILE (default: false),
+  QSA_READY_CHECK_TIMEOUT_SEC (default: 1800),
   QSA_ENABLE_PREFIX_CACHING (default: true),
   QSA_ENABLE_CUTEDSL_WARMUP (default: true)
 EOF
@@ -116,7 +123,7 @@ common_bench_args=(
   --request-rate inf
   --temperature 0
   --ignore-eos
-  --ready-check-timeout-sec 1800
+  --ready-check-timeout-sec "${qsa_ready_check_timeout_sec}"
   --percentile-metrics ttft,tpot,itl,e2el
   --metric-percentiles 50,90,99
 )
@@ -193,18 +200,16 @@ case "${action}" in
     fi
     input_len=$3
     measured_prompts=${QSA_PREFILL_PROMPTS:-3}
-    warm_seed=$((qsa_seed - 1))
-    # Use a distinct prompt to compile and warm this input-length path without
-    # turning the measured prefill into a prefix-cache hit.
-    run_bench \
-      "${common_bench_args[@]}" \
-      --dataset-name random \
-      --random-input-len "${input_len}" \
-      --random-output-len 1 \
-      --random-range-ratio 0 \
-      --num-prompts 1 \
-      --max-concurrency 1 \
-      --seed "${warm_seed}"
+    warmup_prompts=${QSA_PREFILL_WARMUP_PROMPTS:-1}
+    if ! [[ ${warmup_prompts} =~ ^[0-9]+$ ]]; then
+      echo "QSA_PREFILL_WARMUP_PROMPTS must be a non-negative integer" >&2
+      exit 2
+    fi
+    # vLLM starts profiling after its built-in warm-up phase. When the server
+    # health endpoint was checked separately, set QSA_READY_CHECK_TIMEOUT_SEC=0;
+    # three warm-ups then make the captured benchmark request exactly request
+    # four. Prefix caching must remain disabled so repeated prompts still run
+    # complete prefill.
     run_bench \
       "${common_bench_args[@]}" \
       "${profile_args[@]}" \
@@ -212,6 +217,7 @@ case "${action}" in
       --random-input-len "${input_len}" \
       --random-output-len 1 \
       --random-range-ratio 0 \
+      --num-warmups "${warmup_prompts}" \
       --num-prompts "${measured_prompts}" \
       --max-concurrency 1 \
       --seed "${qsa_seed}" \
