@@ -1251,13 +1251,25 @@ outcome, while ITL is the closer per-token latency indicator.
 | 16K | 8 | 273.62 | 255.01 | 0.932x | 42.059 | 41.950 | 0.997x |
 | 32K | 8 | 169.98 | 146.02 | 0.859x | 77.615 | 78.018 | 1.005x |
 | 64K | 8 | 102.60 | 69.56 | 0.678x | 123.284 | 154.781 | 1.255x |
-| 8K | 64 | 455.48 | 218.34 | 0.479x | 156.869 | 179.321 | 1.143x |
+| 8K | 64 | 426.71 | 458.44 | 1.074x | 168.812 | 158.410 | 0.938x |
+| 16K | 64 | 290.87 | 284.67 | 0.979x | 166.874 | 167.802 | 1.006x |
+| 32K | 64 | 163.39 | 166.40 | 1.018x | 174.094 | 168.312 | 0.967x |
+| 64K | 64 | 77.93 | 81.07 | 1.040x | 192.578 | 184.738 | 0.959x |
 
-BS1 ITL is within 2.8 percent throughout. The clear latency misses are BS8 at
-8K and 64K; the largest end-to-end throughput miss is BS64/8K, where PrimTS
-mean TTFT is 13.57 seconds versus 6.14 seconds for Triton even though ITL is
-only 14.3 percent slower. This points first to batched prefill/scheduling and
-metadata integration rather than the steady decode attention kernel alone.
+BS1 ITL is within 2.8 percent throughout. The clear latency misses are now
+limited to BS8 at 8K and 64K. Every warmed BS64 row is within 2.2 percent in
+output throughput at 16K and is 1.8--7.4 percent faster at 8K, 32K, and 64K;
+ITL is within 0.6 percent at 16K and 3.3--6.2 percent lower at the other three
+lengths. PrimTS mean TTFT is also no worse on these rows: Triton/PrimTS are
+7.14/6.50 seconds at 8K, 12.68/12.63 at 16K, 25.31/24.93 at 32K, and
+53.15/49.48 at 64K.
+
+The earlier BS64/8K result of 218.34 output tokens/s was not steady state. Its
+first server process had not exercised a full 64-request wave before the saved
+measurement. On the warmed restart, the explicit 64-request warmup exposed
+one process-local first-shape pause; the following saved wave was stable and
+is the value above. The benchmark driver now makes the warmup prompt count
+equal to the measured prompt count for concurrent decode.
 
 The initially apparent memory gap was a cold-versus-warm profiling artifact,
 not a PrimTS workspace-capacity loss. The first cold Triton and PrimTS launches
