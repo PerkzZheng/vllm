@@ -1526,6 +1526,7 @@ Work proceeds in this order:
 5. Integrate the qualified Q5 configuration into the framework MTP4 path and
    measure model-level decode at BS16/32. Keep the automatic policy conservative:
    it may select Q5 only when request boundaries are five-token aligned, 5 times
-   Hq/Hkv fits TileQ64, and the estimated split work retains one service wave.
-   The standalone result predicts a win at BS32 but not BS16; retain Q1 or
-   Triton at BS16 unless the all-layer measurement overturns that conclusion.
+   Hq/Hkv fits TileQ64, and the source-row estimate reaches four SM waves (the
+   maximum assumed split fanout). This selects Q5 at TP2/BS32 but retains Q1 at
+   BS16, matching the standalone crossover. Retain Q1 or Triton at BS16 unless
+   the all-layer measurement overturns that conclusion.
