@@ -1570,6 +1570,56 @@ Complete artifacts are split across
 `qsa_accuracy/pr53896/post-q5-fp8-mtp3-job642187` and
 `qsa_accuracy/pr53896/post-q5-fp8-mtp3-job643015`.
 
+### Strict TP4 BS256 decode matrix and Nsight attribution
+
+TP4 makes a real 256-request decode cohort possible without state injection.
+The steady-decode client submits 256 independent prompts, waits until every
+request has produced its first token, and then measures 32 streamed scheduler
+iterations for every request.  Each saved unprofiled repetition has
+`min=max=32` and `sum=8192` stream chunks.  Prefix caching is disabled, MTP is
+3, the graph list is 4 through 1,024 scheduled tokens, and `max_tokens=4096`
+keeps the earliest requests resident until the barrier.  Three-repetition
+means on job 643015 are:
+
+| KV dtype | input | PrimTS wall | Triton wall | Triton/PrimTS | result |
+|---|---:|---:|---:|---:|---:|
+| BF16 | 8,192 | 1.2431 s | 1.3083 s | 1.052x | PrimTS 5.0% lower latency |
+| FP8-E4M3 | 8,192 | 1.3830 s | 1.3655 s | 0.987x | PrimTS 1.3% higher latency |
+| FP8-E4M3 | 16,384 | 1.4047 s | 1.3813 s | 0.983x | PrimTS 1.7% higher latency |
+
+The BF16 16K point is not physically feasible on TP4 with 256 independent
+contexts: measured 8K occupancy projects to about 132% of the available KV
+cache.  The three feasible rows are all safely inside the 20% Triton target.
+Raw JSON is under `qsa_e2e_perf/job643015-tp4`.
+
+A matched Nsight Systems capture of FP8/8K uses the same barrier, 33 observed
+chunks per request on both sides (one polling-interval overshoot), and traces
+all four TP ranks.  Triton takes 1.3806 s and PrimTS 1.3937 s in the profiled
+window, consistent with the unprofiled ordering.  Summing QSA kernels across
+four devices and dividing by 33 iterations gives this critical-path estimate:
+
+| component, per rank/iteration | PrimTS | Triton | PrimTS - Triton |
+|---|---:|---:|---:|
+| sparse attention plus split reduction | 6.257 ms | 5.956 ms | +0.301 ms |
+| backend-specific page metadata | 0.335 ms | 0.092 ms | +0.244 ms |
+| combined QSA path | 6.593 ms | 6.048 ms | +0.545 ms |
+
+The observed wall gap is about 0.395 ms per iteration.  Thus both the FP8
+attention schedule and grouped-union metadata remain real optimization targets;
+metadata alone is not the whole regression.  Triton's comparison includes its
+`_expand_qsa_indices_kernel`; PrimTS includes bitset, union-pack, Q1 metadata,
+and separate reduction.  Reports and exported CSV are under
+`qsa_nsys/job643015/strict-tp4`.
+
+Two profiler integration details are now explicit.  With a four-rank server,
+Nsight `capture-range-end=stop` or `stop-shutdown` can interrupt vLLM's
+distributed `/stop_profile` RPC after rank zero.  Stable captures use
+`capture-range-end=none`, `resolve-symbols=false`, then let the client close
+all streams before terminating only the server.  Also, requesting only graph
+bucket 1,024 makes PrimTS startup hit an asynchronous illegal address during
+vLLM kernel warmup, whereas the validated 4--1,024 list is healthy.  Do not use
+the single-bucket startup shortcut until that warmup-path fault is isolated.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
