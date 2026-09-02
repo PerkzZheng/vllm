@@ -1176,6 +1176,49 @@ was actually load4 because a later resolver update overwrote the first
 assignment; both assignments are fixed in the diagnostic worktree. Keep true
 load1 as a safety control rather than the default.
 
+### Dedicated Qwen image and CUTLASS DSL 4.7 checkpoint
+
+End-to-end work now uses `vllm/vllm-openai:qwen38-flash-next` as the runtime
+base. PR 53896 remains the Python source overlay and the image supplies the
+compiled vLLM, FlashInfer GDN/MoE, CUDA, and TVM-FFI components. The validated
+stack is Torch 2.13.0+cu130, image FlashInfer 0.6.17, image TVM-FFI 0.1.11,
+and a persistent CUTLASS DSL 4.7.1 wheel layer. Both
+`nvidia_cutlass_dsl/dsl_packages` and the wheel root are overlaid: the former
+selects the 4.7.1 Python DSL and the latter exposes its matching `cu12`/`cu13`
+runtime libraries. The image TVM-FFI package is imported first and retained.
+This avoids the duplicate FFI type-registration failure observed when a
+TVM-FFI 0.1.13 venv package was mixed with native image components built for
+0.1.11.
+
+`benchmarks/qsa/run_e2e_perf.sh` encodes this environment for both the server
+and benchmark client. It supports paired Triton/PrimTS FP8-E4M3, TP-configured,
+MTP3 server launches; BS1 prefill; and independent-context decode. The client
+also uses PR 53896 rather than accidentally falling back to the image's Python
+package. PrimTS imports only the local FlashInfer attention/trace overlay, so
+the image-only GDN and MoE modules remain intact.
+
+Job 638504 provided the first paired TP2 smoke test on one GB300 node. Both
+servers completed cold compilation and CUDA-graph capture, reached the health
+endpoint, and completed every request. The 8K measurements use one distinct
+warmup prompt, three serialized prefill requests, or two serialized decode
+requests with 128 generated tokens. Decode uses MTP3 and independent 8K
+contexts.
+
+| case | Triton | PrimTS | PrimTS / Triton |
+|---|---:|---:|---:|
+| 8K prefill, BS1 mean TTFT | 304.56 ms | 330.44 ms | 1.085x |
+| 8K decode, BS1 mean TPOT | 3.363 ms | 3.574 ms | 1.063x |
+| 8K decode, BS1 mean ITL | 8.375 ms | 8.405 ms | 1.004x |
+| 8K decode, BS1 mean TTFT | 333.69 ms | 366.43 ms | 1.098x |
+
+These pilot points satisfy the within-20-percent end-to-end target. The first
+PrimTS prefill request spent about 10 seconds compiling previously unseen
+indexer and grouped-union metadata shapes; it is deliberately excluded from
+the measured run. The Triton `_qsa_mqa_paged_kernel` that appears in the
+PrimTS server log belongs to the shared sparse indexer/top-k scoring path, not
+the final QSA attention implementation. Raw JSON and server logs are under
+`qsa_e2e_perf/job638504-qwen38img`.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:

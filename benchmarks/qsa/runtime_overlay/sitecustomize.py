@@ -23,6 +23,43 @@ from types import ModuleType
 
 
 _IMAGE_VLLM = Path("/usr/local/lib/python3.12/dist-packages/vllm")
+_IMAGE_SITE_PACKAGES = _IMAGE_VLLM.parent
+_IMAGE_CUTLASS_DSL_PACKAGES = (
+    _IMAGE_SITE_PACKAGES / "nvidia_cutlass_dsl" / "dsl_packages"
+)
+
+
+def _prefer_image_dsl_stack() -> None:
+    """Pin the image's ABI-matched TVM-FFI and CUTLASS packages."""
+
+    if not _IMAGE_CUTLASS_DSL_PACKAGES.is_dir():
+        raise ImportError("the image CUTLASS DSL package directory is missing")
+
+    # CUTLASS wheels inject their dsl_packages path via .pth files.  Keep only
+    # the image's path so a venv wheel cannot silently shadow the image ABI.
+    sys.path[:] = [
+        path
+        for path in sys.path
+        if not path.endswith("/nvidia_cutlass_dsl/dsl_packages")
+    ]
+    sys.path.insert(0, str(_IMAGE_CUTLASS_DSL_PACKAGES))
+
+    # Import TVM-FFI while the image site-packages directory has priority, then
+    # restore normal package ordering.  sys.modules pins its Python package and
+    # native runtime for subsequent imports without shadowing unrelated venv
+    # dependencies such as Triton.
+    original_path = list(sys.path)
+    sys.path.insert(0, str(_IMAGE_SITE_PACKAGES))
+    try:
+        tvm_ffi = importlib.import_module("tvm_ffi")
+    finally:
+        sys.path[:] = original_path
+    if not Path(tvm_ffi.__file__).resolve().is_relative_to(
+        _IMAGE_SITE_PACKAGES.resolve()
+    ):
+        raise ImportError(
+            "QSA_USE_IMAGE_DSL_STACK must be set before TVM-FFI is imported"
+        )
 
 
 def _overlay_cutlass_dsl(packages: Path) -> None:
@@ -33,6 +70,12 @@ def _overlay_cutlass_dsl(packages: Path) -> None:
             "QSA_CUTLASS_DSL_PACKAGES must contain cutlass/experimental"
         )
     packages_path = str(packages)
+    wheel_root = str(packages.parent.parent)
+    if wheel_root in sys.path:
+        sys.path.remove(wheel_root)
+    # Make the matching nvidia_cutlass_dsl/{cu12,cu13} runtime libraries
+    # visible in addition to its Python DSL package.
+    sys.path.insert(0, wheel_root)
     if packages_path in sys.path:
         sys.path.remove(packages_path)
     # Installed CUTLASS wheels use a .pth file that inserts their own package
@@ -114,6 +157,8 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
         setattr(public_decode, name, getattr(qsa_metadata, name))
 
 
+if os.environ.get("QSA_USE_IMAGE_DSL_STACK") == "1":
+    _prefer_image_dsl_stack()
 if packages := os.environ.get("QSA_CUTLASS_DSL_PACKAGES"):
     _overlay_cutlass_dsl(Path(packages).resolve())
 _extend_vllm_for_image_extensions()
