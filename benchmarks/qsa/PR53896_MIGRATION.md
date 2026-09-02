@@ -1040,6 +1040,57 @@ S4 remains within 20 percent for attention alone, but its metadata-inclusive
 BS1 result remains outside the target. Accuracy takes precedence; the existing
 SQ1 metadata-elision item below is now the first performance follow-up.
 
+The broader FP8 SQ1 decode matrix uses the same cold-L2, CUDA-graph, 10-warmup,
+100-sample protocol, independent causal top-k rows, and a 256-token storage
+page. `PrimTS e2e` includes compact metadata; `Triton e2e` includes
+`expand_qsa_block_indices_cuda`.
+
+| TP | BS | tail | PrimTS e2e (us) | Triton e2e (us) | Triton / PrimTS | PrimTS / contiguous |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 / 3 | 20.98 / 21.16 | 18.08 / 18.45 | 0.862x / 0.872x | 1.188x / 1.247x |
+| 1 | 8 | 0 / 3 | 22.46 / 24.18 | 32.86 / 32.87 | 1.463x / 1.359x | 1.228x / 1.313x |
+| 1 | 64 | 0 / 3 | 91.90 / 101.01 | 90.67 / 90.57 | 0.987x / 0.897x | 2.579x / 2.869x |
+| 1 | 512 | 0 / 3 | 530.35 / 587.10 | 527.92 / 528.36 | 0.995x / 0.900x | 3.036x / 3.368x |
+| 2 | 1 | 0 / 3 | 20.62 / 21.97 | 18.35 / 18.19 | 0.890x / 0.828x | 1.144x / 1.280x |
+| 2 | 8 | 0 / 3 | 22.15 / 23.15 | 24.59 / 24.60 | 1.110x / 1.063x | 1.212x / 1.292x |
+| 2 | 64 | 0 / 3 | 48.56 / 51.82 | 53.18 / 53.46 | 1.095x / 1.032x | 1.934x / 2.085x |
+| 2 | 512 | 0 / 3 | 274.38 / 298.88 | 279.43 / 278.99 | 1.018x / 0.933x | 2.734x / 2.985x |
+
+PrimTS is faster than fair Triton in seven of sixteen rows. Of the remaining
+rows, only TP2/BS1/tail-three exceeds a 20-percent Triton regression
+(21.97 versus 18.19 us, 20.8 percent). The misses are therefore bounded
+enough to defer kernel and SQ1 metadata tuning as a follow-up after the
+end-to-end gates. The much larger high-batch gap to the
+contiguous SWA efficiency target remains a separate optimization TODO.
+Raw output is in
+`qsa_bench/s4-matrix-job636732/fp8-tp1tp2-bs1-8-64-512-sq1-tail03-10w100i.log`.
+
+The matched SQ4/group-four matrix confirms that the grouped route's Triton
+miss is isolated to BS1. The two values in each cell are tail zero / tail
+three. `projected SWA` scales grouped contiguous SWA by the measured
+non-shared-token ratio, so it is the fair efficiency target for a union that
+must load more physical K/V than four identical sliding windows.
+
+| TP | BS | metadata (us) | PrimTS e2e (us) | Triton e2e (us) | Triton / PrimTS | PrimTS / projected SWA |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 10.11 / 10.10 | 32.38 / 32.96 | 24.45 / 24.41 | 0.755x / 0.740x | 0.459x / 0.463x |
+| 1 | 8 | 10.90 / 10.32 | 38.84 / 38.54 | 51.13 / 51.24 | 1.316x / 1.330x | 0.516x / 0.504x |
+| 1 | 64 | 11.44 / 12.15 | 122.92 / 123.52 | 270.81 / 270.73 | 2.203x / 2.192x | 1.080x / 1.055x |
+| 1 | 512 | 16.19 / 16.36 | 623.47 / 624.07 | 1786.35 / 1785.24 | 2.865x / 2.861x | 1.065x / 1.069x |
+| 2 | 1 | 10.18 / 10.22 | 31.64 / 31.83 | 19.26 / 18.68 | 0.609x / 0.587x | 0.440x / 0.442x |
+| 2 | 8 | 10.10 / 10.42 | 33.36 / 32.85 | 42.44 / 42.67 | 1.272x / 1.299x | 0.455x / 0.448x |
+| 2 | 64 | 11.51 / 12.03 | 72.48 / 72.35 | 152.50 / 153.40 | 2.104x / 2.120x | 0.797x / 0.779x |
+| 2 | 512 | 16.26 / 18.04 | 362.86 / 363.73 | 1026.36 / 1026.62 | 2.828x / 2.822x | 1.072x / 1.070x |
+
+Outside BS1, grouped PrimTS is 1.27--2.87x faster than fair Triton and never
+exceeds projected SWA by more than 8 percent at the high-batch points where
+the projected control is meaningful. At BS1 the attention launch itself is only modestly
+slower than grouped SWA, but the approximately 10-us metadata launch makes
+PrimTS 32--70 percent slower than Triton. Keep BS1 metadata elision/fusion and
+low-grid kernel tuning as TODO next; it does not block the current integration
+or accuracy signoff. Raw output is in
+`qsa_bench/s4-matrix-job636732/fp8-tp1tp2-bs1-8-64-512-sq4-group4-tail03-10w100i.log`.
+
 ### Workspace-lifetime requalification
 
 The initial S4 qualification was reopened after one full FP8, TP2, MTP3
@@ -1129,13 +1180,11 @@ load1 as a safety control rather than the default.
 
 Work proceeds in this order:
 
-1. Measure the accuracy-qualified S4 SQ1/SQ4 route across TP1/TP2 and
-   BS1/8/64/512 against matched Triton and grouped SWA controls. The current
-   demonstrated regression is limited to TP2/BS1/SQ1, tails zero and three;
-   do not extrapolate it to the unmeasured S4 matrix.
-2. TODO next if the broader matrix confirms an isolated low-grid miss: close
-   the TP2/BS1 S4 attention gap and remove the standalone Q1 metadata launch.
-   SQ1 has no grouped union or membership mask: retain a fixed 513-entry row
+1. TODO next: tune the bounded decode misses against Triton. Start with SQ4
+   BS1 metadata elision/fusion and the only greater-than-20-percent SQ1 row
+   (TP2/BS1/tail three), then close the broader SQ1 gap to the contiguous SWA
+   target. Also remove the standalone Q1 metadata launch. SQ1 has no grouped
+   union or membership mask: retain a fixed 513-entry row
    stride, consume or emit the 512 encoded physical page-4 locators directly,
    reserve entry 512 for the zero-to-three-token causal tail, preinitialize
    the fixed CSR indptr, and derive the live compact length from the query
@@ -1143,13 +1192,13 @@ Work proceeds in this order:
    Prefer fusing logical-block to physical-locator translation into the
    indexer/top-k output. Keep the existing CSR-facing attention interface;
    Q2/Q4 continue to use grouped-union metadata.
-3. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after any
+2. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after any
    subsequent kernel or metadata changes.
-4. Measure matched Triton/PrimTS end-to-end prefill and decode speedups with
+3. Measure matched Triton/PrimTS end-to-end prefill and decode speedups with
    8K, 16K, 32K, and 64K natural input lengths. Decode uses MTP=3 and batch
    sizes 1, 8, 64, and 512; prefill and decode timings are reported
    separately.
-5. Promote the compact metadata builders into a public FlashInfer integration
+4. Promote the compact metadata builders into a public FlashInfer integration
    API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
    caller-owned output/workspace buffers, no host synchronization or replay-
    time allocation, and stable capacities suitable for CUDA graph capture.
