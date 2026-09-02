@@ -264,8 +264,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         token_to_req: torch.Tensor,
         logical_positions: torch.Tensor,
         workspace: torch.Tensor,
-        paged_kv_indptr: torch.Tensor,
-        seq_lens: torch.Tensor,
         out: torch.Tensor,
         bmm1_scale: float,
         bmm2_scale: float,
@@ -291,8 +289,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             tuple(block_table.shape),
             block_table.stride(),
             workspace.data_ptr(),
-            paged_kv_indptr.data_ptr(),
-            seq_lens.data_ptr(),
             float(bmm1_scale),
             float(bmm2_scale),
         )
@@ -310,8 +306,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 block_table,
                 token_to_req,
                 logical_positions,
-                paged_kv_indptr,
-                seq_lens,
                 workspace,
                 out,
                 bmm1_scale=bmm1_scale,
@@ -415,12 +409,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 query_start_loc_cpu,
             )
             route_rows = num_tokens // group_size
-            indptr_buffer = getattr(layer, "qsa_paged_kv_indptr_buffer", None)
-            seq_lens_buffer = getattr(layer, "qsa_seq_lens_buffer", None)
-            if indptr_buffer is None or seq_lens_buffer is None:
-                raise RuntimeError("QSA owner did not provide PrimTS metadata buffers")
-            paged_kv_indptr = indptr_buffer[: route_rows + 1]
-            seq_lens = seq_lens_buffer[:route_rows]
             _qsa_nvtx_pop()
 
             _qsa_nvtx_push("qsa_prims_plan_lookup")
@@ -472,8 +460,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 token_to_req,
                 logical_positions,
                 workspace,
-                paged_kv_indptr,
-                seq_lens,
                 route_output,
                 bmm1_scale,
                 bmm2_scale,
@@ -713,17 +699,6 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
         self._qsa_prims_ts_workspace_pool: dict[tuple[object, ...], torch.Tensor] = {}
         self._qsa_prims_ts_plan_pool: dict[tuple[object, ...], object] = {}
-        if self.impl.use_qsa_prims_ts:
-            self.register_buffer(
-                "qsa_paged_kv_indptr_buffer",
-                torch.empty(max_tokens + 1, dtype=torch.int32),
-                persistent=False,
-            )
-            self.register_buffer(
-                "qsa_seq_lens_buffer",
-                torch.empty(max_tokens, dtype=torch.int32),
-                persistent=False,
-            )
 
         static_context = vllm_config.compilation_config.static_forward_context
         if self.layer_name in static_context:

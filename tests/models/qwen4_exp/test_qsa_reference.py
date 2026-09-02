@@ -1081,8 +1081,6 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         topk_indices_buffer=torch.full(
             (route_capacity, selection_width), -1, dtype=torch.int32
         ),
-        qsa_paged_kv_indptr_buffer=torch.empty(route_capacity + 1, dtype=torch.int32),
-        qsa_seq_lens_buffer=torch.empty(route_capacity, dtype=torch.int32),
         _qsa_prims_ts_workspace=None,
     )
     metadata = SimpleNamespace(
@@ -1401,8 +1399,6 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     assert workspace_kwargs["out_dtype"] == torch.bfloat16
 
     workspace = torch.empty(320, dtype=torch.uint8)
-    indptr = torch.arange(groups + 1, dtype=torch.int32)
-    seq_lens = torch.full((groups,), 2051, dtype=torch.int32)
     output = torch.empty_like(query)
     assert (
         qsa_ops.qsa_prims_ts_prepare_attention(
@@ -1413,8 +1409,6 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
             block_table,
             token_to_req,
             logical_positions,
-            indptr,
-            seq_lens,
             workspace,
             output,
             bmm1_scale=0.125,
@@ -1424,7 +1418,9 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     )
     prepare_args = calls["prepare_args"]
     assert isinstance(prepare_args, tuple)
+    assert len(prepare_args) == 7
     assert prepare_args[:2] == (query, (key_cache, value_cache))
+    assert prepare_args[6] is workspace
     prepare_kwargs = calls["prepare_kwargs"]
     assert isinstance(prepare_kwargs, dict)
     assert prepare_kwargs["bmm1_scale"] == 0.125

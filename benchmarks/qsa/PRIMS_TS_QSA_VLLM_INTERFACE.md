@@ -37,7 +37,7 @@ applies the Q/K/V scales inside the PrimTS plan.
 Let:
 
 - `R` be the number of flattened query tokens in the current forward;
-- `G` be the selected query grouping, one of 1, 2, or 4;
+- `G` be the selected query grouping, one of 1, 2, 4, or 5;
 - `M = R / G` be the number of attention routes;
 - `K` be the compact top-k width in page-4 blocks (512 for this model);
 - `P` be the number of physical storage pages;
@@ -50,22 +50,21 @@ The real inputs and caller-owned outputs are:
 |---|---|---|
 | `query` before grouping | `[R, Hq, D]` | Flattened Q rows local to this TP rank |
 | `route_query`, Q1 | `[R, Hq, D]` | One query per attention route |
-| `route_query`, Q2/Q4 | `[M, G, Hq, D]` | `G` adjacent queries sharing one exact page union |
+| `route_query`, Q2/Q4/Q5 | `[M, G, Hq, D]` | `G` adjacent queries sharing one exact page union |
 | `k_cache`, `v_cache` | `[P, Hkv, N, D]` | Logical HND K/V views; vLLM creates these without copying |
 | `block_indices` | `[R, K]`, Int32 | Logical IDs of selected four-token blocks |
 | `block_table` | `[B, max_storage_pages]`, Int32 | Per-request logical-to-physical storage-page table |
 | `token_to_request` | `[R]`, Int32 | Request ID for every flattened query |
 | `query_positions` | `[R]`, Int32 or Int64 | Absolute position of every query |
-| `qsa_page_indptr` | `[M + 1]`, Int32 | Fixed-capacity CSR offsets written by metadata |
-| `seq_lens` | `[M]`, Int32 | Live compact KV-token length of every route |
 | `out` | same shape as `route_query` | Caller-owned attention output |
 
-The caller does **not** allocate or pass `qsa_page_indices` to the combined QSA
-API. It is an internal producer-consumer tensor inside the byte workspace:
-metadata writes it and attention immediately reads it. The input
-`block_indices`, block table, request map, positions, output, CSR indptr, and
-sequence lengths remain explicit tensors rather than being hidden in the
-workspace.
+The caller does **not** allocate or pass `qsa_page_indptr`,
+`qsa_page_indices`, or `seq_lens` to the combined QSA API. They are internal
+producer-consumer tensors inside the byte workspace: metadata writes them and
+attention immediately reads them. Semantic inputs (`block_indices`, block
+table, request map, and positions) and the output remain explicit tensors.
+Prepared plans expose the metadata-output views for diagnostics; callers must
+not modify them while the plan is running.
 
 vLLM's native cache is combined storage. The QSA owner constructs the HND K/V
 views with transpose/split operations and canonicalizes singleton strides; it
@@ -80,7 +79,7 @@ QSA indexer
   |  PrimTS: compact logical page-4 IDs [R, 512]
   |  Triton: expanded logical token IDs [R, 2051]
   v
-FlashInfer grouping policy -> G in {1, 2, 4}
+FlashInfer grouping policy -> G in {1, 2, 4, 5}
   v
 reshape Q/O to [M,G,Hq,D] when G > 1
   v
@@ -132,10 +131,6 @@ route_q = (
     else q.view(num_groups, group_size, q.shape[1], q.shape[2])
 )
 route_out = torch.empty_like(route_q, dtype=torch.bfloat16)
-qsa_page_indptr = torch.empty(
-    num_groups + 1, dtype=torch.int32, device=q.device
-)
-seq_lens = torch.empty(num_groups, dtype=torch.int32, device=q.device)
 
 workspace_bytes = get_prims_ts_qsa_workspace_size(
     route_q,
@@ -155,8 +150,6 @@ plan = prepare_prims_ts_qsa_attention(
     block_table,
     token_to_request,
     query_positions,
-    qsa_page_indptr,
-    seq_lens,
     workspace,
     out=route_out,
     bmm1_scale=qk_scale,
@@ -187,11 +180,12 @@ three non-overlapping regions:
 
 ```text
 QSA byte workspace
-├── qsa_page_indices
-│     metadata output, live until attention consumes it
+├── metadata outputs
+│     qsa_page_indptr, qsa_page_indices, and seq_lens
+│     remain live until attention consumes them
 ├── metadata scratch
 │     Q1: empty
-│     Q2/Q4: one logical-page bitmap per original query
+│     Q2/Q4/Q5: one logical-page bitmap per original query
 └── attention scratch
       direct policy: uniform-ABI placeholder views only
       split-KV policy: partial O, partial statistics, and completion counters
@@ -211,9 +205,10 @@ qsa_page_indices_bytes = R * (K + 1) * 4
 Grouping does not add another multiplier: `R` already includes all member
 queries. Each of the `M` CSR rows reserves `G * (K + 1)` entries, and
 `qsa_page_indptr` advances by that fixed capacity. `seq_lens` exposes only the
-live packed prefix.
+live packed prefix. The workspace also owns `M + 1` Int32 indptr entries and
+`M` Int32 sequence lengths; each region begins at a 256-byte-aligned offset.
 
-For Q2/Q4, the bitmap bound is:
+For Q2/Q4/Q5, the bitmap bound is:
 
 ```text
 logical_page4_capacity = max_storage_pages * N / 4
@@ -231,13 +226,15 @@ CUDA-graph bucket must instead retain a bound large enough for every replay.
 
 For `R=8192`, `K=512`, and an exactly 128K-token logical KV bound,
 `qsa_page_indices` uses 16,809,984 bytes and grouped bitmaps use 33,554,432
-bytes. The attention-scratch suffix is policy dependent and must be included by
-using the size-query API rather than a hand-written formula.
+bytes. The CSR header adds only about 16 KiB in this case. The
+attention-scratch suffix is policy dependent and must be included by using the
+size-query API rather than a hand-written formula.
 
-`qsa_page_indptr` and `seq_lens` are intentionally not hidden in the byte
-workspace. They are semantic outputs consumed by attention and remain stable,
-framework-visible buffers. vLLM registers maximum-token versions once per QSA
-layer and passes live slices.
+For the concrete BF16 TP2 prefill geometry used by the local 8K/128K sizing
+test (`Hq=24`, `Hkv=2`, `D=256`, storage page 64, Q4), the complete allocation
+is 50,382,336 bytes (48.05 MiB): 16,809,984 bytes of page indices, 16,388 bytes
+of CSR headers, 33,554,432 bytes of grouped bitmaps, alignment padding, and a
+1,280-byte direct-attention ABI suffix. `split_kv_workspace_bytes` is zero.
 
 ## Prepared-plan lifetime
 
@@ -245,8 +242,8 @@ layer and passes live slices.
 
 1. validate tensor shapes, dtypes, devices, strides, workspace size/alignment,
    output capacity, and non-aliasing requirements;
-2. bind the page-index, bitmap, and attention-scratch workspace views;
-3. freeze the Q1/Q2/Q4 metadata geometry and tensor strides;
+2. bind the CSR outputs, bitmap, and attention-scratch workspace views;
+3. freeze the Q1/Q2/Q4/Q5 metadata geometry and tensor strides;
 4. resolve the PrimTS tile and split-KV policy;
 5. compile or retrieve the attention callables;
 6. validate and retain the QK/V scale values; and
@@ -289,7 +286,7 @@ An inactive CUDA-graph padding row uses `seq_lens=1` and locator `-1`. PrimTS's
 TMA out-of-bounds path supplies zero K/V, producing an inert output row without
 another output-mask kernel.
 
-### Q2 and Q4: bitmap plus pack
+### Q2, Q4, and Q5: bitmap plus pack
 
 **Current.** Grouping shares K/V loads without changing per-query visibility.
 The first kernel creates one dense logical-page bitmap for every original
@@ -298,12 +295,12 @@ uses popcount prefix ranks to pack only nonzero union pages, maps them through
 the block table, and writes:
 
 ```text
-packed_page_entry = (encoded_page4_locator << 4) | membership
+packed_page_entry = (encoded_page4_locator << 8) | membership
 ```
 
-Membership bit `i` says whether query `i` selected that page. A page with
-membership `0000` is absent from the union; packing is parallel and does not
-use a serial append counter. The attention kernel strips the low nibble before
+Membership bit `i` says whether query `i` selected that page. A page with zero
+membership is absent from the union; packing is parallel and does not
+use a serial append counter. The attention kernel strips the low byte before
 decoding the page locator and applies the membership plus causal token mask
 before softmax. The final partial page is therefore masked exactly for each
 query, including early positions with fewer than 2051 visible compact tokens.
@@ -321,8 +318,9 @@ The query tensor rank communicates the chosen grouping to workspace sizing and
 preparation:
 
 - `[M, Hq, D]` means Q1;
-- `[M, 2, Hq, D]` means Q2; and
-- `[M, 4, Hq, D]` means Q4.
+- `[M, 2, Hq, D]` means Q2;
+- `[M, 4, Hq, D]` means Q4; and
+- `[M, 5, Hq, D]` means Q5.
 
 The current policy has four gates:
 
@@ -337,12 +335,12 @@ The current policy has four gates:
    `R * Hkv * 4 >= G * num_sms`, where four is an assumed maximum split-KV
    opportunity for this grouping heuristic.
 
-The policy tries the largest power-of-two candidate first. The hard Q4 cap
-comes from the four-bit page-membership representation, not from vLLM or TP
-size. The head-capacity gate naturally permits more token grouping when
-`Hq/Hkv` is smaller at a TP layout. The attention policy then reuses the dense
-PrimTS grouped-Q candidate geometry and selects the smallest canonical tile
-that holds the complete group; it does not always pad to TileQ64.
+The policy tries Q5, Q4, then Q2. The low byte can represent up to eight query
+members, but only Q1/Q2/Q4/Q5 are currently qualified. The head-capacity gate
+naturally permits more token grouping when `Hq/Hkv` is smaller at a TP layout.
+The attention policy then reuses the dense PrimTS grouped-Q candidate geometry
+and selects the smallest canonical tile that holds the complete group; it does
+not always pad to TileQ64.
 
 Consequences by phase:
 
@@ -350,6 +348,7 @@ Consequences by phase:
   at large batch size;
 - MTP with three draft tokens may group the target plus three draft rows as Q4
   when alignment, head capacity, and occupancy permit;
+- MTP with four draft tokens may use Q5 when all five rows are request-safe;
 - prefill commonly has enough adjacent rows for Q4, but variable request
   lengths can select Q2 or Q1; and
 - adaptive metadata that lacks authoritative CPU boundaries conservatively
@@ -381,8 +380,8 @@ not usable split-KV storage.
 
 **Current.** The FlashInfer plan is CUDA-graph compatible when:
 
-- workspace, K/V, CSR indptr, sequence lengths, and all captured input/output
-  addresses remain alive and stable;
+- workspace, K/V, and all captured input/output addresses remain alive and
+  stable;
 - shapes, strides, dtypes, device, group size, head geometry, page sizes,
   top-k, block-table width, and scale values retain the prepared semantics;
 - tensor contents are updated only between completed launches or replays; and
@@ -418,7 +417,7 @@ Framework authors should treat the following as part of the current contract:
 - SM100/SM103 only for this PrimTS implementation;
 - semantic QSA page size fixed at four; physical storage page size must be a
   positive multiple of four;
-- Q grouping limited to 1, 2, or 4 and `R` divisible by `G`;
+- Q grouping limited to 1, 2, 4, or 5 and `R` divisible by `G`;
 - head dimension supported by the underlying path: 64, 128, or 256;
 - valid grouped-query head geometry (`Hq` divisible by `Hkv`, with
   `1 <= Hq/Hkv <= 32`);
@@ -440,22 +439,30 @@ not supported by this QSA owner.
 
 - grouping policy is exposed as `get_prims_ts_qsa_group_size`;
 - metadata output shapes and metadata-only sizing/build helpers are exported;
-- one combined workspace-size query owns transient page indices plus disjoint
+- one combined workspace-size query owns all metadata outputs plus disjoint
   metadata/attention scratch;
 - `prepare_prims_ts_qsa_attention` returns a reusable combined plan; and
 - the combined plan is allocation-free and host-readback-free on its run path.
+
+The simplified workspace-owned-metadata interface was qualified on SM103 with
+CUTLASS DSL 4.7.1 by all 38 tests in
+`tests/attention/test_attention_ts_qsa_metadata.py`, the standalone
+CUDA-graph example in `examples/prims_ts/qsa_page4_attention.py`, and an FP8
+TP2/MTP3 vLLM smoke run with four 4K-context concurrent requests (8/8 measured
+requests completed). The smoke artifact is
+`/workspace/qsa_e2e_perf/job643892-api/api-workspace-smoke/`.
 
 **TODO before treating this as a broadly supported upstream interface:**
 
 - finish public API naming, documentation, examples, and compatibility policy;
 - qualify the prepared path across the intended framework graph lifecycles and
   supported SM100/SM103 environments;
-- replace the wave-only Q1/Q2/Q4 heuristic with a measured QSA-aware cost model;
+- replace the wave-only Q1/Q2/Q4/Q5 heuristic with a measured QSA-aware cost model;
 - requalify PDL before enabling it in the prepared path; and
 - expose any useful policy/workspace diagnostics without making frameworks
   depend on private layout objects.
 
 From a framework user's perspective, the intended surface is small: choose a
-request-safe grouping, query one workspace size, allocate persistent indptr and
-length outputs plus the byte workspace, prepare once per semantic geometry,
-and run repeatedly. Prefill, normal decode, and MTP use that same interface.
+request-safe grouping, query and allocate one byte workspace, prepare once per
+semantic geometry, and run repeatedly. Prefill, normal decode, and MTP use that
+same interface.
