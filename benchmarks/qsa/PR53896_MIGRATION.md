@@ -1495,6 +1495,23 @@ retains its prior performance shape: it is slower than Triton at BS16 and at
 parity by BS32. Raw captures and logs are under
 `qsa_bench/real_topk_job642187`.
 
+The framework MTP4 check is also complete for TP2 BF16 at an 8,192-token
+context. Each row is the mean of three warmed runs with 128 fixed scheduler
+steps. The natural policy retains Q1 at BS16 and selects Q5 at BS32:
+
+| batch | PrimTS route | PrimTS wall | Triton wall | fixed-step speedup | PrimTS token/s | Triton token/s | token/s speedup |
+|---:|:---|---:|---:|---:|---:|---:|---:|
+| 16 | Q1 | 2.2061 s | 2.2019 s | 0.998x | 3,788.5 | 3,774.5 | 1.004x |
+| 32 | Q5 | 2.9013 s | 2.8509 s | 0.983x | 5,877.1 | 5,994.7 | 0.980x |
+
+The fixed-step wall time is the cleaner comparison because MTP acceptance
+causes small generated-token-count differences. Q1 is effectively tied at
+BS16. Q5 is 1.7--2.0% behind Triton end to end at BS32 even though its
+standalone metadata-plus-attention result is 5.5% faster. This remains inside
+the 20% target and localizes the next investigation to all-layer/framework
+overhead rather than Q5 correctness. Raw JSON is in
+`qsa_e2e_perf/job642187-mtp4`.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
@@ -1523,10 +1540,9 @@ Work proceeds in this order:
    standalone framework-neutral example. Preserve Q1/Q2/Q4, variable query
    lengths, causal tails, caller-owned output/workspace buffers, no host
    synchronization or replay-time allocation, and stable CUDA-graph capacity.
-5. Integrate the qualified Q5 configuration into the framework MTP4 path and
-   measure model-level decode at BS16/32. Keep the automatic policy conservative:
-   it may select Q5 only when request boundaries are five-token aligned, 5 times
-   Hq/Hkv fits TileQ64, and the source-row estimate reaches four SM waves (the
-   maximum assumed split fanout). This selects Q5 at TP2/BS32 but retains Q1 at
-   BS16, matching the standalone crossover. Retain Q1 or Triton at BS16 unless
-   the all-layer measurement overturns that conclusion.
+5. Completed on job 642187: integrate Q5 into the framework MTP4 path and
+   measure model-level decode at BS16/32. The automatic policy selects Q5 only
+   for safe five-token boundaries whose TileQ64 source-row estimate reaches
+   four SM waves. It retains Q1 at BS16 and selects Q5 at BS32. The model-level
+   result is tied at BS16 and 1.7--2.0% behind Triton at BS32, so any claim of
+   an end-to-end Q5 speedup remains deferred pending all-layer profiling.
