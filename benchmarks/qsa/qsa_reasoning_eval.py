@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import random
 import re
 import statistics
@@ -118,16 +119,29 @@ def _extract_choice(text: str) -> str | None:
 
 
 def _extract_aime(text: str) -> str | None:
+    def normalize(number: str) -> str | None:
+        try:
+            value = float(number)
+        except (OverflowError, ValueError):
+            return None
+        if (
+            not math.isfinite(value)
+            or not value.is_integer()
+            or not 0 <= value <= 999
+        ):
+            return None
+        return str(int(value))
+
     boxed = re.findall(r"\\boxed\s*\{\s*(-?\d+)\s*\}", text)
     if boxed:
-        return str(int(boxed[-1]))
+        return normalize(boxed[-1])
     answers = re.findall(
         r"(?i)(?:final\s+)?answer\s*(?:is|:)\s*(-?\d+)", text
     )
     if answers:
-        return str(int(answers[-1]))
+        return normalize(answers[-1])
     number = _extract_number(text)
-    return str(int(float(number))) if number is not None else None
+    return normalize(number) if number is not None else None
 
 
 def _load_gsm8k(num_fewshot: int) -> tuple[list[Example], dict[str, str]]:
