@@ -2459,7 +2459,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--profile-union-component",
-        choices=("metadata", "flattened", "union", "contiguous"),
+        choices=("metadata", "flattened", "union", "triton", "contiguous"),
         help="Bracket one warmed union component with CUDA profiler start/stop.",
     )
     parser.add_argument(

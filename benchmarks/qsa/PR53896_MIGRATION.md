@@ -1297,6 +1297,60 @@ tokens remain below 3.2 MiB per layer. Keep the per-semantic-key lifetime
 invariant that passed the accuracy/liveness gates; use warmed profile numbers
 when determining the remaining BS64/BS512 matrix points.
 
+### Prepared QSA plan and disjoint split workspace
+
+The model-facing PrimTS route now prepares metadata and attention together for
+each semantic graph key. Preparation performs the public validation, resolves
+Q1/Q2/Q4 and split policy, binds the unified allocation, compiles attention,
+and converts scalar scales once. The repeated call accepts current semantic
+inputs and launches only the already-resolved metadata and attention work. It
+does not validate tensors, recompute shapes or policy, rebind workspace views,
+prove aliases, convert scales, or clear a counter.
+
+The unified byte allocation has three disjoint regions: persistent
+`qsa_page_indices`, grouped-union metadata scratch, and attention scratch.
+Direct prefill reports zero split-KV workspace; its tiny attention suffix is
+only the uniform compiled-call ABI placeholders. Decode never aliases
+metadata scratch with split-KV partials, statistics, or counters. A split plan
+initializes its completion counter once during construction. Fused split
+reduction wraps the counter to zero on its final arrival, while the standalone
+reducer does not consume the counter. CUDA-graph tests start from nonzero
+workspace bytes and pass eager execution, capture, and repeated replay without
+a repeated memset.
+
+This removes the earlier approximately 6 ms all-layer metadata artifact. A
+matched TP2, FP8, MTP0, 8K-prefill trace with prefix caching disabled measures
+12 QSA layers as follows:
+
+| measurement | Triton | prepared PrimTS |
+|---|---:|---:|
+| QSA attention kernels, one rank | 38.33 ms | 6.81 ms |
+| PrimTS metadata kernels, one rank | n/a | 0.39 ms |
+| QSA Python dispatch/NVTX CPU sum, one rank | 1.28 ms | 3.26 ms |
+| full request GPU span, rank 0 | 211.32 ms | 213.15 ms |
+| full request GPU span, rank 1 | 211.33 ms | 212.26 ms |
+| no-prefix endpoint mean TTFT, 20 prompts | 231.08 ms | 234.96 ms |
+| no-prefix endpoint median TTFT, 20 prompts | 232.21 ms | 238.16 ms |
+
+The kernel saving is real: metadata plus PrimTS is about 7.20 ms versus
+38.33 ms, a 31.1 ms all-layer reduction. Excluding all-reduce wait, total
+kernel time drops by about 30--33 ms on each rank. The full request does not
+yet inherit that reduction because the shorter QSA kernel exposes rank/host
+enqueue skew at the following collectives. Nsight attributes 9.04/79.57 ms of
+all-reduce residency to the two PrimTS ranks versus 45.90/9.22 ms for Triton,
+absorbing the compute saving in synchronization wait. This is no longer a
+metadata-workspace, validation, or shape-resolution issue. The next prefill
+optimization is to capture the prepared metadata-plus-attention sequence as
+one framework graph region (or otherwise reduce the eager split boundary) and
+then remeasure rank alignment.
+
+Artifacts are
+`qsa_nsys/job640295/pfprepared-prims-fp8.{nsys-rep,sqlite}` and
+`qsa_nsys/job640295/pfprepared-triton-fp8.{nsys-rep,sqlite}` inside the
+persistent workspace. The complete FlashInfer QSA metadata test file passes
+26 tests; the explicit fused-split prepared-plan graph test also passes from a
+nonzero initial counter.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
@@ -1320,9 +1374,8 @@ Work proceeds in this order:
    32K, and 64K where the matched physical KV capacity permits; keep prefill
    and decode timings separate and preserve independent contexts. The current
    5.34M-token PrimTS capacity fits BS64 through 64K and BS512 at 8K.
-4. Promote the compact metadata builders into a public FlashInfer integration
-   API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
-   caller-owned output/workspace buffers, no host synchronization or replay-
-   time allocation, and stable capacities suitable for CUDA graph capture.
-   The vLLM path becomes the reference integration, with standalone examples
-   documenting the contract for other frameworks.
+4. The compact metadata builders and prepared metadata-plus-attention plan are
+   now exposed through FlashInfer. Finish public API naming/review and add a
+   standalone framework-neutral example. Preserve Q1/Q2/Q4, variable query
+   lengths, causal tails, caller-owned output/workspace buffers, no host
+   synchronization or replay-time allocation, and stable CUDA-graph capacity.

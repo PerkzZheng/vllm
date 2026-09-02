@@ -143,6 +143,7 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
     for name in (
         "get_prims_ts_batch_decode_workspace_size",
         "get_prims_ts_qsa_group_size",
+        "prepare_prims_ts_batch_decode_with_kv_cache",
         "prims_ts_batch_decode_with_kv_cache",
     ):
         setattr(public_decode, name, getattr(prims_decode, name))
@@ -151,8 +152,11 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
         "flashinfer.attention.prims_ts.qsa_metadata"
     )
     for name in (
+        "PrimsTSQSAPlan",
         "build_prims_ts_qsa_page4_metadata",
         "get_prims_ts_qsa_metadata_workspace_size",
+        "get_prims_ts_qsa_workspace_size",
+        "prepare_prims_ts_qsa_attention",
     ):
         setattr(public_decode, name, getattr(qsa_metadata, name))
 

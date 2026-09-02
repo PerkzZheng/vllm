@@ -19,6 +19,8 @@ import torch
 from vllm.models.qwen4_exp.nvidia.ops.qsa import (
     qsa_build_page4_paged_metadata,
     qsa_prims_ts_paged_attention,
+    qsa_prims_ts_prepare_paged_attention,
+    qsa_prims_ts_run_prepared_attention,
     qsa_prims_ts_workspace_size,
     qsa_sparse_paged_attention,
 )
@@ -48,7 +50,9 @@ def _profile(
             with torch.profiler.record_function(name):
                 launch()
         torch.cuda.synchronize()
+    event = next(item for item in profiler.key_averages() if item.key == name)
     print(f"\n# {name}: iterations={iterations}, L2={'cold' if cold_l2 else 'warm'}")
+    print(f"host launch: {event.cpu_time_total / iterations:.2f} us/iteration")
     print(
         profiler.key_averages().table(
             sort_by="self_cuda_time_total",
@@ -132,8 +136,19 @@ def main() -> None:
     triton_output = benchmark._empty_output_like(inputs.q)
     triton_k_cache = inputs.k_cache.permute(0, 2, 1, 3)
     triton_v_cache = inputs.v_cache.permute(0, 2, 1, 3)
+    prepared_plan = qsa_prims_ts_prepare_paged_attention(
+        inputs.q,
+        inputs.k_cache,
+        inputs.v_cache,
+        workspace,
+        paged_kv_indptr,
+        paged_kv_indices,
+        seq_lens,
+        benchmark._QSA_MAX_SEQ_LEN,
+        prims_output,
+    )
 
-    def prims() -> None:
+    def prims_one_shot() -> None:
         qsa_prims_ts_paged_attention(
             inputs.q,
             inputs.k_cache,
@@ -144,6 +159,15 @@ def main() -> None:
             seq_lens,
             benchmark._QSA_MAX_SEQ_LEN,
             prims_output,
+        )
+
+    def prims_prepared() -> None:
+        qsa_prims_ts_run_prepared_attention(
+            prepared_plan,
+            inputs.q,
+            prims_output,
+            bmm1_scale=inputs.q.shape[-1] ** -0.5,
+            bmm2_scale=1.0,
         )
 
     def triton() -> None:
@@ -158,8 +182,14 @@ def main() -> None:
         )
 
     _profile(
-        "prims_ts_attention",
-        prims,
+        "prims_ts_attention_one_shot",
+        prims_one_shot,
+        iterations=args.iterations,
+        cold_l2=not args.warm_l2,
+    )
+    _profile(
+        "prims_ts_attention_prepared",
+        prims_prepared,
         iterations=args.iterations,
         cold_l2=not args.warm_l2,
     )

@@ -18,6 +18,34 @@ qsa_max_num_batched_tokens=${QSA_MAX_NUM_BATCHED_TOKENS:-8192}
 qsa_max_num_seqs=${QSA_MAX_NUM_SEQS:-64}
 qsa_cudagraph_capture_sizes=${QSA_CUDAGRAPH_CAPTURE_SIZES:-2 4 8 16 24 32 40 48 56 64}
 qsa_enable_cutedsl_warmup=${QSA_ENABLE_CUTEDSL_WARMUP:-true}
+qsa_kv_cache_dtype=${QSA_KV_CACHE_DTYPE:-fp8_e4m3}
+qsa_mtp_tokens=${QSA_MTP_TOKENS:-3}
+qsa_max_model_len=${QSA_MAX_MODEL_LEN:-139264}
+qsa_profile=${QSA_PROFILE:-false}
+qsa_enable_prefix_caching=${QSA_ENABLE_PREFIX_CACHING:-true}
+
+case "${qsa_kv_cache_dtype}" in
+  auto)
+    qsa_dtype_label=bf16
+    ;;
+  fp8 | fp8_e4m3)
+    qsa_dtype_label=fp8
+    ;;
+  *)
+    echo "unsupported QSA_KV_CACHE_DTYPE: ${qsa_kv_cache_dtype}" >&2
+    exit 2
+    ;;
+esac
+
+if ! [[ ${qsa_mtp_tokens} =~ ^[0-9]+$ ]]; then
+  echo "QSA_MTP_TOKENS must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ ${qsa_profile} != true && ${qsa_profile} != false ]] ||
+  [[ ${qsa_enable_prefix_caching} != true && ${qsa_enable_prefix_caching} != false ]]; then
+  echo "QSA_PROFILE and QSA_ENABLE_PREFIX_CACHING must be true or false" >&2
+  exit 2
+fi
 
 usage() {
   cat >&2 <<'EOF'
@@ -33,6 +61,9 @@ Environment overrides:
   QSA_DECODE_WARMUP_PROMPTS,
   QSA_GPU_MEMORY_UTILIZATION, QSA_MAX_NUM_BATCHED_TOKENS,
   QSA_MAX_NUM_SEQS, QSA_CUDAGRAPH_CAPTURE_SIZES,
+  QSA_KV_CACHE_DTYPE (auto or fp8_e4m3), QSA_MTP_TOKENS,
+  QSA_MAX_MODEL_LEN, QSA_PROFILE (default: false),
+  QSA_ENABLE_PREFIX_CACHING (default: true),
   QSA_ENABLE_CUTEDSL_WARMUP (default: true)
 EOF
   exit 2
@@ -89,6 +120,10 @@ common_bench_args=(
   --percentile-metrics ttft,tpot,itl,e2el
   --metric-percentiles 50,90,99
 )
+profile_args=()
+if [[ ${qsa_profile} == true ]]; then
+  profile_args+=(--profile)
+fi
 
 run_bench() {
   "${qsa_python}" -m vllm.entrypoints.cli.main bench serve "$@"
@@ -115,25 +150,42 @@ case "${action}" in
     export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=7200
     mkdir -p "${TRITON_CACHE_DIR}" "${VLLM_CACHE_ROOT}"
     read -r -a cudagraph_capture_sizes <<<"${qsa_cudagraph_capture_sizes}"
-    cd "${qsa_repo}"
-    exec "${qsa_python}" -m vllm.entrypoints.openai.api_server \
-      --model "${qsa_model}" \
-      --served-model-name Qwen/Qwen3.8-Flash-Next \
-      --reasoning-parser qwen3 \
-      --tensor-parallel-size "${qsa_tp_size}" \
-      --disable-custom-all-reduce \
-      --gpu-memory-utilization "${qsa_gpu_memory_utilization}" \
-      --kv-cache-dtype fp8_e4m3 \
-      --enable-prefix-caching \
-      --max-model-len 139264 \
-      --max-num-batched-tokens "${qsa_max_num_batched_tokens}" \
-      --max-num-seqs "${qsa_max_num_seqs}" \
-      --cudagraph-capture-sizes "${cudagraph_capture_sizes[@]}" \
-      --kernel-config "{\"enable_cutedsl_warmup\":${qsa_enable_cutedsl_warmup}}" \
-      --no-enable-flashinfer-autotune \
-      --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
-      --host 0.0.0.0 \
+    server_args=(
+      --model "${qsa_model}"
+      --served-model-name Qwen/Qwen3.8-Flash-Next
+      --reasoning-parser qwen3
+      --tensor-parallel-size "${qsa_tp_size}"
+      --disable-custom-all-reduce
+      --gpu-memory-utilization "${qsa_gpu_memory_utilization}"
+      --kv-cache-dtype "${qsa_kv_cache_dtype}"
+      --max-model-len "${qsa_max_model_len}"
+      --max-num-batched-tokens "${qsa_max_num_batched_tokens}"
+      --max-num-seqs "${qsa_max_num_seqs}"
+      --cudagraph-capture-sizes "${cudagraph_capture_sizes[@]}"
+      --kernel-config "{\"enable_cutedsl_warmup\":${qsa_enable_cutedsl_warmup}}"
+      --no-enable-flashinfer-autotune
+      --host 0.0.0.0
       --port "${qsa_port}"
+    )
+    if [[ ${qsa_enable_prefix_caching} == true ]]; then
+      server_args+=(--enable-prefix-caching)
+    else
+      server_args+=(--no-enable-prefix-caching)
+    fi
+    if (( qsa_mtp_tokens > 0 )); then
+      server_args+=(
+        --speculative-config
+        "{\"method\":\"mtp\",\"num_speculative_tokens\":${qsa_mtp_tokens}}"
+      )
+    fi
+    if [[ ${qsa_profile} == true ]]; then
+      server_args+=(
+        --profiler-config
+        '{"profiler":"cuda","detailed_trace_annotation":true}'
+      )
+    fi
+    cd "${qsa_repo}"
+    exec "${qsa_python}" -m vllm.entrypoints.openai.api_server "${server_args[@]}"
     ;;
   prefill)
     if [[ $# -ne 3 ]]; then
@@ -155,6 +207,7 @@ case "${action}" in
       --seed "${warm_seed}"
     run_bench \
       "${common_bench_args[@]}" \
+      "${profile_args[@]}" \
       --dataset-name random \
       --random-input-len "${input_len}" \
       --random-output-len 1 \
@@ -164,7 +217,7 @@ case "${action}" in
       --seed "${qsa_seed}" \
       --save-result \
       --result-dir "${result_dir}" \
-      --result-filename "${backend}-fp8-mtp3-tp${qsa_tp_size}-prefill-input${input_len}-bs1.json"
+      --result-filename "${backend}-${qsa_dtype_label}-mtp${qsa_mtp_tokens}-tp${qsa_tp_size}-prefill-input${input_len}-bs1.json"
     ;;
   decode-independent)
     if [[ $# -ne 4 ]]; then
@@ -194,6 +247,7 @@ case "${action}" in
       --seed "${warm_seed}"
     run_bench \
       "${common_bench_args[@]}" \
+      "${profile_args[@]}" \
       --dataset-name random \
       --random-input-len "${input_len}" \
       --random-output-len "${qsa_decode_output_len}" \
@@ -203,7 +257,7 @@ case "${action}" in
       --seed "${qsa_seed}" \
       --save-result \
       --result-dir "${result_dir}" \
-      --result-filename "${backend}-fp8-mtp3-tp${qsa_tp_size}-decode-independent-input${input_len}-bs${batch_size}.json"
+      --result-filename "${backend}-${qsa_dtype_label}-mtp${qsa_mtp_tokens}-tp${qsa_tp_size}-decode-independent-input${input_len}-bs${batch_size}.json"
     ;;
   *)
     usage

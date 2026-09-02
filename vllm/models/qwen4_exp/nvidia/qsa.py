@@ -60,19 +60,18 @@ from ..common.qsa_cache import QSAForwardMetadata
 from . import model
 from .indexer_qsa import QSAIndexer
 
-_QSA_Q1_MAX_SEQ_LEN = 2051
-_QSA_Q2_MAX_SEQ_LEN = 4104
-_QSA_Q4_MAX_SEQ_LEN = 8208
-
 _QSA_BACKEND_ENV = "VLLM_QSA_ATTENTION_BACKEND"
+_QSA_DIAGNOSTIC_NVTX = os.environ.get("VLLM_QSA_DIAGNOSTIC_NVTX", "0") == "1"
 
 
-def _qsa_prims_ts_batch_capacity(num_tokens: int, max_tokens: int) -> int:
-    """Bucket live routes so CUDA-graph QSA views keep stable capacities."""
+def _qsa_nvtx_push(name: str) -> None:
+    if _QSA_DIAGNOSTIC_NVTX:
+        torch.cuda.nvtx.range_push(name)
 
-    if not 0 < num_tokens <= max_tokens:
-        raise ValueError("QSA PrimTS live rows must fit the staging capacity")
-    return min(1 << (num_tokens - 1).bit_length(), max_tokens)
+
+def _qsa_nvtx_pop() -> None:
+    if _QSA_DIAGNOSTIC_NVTX:
+        torch.cuda.nvtx.range_pop()
 
 
 def _resolve_qsa_prims_ts_backend(*, capable: bool, available: bool) -> bool:
@@ -206,26 +205,22 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         layer: torch.nn.Module,
         query: torch.Tensor,
         key_cache: torch.Tensor,
-        max_seq_len: int,
+        block_table: torch.Tensor,
+        block_topk: int,
         out_dtype: torch.dtype,
     ) -> torch.Tensor:
-        from .ops.qsa import qsa_prims_ts_workspace_size
+        from .ops.qsa import qsa_prims_ts_combined_workspace_size
 
-        required_bytes = qsa_prims_ts_workspace_size(
-            query,
-            key_cache,
-            max_seq_len,
-            out_dtype=out_dtype,
-        )
         seq_len_q = query.shape[1] if query.ndim == 4 else 1
         workspace_key = (
             query.device,
             query.shape[0],
             seq_len_q,
             key_cache.shape[2],
+            block_table.shape[1],
+            block_topk,
             query.dtype,
             out_dtype,
-            required_bytes,
         )
         workspace_pool = getattr(layer, "_qsa_prims_ts_workspace_pool", None)
         if workspace_pool is None:
@@ -233,10 +228,19 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             layer._qsa_prims_ts_workspace_pool = workspace_pool
         workspace = workspace_pool.get(workspace_key)
         if workspace is None:
+            required_bytes = qsa_prims_ts_combined_workspace_size(
+                query,
+                key_cache,
+                block_table,
+                block_topk,
+                out_dtype=out_dtype,
+            )
             # CUDA graphs replay without re-entering this Python owner. Give
-            # every semantic graph key its own zero-initialized allocation so
-            # section layouts cannot alias as the scheduler changes buckets.
-            workspace = torch.zeros(
+            # every semantic graph key its own allocation so section layouts
+            # cannot alias as the scheduler changes buckets. Metadata fully
+            # initializes its outputs and bitmap scratch; split-KV counters
+            # are initialized once by the prepared FlashInfer plan.
+            workspace = torch.empty(
                 required_bytes,
                 dtype=torch.uint8,
                 device=query.device,
@@ -247,37 +251,67 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         layer._qsa_prims_ts_workspace = workspace
         return workspace
 
-    def _get_qsa_metadata_workspace(
+    def _get_qsa_prims_ts_plan(
         self,
         layer: torch.nn.Module,
-        num_tokens: int,
+        query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        block_indices: torch.Tensor,
         block_table: torch.Tensor,
-        storage_page_size: int,
-        group_size: int,
-    ) -> torch.Tensor:
-        """Return graph-stable scratch for exact grouped page unions."""
+        token_to_req: torch.Tensor,
+        logical_positions: torch.Tensor,
+        workspace: torch.Tensor,
+        paged_kv_indptr: torch.Tensor,
+        seq_lens: torch.Tensor,
+        out: torch.Tensor,
+        bmm1_scale: float,
+        bmm2_scale: float,
+    ) -> object:
+        """Return a validated plan for one graph-stable QSA semantic key."""
 
-        from .ops.qsa import qsa_prims_ts_metadata_workspace_size
+        from .ops.qsa import qsa_prims_ts_prepare_attention
 
-        required_bytes = qsa_prims_ts_metadata_workspace_size(
-            num_tokens,
-            block_table,
-            storage_page_size,
-            group_size,
+        plan_key = (
+            query.device,
+            tuple(query.shape),
+            query.stride(),
+            query.dtype,
+            tuple(out.shape),
+            out.stride(),
+            out.dtype,
+            key_cache.shape[2],
+            key_cache.stride(),
+            tuple(block_indices.shape),
+            block_indices.stride(),
+            tuple(block_table.shape),
+            block_table.stride(),
+            float(bmm1_scale),
+            float(bmm2_scale),
         )
-        workspace = getattr(layer, "_qsa_metadata_workspace", None)
-        if (
-            workspace is None
-            or workspace.device != block_table.device
-            or workspace.numel() < required_bytes
-        ):
-            workspace = torch.empty(
-                required_bytes,
-                dtype=torch.uint8,
-                device=block_table.device,
+        plan_pool = getattr(layer, "_qsa_prims_ts_plan_pool", None)
+        if plan_pool is None:
+            plan_pool = {}
+            layer._qsa_prims_ts_plan_pool = plan_pool
+        plan = plan_pool.get(plan_key)
+        if plan is None:
+            plan = qsa_prims_ts_prepare_attention(
+                query,
+                key_cache,
+                value_cache,
+                block_indices,
+                block_table,
+                token_to_req,
+                logical_positions,
+                paged_kv_indptr,
+                seq_lens,
+                workspace,
+                out,
+                bmm1_scale=bmm1_scale,
+                bmm2_scale=bmm2_scale,
             )
-            layer._qsa_metadata_workspace = workspace
-        return workspace[:required_bytes]
+            plan_pool[plan_key] = plan
+        return plan
 
     def forward_qsa(
         self,
@@ -345,9 +379,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
 
         if self.use_qsa_prims_ts:
             from .ops.qsa import (
-                qsa_prims_ts_build_page4_metadata,
                 qsa_prims_ts_group_size,
-                qsa_prims_ts_paged_attention,
+                qsa_prims_ts_run_prepared,
             )
 
             if not indices_are_blocks:
@@ -364,99 +397,48 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             prims_value_cache = canonicalize_singleton_dim_strides(
                 value_cache.transpose(1, 2)
             )
-            route_capacity = _qsa_prims_ts_batch_capacity(
-                num_tokens, topk_buffer.shape[0]
-            )
-            if route_capacity != num_tokens:
-                staged_token_to_req = getattr(
-                    layer, "_qsa_prims_ts_token_to_req_buffer", None
-                )
-                staged_positions = getattr(
-                    layer, "_qsa_prims_ts_logical_positions_buffer", None
-                )
-                staged_output = getattr(layer, "_qsa_prims_ts_output_buffer", None)
-                if (
-                    staged_token_to_req is None
-                    or staged_positions is None
-                    or staged_output is None
-                ):
-                    raise RuntimeError("QSA owner did not provide PrimTS staging")
-                staged_token_to_req[:num_tokens].copy_(token_to_req)
-                staged_token_to_req[num_tokens:route_capacity].zero_()
-                staged_positions[:num_tokens].copy_(logical_positions)
-                staged_positions[num_tokens:route_capacity].fill_(-1)
-                token_to_req = staged_token_to_req[:route_capacity]
-                logical_positions = staged_positions[:route_capacity]
-                logical_indices = topk_buffer[:route_capacity]
-
-                if query_for_attention.dtype == torch.bfloat16:
-                    staged_query = getattr(
-                        layer, "_qsa_prims_ts_bf16_query_buffer", None
-                    )
-                    if staged_query is None:
-                        raise RuntimeError(
-                            "QSA owner did not provide BF16 PrimTS staging"
-                        )
-                    staged_query[:num_tokens].copy_(query_for_attention)
-                    staged_query[num_tokens:route_capacity].zero_()
-                    query_for_attention = staged_query[:route_capacity]
-                else:
-                    # The FP8 quantizer already wrote the live prefix into the
-                    # owner's max-token buffer. Keep inert rows deterministic.
-                    assert fp8_query_buffer is not None
-                    fp8_query_buffer[num_tokens:route_capacity].zero_()
-                    query_for_attention = fp8_query_buffer[:route_capacity]
-                prims_output = staged_output[:route_capacity]
-            else:
-                prims_output = output[:num_tokens]
+            _qsa_nvtx_push("qsa_prims_route_setup")
+            # Piecewise prefill executes eagerly at the attention boundary;
+            # route exactly the live rows. Full CUDA graphs already capture a
+            # fixed token extent and do not need a second staging policy here.
+            prims_output = output[:num_tokens]
             group_size = qsa_prims_ts_group_size(
                 query_for_attention,
                 prims_key_cache,
                 query_start_loc_cpu,
             )
-            route_rows = route_capacity // group_size
-            page_capacity = (
-                logical_indices.shape[1] + 1
-                if indices_are_blocks
-                else (logical_indices.shape[1] + 3) // 4
-            )
+            route_rows = num_tokens // group_size
             indptr_buffer = getattr(layer, "qsa_paged_kv_indptr_buffer", None)
-            indices_buffer = getattr(layer, "qsa_paged_kv_indices_buffer", None)
             seq_lens_buffer = getattr(layer, "qsa_seq_lens_buffer", None)
-            if (
-                indptr_buffer is None
-                or indices_buffer is None
-                or seq_lens_buffer is None
-            ):
+            if indptr_buffer is None or seq_lens_buffer is None:
                 raise RuntimeError("QSA owner did not provide PrimTS metadata buffers")
             paged_kv_indptr = indptr_buffer[: route_rows + 1]
-            paged_kv_indices = indices_buffer[: route_capacity * page_capacity]
             seq_lens = seq_lens_buffer[:route_rows]
-            metadata_workspace = None
-            if group_size > 1:
-                metadata_workspace = self._get_qsa_metadata_workspace(
-                    layer,
-                    route_capacity,
-                    attn_metadata.block_table,
-                    prims_key_cache.shape[2],
-                    group_size,
+            _qsa_nvtx_pop()
+
+            _qsa_nvtx_push("qsa_prims_plan_lookup")
+            # The grouped union bitmap is indexed by logical page-four ID.
+            # Bound it by the largest live context, not by the model's full
+            # block-table allocation.  For example, an 8K prefill needs only
+            # three 3,136-token storage pages instead of all 45 pages reserved
+            # for a 139K context.  Full CUDA-graph capture remains safe because
+            # its attention metadata deliberately sets max_seq_len to the
+            # model-length upper bound.
+            active_storage_pages = min(
+                attn_metadata.block_table.shape[1],
+                (
+                    attn_metadata.max_seq_len
+                    + prims_key_cache.shape[2]
+                    - 1
                 )
-            qsa_prims_ts_build_page4_metadata(
-                logical_indices,
-                attn_metadata.block_table,
-                token_to_req,
-                logical_positions,
-                prims_key_cache.shape[2],
-                group_size,
-                metadata_workspace,
-                paged_kv_indptr,
-                paged_kv_indices,
-                seq_lens,
+                // prims_key_cache.shape[2],
             )
+            metadata_block_table = attn_metadata.block_table[
+                :, :active_storage_pages
+            ]
             if group_size == 1:
                 route_query = query_for_attention
                 route_output = prims_output
-                max_seq_len = _QSA_Q1_MAX_SEQ_LEN
             else:
                 route_query = query_for_attention.view(
                     route_rows,
@@ -465,35 +447,48 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                     query.shape[2],
                 )
                 route_output = prims_output.view_as(route_query)
-                max_seq_len = (
-                    _QSA_Q2_MAX_SEQ_LEN if group_size == 2 else _QSA_Q4_MAX_SEQ_LEN
-                )
             workspace = self._get_qsa_prims_ts_workspace(
                 layer,
                 route_query,
                 prims_key_cache,
-                max_seq_len,
+                metadata_block_table,
+                logical_indices.shape[1],
                 route_output.dtype,
             )
-            qsa_prims_ts_paged_attention(
+            plan = self._get_qsa_prims_ts_plan(
+                layer,
                 route_query,
                 prims_key_cache,
                 prims_value_cache,
+                logical_indices,
+                metadata_block_table,
+                token_to_req,
+                logical_positions,
                 workspace,
                 paged_kv_indptr,
-                paged_kv_indices,
                 seq_lens,
-                max_seq_len,
                 route_output,
-                bmm1_scale=bmm1_scale,
-                bmm2_scale=bmm2_scale,
+                bmm1_scale,
+                bmm2_scale,
             )
-            if route_capacity != num_tokens:
-                output[:num_tokens].copy_(prims_output[:num_tokens])
+            _qsa_nvtx_pop()
+
+            _qsa_nvtx_push("qsa_prims_metadata_attention_launch")
+            qsa_prims_ts_run_prepared(
+                plan,
+                route_query,
+                logical_indices,
+                metadata_block_table,
+                token_to_req,
+                logical_positions,
+                route_output,
+            )
+            _qsa_nvtx_pop()
             return output
 
         from .ops.qsa import qsa_sparse_paged_attention
 
+        _qsa_nvtx_push("qsa_triton_attention_launch")
         qsa_sparse_paged_attention(
             query_for_attention,
             key_cache,
@@ -505,6 +500,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             bmm1_scale=bmm1_scale,
             bmm2_scale=bmm2_scale,
         )
+        _qsa_nvtx_pop()
         return output
 
 
@@ -689,52 +685,12 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 persistent=False,
             )
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
-        self._qsa_prims_ts_workspace_pool: dict[
-            tuple[torch.device, int, int, int, torch.dtype, torch.dtype, int],
-            torch.Tensor,
-        ] = {}
-        self._qsa_metadata_workspace: torch.Tensor | None = None
+        self._qsa_prims_ts_workspace_pool: dict[tuple[object, ...], torch.Tensor] = {}
+        self._qsa_prims_ts_plan_pool: dict[tuple[object, ...], object] = {}
         if self.impl.use_qsa_prims_ts:
-            if not is_quantized_kv_cache(self.kv_cache_dtype):
-                self.register_buffer(
-                    "_qsa_prims_ts_bf16_query_buffer",
-                    torch.zeros(
-                        max_tokens,
-                        self.num_heads,
-                        self.head_dim,
-                        dtype=torch.bfloat16,
-                    ),
-                    persistent=False,
-                )
-            self.register_buffer(
-                "_qsa_prims_ts_output_buffer",
-                torch.empty(
-                    max_tokens,
-                    self.num_heads,
-                    self.head_dim,
-                    dtype=torch.bfloat16,
-                ),
-                persistent=False,
-            )
-            self.register_buffer(
-                "_qsa_prims_ts_token_to_req_buffer",
-                torch.zeros(max_tokens, dtype=torch.int32),
-                persistent=False,
-            )
-            self.register_buffer(
-                "_qsa_prims_ts_logical_positions_buffer",
-                torch.full((max_tokens,), -1, dtype=torch.int64),
-                persistent=False,
-            )
-            page_capacity = self.indexer.block_topk + 1
             self.register_buffer(
                 "qsa_paged_kv_indptr_buffer",
                 torch.empty(max_tokens + 1, dtype=torch.int32),
-                persistent=False,
-            )
-            self.register_buffer(
-                "qsa_paged_kv_indices_buffer",
-                torch.empty(max_tokens * page_capacity, dtype=torch.int32),
                 persistent=False,
             )
             self.register_buffer(
