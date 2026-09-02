@@ -1428,6 +1428,41 @@ FlashInfer QSA metadata test file passes 26 tests. No-profiler JSON controls
 are under `qsa_e2e_perf/job641343-no-nsys`; the explicit fused-split
 prepared-plan graph test also passes from a nonzero initial counter.
 
+### TP4 prepared-plan lifetime regression
+
+The first TP4, FP8, MTP3, full-graph capture at 1,024 scheduled query tokens
+failed with an illegal address reported asynchronously by the following MoE
+GEMM. The QSA kernel itself is not the basic bounds failure: a standalone
+BS256/Q4/Hq6/Hkv1/FP8 case with an 8K causal context and large hybrid-cache
+physical pages passes both the legacy two-step path and the prepared
+combined-workspace path, including repeated CUDA-graph replay. TP4 uses a
+1,600-token attention page; TP2 uses 3,136 tokens with the current cache
+alignment policy.
+
+The integration also retained `_qsa_prims_ts_workspace_pool` and
+`_qsa_prims_ts_plan_pool` across vLLM's throwaway CUDA-graph memory-profiling
+phase. vLLM releases the profiling KV cache before allocating the real cache,
+but the QSA keys described only shapes and strides. The cached attention plan
+therefore remained bound to freed profiling K/V pointers, and its workspace
+could remain associated with the discarded graph pool. Workspace keys now
+include the KV-cache generation, while prepared-plan keys include every bound
+K/V, workspace, CSR-indptr, and sequence-length buffer address. A rebound KV
+cache consequently prepares fresh storage instead of replaying a stale plan.
+This is a real lifetime hazard, but removing it did not eliminate the current
+TP4 model-level illegal-address failure, including when vLLM's throwaway graph
+memory estimate is disabled.
+
+The standalone regression now exactly covers TP4's 1,600-token storage pages,
+FP8 Q/K/V, BF16 output, BS256, Q4, Hq/Hkv=6/1, an 8K logical context, and the
+prepared combined-workspace API. It passes eager execution and three graph
+replays against the legacy two-step metadata/attention path. The same captured
+graph also passes after only 3 of 256 groups remain active and all padded groups
+receive vLLM-style `token_to_request=-1` and `query_position=-1` sentinels.
+The remaining fault is therefore specific to multi-layer or vLLM graph
+integration; page-1,600 tensor maps, fully active Q4, and inert-tail Q4 groups
+are independently ruled out. The model-level TP4 startup/decode matrix remains
+open and should be revisited after the bounded decode investigation.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
@@ -1456,3 +1491,10 @@ Work proceeds in this order:
    standalone framework-neutral example. Preserve Q1/Q2/Q4, variable query
    lengths, causal tails, caller-owned output/workspace buffers, no host
    synchronization or replay-time allocation, and stable CUDA-graph capacity.
+5. After the e2e matrix, qualify MTP3 with the existing Q4 route, then add a
+   Q5 kernel configuration for MTP4. Start with BF16 BS16/32, Hq/Hkv=12/1,
+   compilation-known `num_q_heads_per_kv`, and real captured top-k rows whose
+   adjacent-query KV overlap is approximately 70 percent. Compare grouped
+   PrimTS directly with Triton QSA for MTP3 before changing the membership
+   representation and metadata contract for five query tokens, then repeat
+   the same comparison for MTP4.

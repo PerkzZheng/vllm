@@ -216,7 +216,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             query.device,
             query.shape[0],
             seq_len_q,
-            key_cache.shape[2],
+            tuple(key_cache.shape),
+            key_cache.data_ptr(),
             block_table.shape[1],
             block_topk,
             query.dtype,
@@ -236,10 +237,11 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 out_dtype=out_dtype,
             )
             # CUDA graphs replay without re-entering this Python owner. Give
-            # every semantic graph key its own allocation so section layouts
-            # cannot alias as the scheduler changes buckets. Metadata fully
-            # initializes its outputs and bitmap scratch; split-KV counters
-            # are initialized once by the prepared FlashInfer plan.
+            # every semantic graph key and KV-cache generation its own
+            # allocation so throwaway graph-memory profiling storage cannot
+            # survive into the real capture. Metadata fully initializes its
+            # outputs and bitmap scratch; split-KV counters are initialized
+            # once by the prepared FlashInfer plan.
             workspace = torch.empty(
                 required_bytes,
                 dtype=torch.uint8,
@@ -280,12 +282,17 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             tuple(out.shape),
             out.stride(),
             out.dtype,
-            key_cache.shape[2],
+            tuple(key_cache.shape),
             key_cache.stride(),
+            key_cache.data_ptr(),
+            value_cache.data_ptr(),
             tuple(block_indices.shape),
             block_indices.stride(),
             tuple(block_table.shape),
             block_table.stride(),
+            workspace.data_ptr(),
+            paged_kv_indptr.data_ptr(),
+            seq_lens.data_ptr(),
             float(bmm1_scale),
             float(bmm2_scale),
         )
@@ -508,6 +515,25 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
     """Merged Qwen full-attention owner with a QSA index side branch."""
 
     supports_dcp = False
+
+    def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
+        """Bind one cache generation and discard plans bound to its predecessor.
+
+        vLLM first binds a minimal cache while profiling CUDA-graph memory,
+        tears it down, and later binds the real cache. Prepared PrimTS plans
+        retain K/V tensor maps, and workspaces allocated during the profiling
+        capture belong to a throwaway graph pool. Neither may cross this
+        rebinding boundary.
+        """
+
+        workspace_pool = getattr(self, "_qsa_prims_ts_workspace_pool", None)
+        if workspace_pool is not None:
+            workspace_pool.clear()
+        plan_pool = getattr(self, "_qsa_prims_ts_plan_pool", None)
+        if plan_pool is not None:
+            plan_pool.clear()
+        self._qsa_prims_ts_workspace = None
+        self.kv_cache = kv_cache
 
     def __init__(
         self,

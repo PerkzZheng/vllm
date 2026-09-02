@@ -1217,6 +1217,27 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     assert torch.all(output == 5)
     assert calls["prepare_count"] == 1
 
+    # CUDA-graph memory profiling binds a temporary KV cache, then replaces
+    # it with the real allocation. The prepared plan must not retain the
+    # profiling cache's now-stale K/V pointers for the real capture.
+    first_workspace = calls["workspace"]
+    output.fill_(torch.nan)
+    rebound_result = impl.forward_qsa(
+        layer,
+        query,
+        query,
+        query,
+        kv_cache.clone(),
+        metadata,
+        output,
+        token_to_req,
+        logical_positions,
+    )
+    assert rebound_result is output
+    assert torch.all(output == 5)
+    assert calls["prepare_count"] == 2
+    assert calls["workspace"] is not first_workspace
+
 
 def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
     monkeypatch: pytest.MonkeyPatch,
@@ -1284,6 +1305,36 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
     )
     assert larger.numel() == 256
     assert larger.data_ptr() not in (first.data_ptr(), second.data_ptr())
+
+    rebound_key_cache = torch.empty_like(key_cache)
+    rebound = impl._get_qsa_prims_ts_workspace(
+        layer,
+        torch.empty(3, 6, 256, dtype=torch.bfloat16),
+        rebound_key_cache,
+        block_table,
+        512,
+        torch.bfloat16,
+    )
+    assert rebound.data_ptr() != same_key.data_ptr()
+
+
+def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAAttention
+
+    layer = SimpleNamespace(
+        _qsa_prims_ts_workspace=torch.empty(1),
+        _qsa_prims_ts_workspace_pool={"profiling": torch.empty(1)},
+        _qsa_prims_ts_plan_pool={"profiling": object()},
+        kv_cache=torch.empty(0),
+    )
+    real_kv_cache = torch.empty(2, 1, 16, 512)
+
+    Qwen4ExpQSAAttention.bind_kv_cache(layer, real_kv_cache)
+
+    assert layer.kv_cache is real_kv_cache
+    assert layer._qsa_prims_ts_workspace is None
+    assert not layer._qsa_prims_ts_workspace_pool
+    assert not layer._qsa_prims_ts_plan_pool
 
 
 def test_qsa_prims_ts_wrappers_forward_grouped_sq(

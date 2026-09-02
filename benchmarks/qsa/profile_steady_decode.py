@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Capture a profile containing only steady-state decode iterations.
+"""Measure or profile only steady-state decode iterations.
 
 The regular serving benchmark starts the profiler before submitting requests,
 which mixes chunked prefill and decode in one trace.  This client keeps a batch
 of streaming completion requests resident, waits until every request has
 produced its first token, and only then brackets a fixed number of decode
-iterations with the vLLM profiling endpoints.
+iterations.  Profiling mode brackets them with the vLLM profiling endpoints;
+``--no-profile`` uses the same barrier without profiler control overhead.
 """
 
 from __future__ import annotations
@@ -56,6 +57,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout-sec", type=float, default=1800)
+    parser.add_argument(
+        "--profile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Bracket the measured window with /start_profile and /stop_profile.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.input_len <= 0 or args.batch_size <= 0:
@@ -201,10 +208,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError(errors[0])
 
             metric_start = await generation_tokens(session, args.base_url)
-            await post_profile(session, args.base_url, "start_profile")
-            profiler_started = True
-            # Snapshot after the profiling acknowledgement so the requested
-            # number of iterations is fully contained in the capture window.
+            if args.profile:
+                await post_profile(session, args.base_url, "start_profile")
+                profiler_started = True
+            # In profiling mode, snapshot after the acknowledgement so the
+            # requested iterations are fully contained in the capture window.
             baselines = [state.chunks for state in states]
             token_baselines = [state.tokens for state in states]
             start = time.perf_counter()
@@ -215,8 +223,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             )
 
             end = time.perf_counter()
-            await post_profile(session, args.base_url, "stop_profile")
-            profiler_started = False
+            if args.profile:
+                await post_profile(session, args.base_url, "stop_profile")
+                profiler_started = False
             metric_end = await generation_tokens(session, args.base_url)
 
             chunk_deltas = [
@@ -233,6 +242,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "input_len": args.input_len,
                 "batch_size": args.batch_size,
                 "capture_steps": args.capture_steps,
+                "profile": args.profile,
                 "wall_time_sec": end - start,
                 "stream_chunk_delta": {
                     "min": min(chunk_deltas),

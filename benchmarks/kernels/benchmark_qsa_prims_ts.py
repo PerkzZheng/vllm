@@ -1644,12 +1644,13 @@ def _make_qsa_inputs(
     route_order: str,
     topk_pattern: str,
 ) -> QSAInputs:
-    if workload.context_length % storage_page_size:
-        raise ValueError("storage page size must divide the benchmark context")
     if workload.context_length % _COMPRESS_RATIO:
         raise ValueError("context length must be divisible by the compression ratio")
 
-    pages_per_request = workload.context_length // storage_page_size
+    # vLLM storage pages need not divide the logical context (the Qwen3.8
+    # hybrid cache currently uses 3,136-token pages). Allocate the final page
+    # in full and rely on the explicit sequence length to mask its padding.
+    pages_per_request = math.ceil(workload.context_length / storage_page_size)
     num_storage_pages = workload.batch_size * pages_per_request
     q = _randn_qkv(
         workload.rows,
@@ -2791,8 +2792,6 @@ def main() -> None:
         raise ValueError("context length must cover the 2048-token QSA top-k")
     if "prefill" in args.phases and args.prefill_seq_len != args.context_length:
         raise ValueError("prefill benchmark requires SQ=SKV")
-    if args.context_length % args.storage_page_size:
-        raise ValueError("storage page size must divide the context length")
     if args.context_length % _COMPRESS_RATIO:
         raise ValueError("context length must be divisible by four")
     if any(size <= 0 for size in args.decode_batch_sizes):
