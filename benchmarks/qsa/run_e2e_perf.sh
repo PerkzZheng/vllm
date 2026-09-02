@@ -5,7 +5,7 @@ qsa_workspace=${QSA_WORKSPACE:-/workspace}
 qsa_repo=${QSA_REPO:-${qsa_workspace}/vllm-pr53896-qsa}
 qsa_flashinfer=${QSA_FLASHINFER_SOURCE:-${qsa_workspace}/flashinfer}
 qsa_model=${QSA_MODEL:-${qsa_workspace}/models/Qwen3.8-Flash-Next-de4b8e4}
-qsa_runtime_overlay=${qsa_repo}/benchmarks/qsa/runtime_overlay
+qsa_runtime_overlay=${QSA_RUNTIME_OVERLAY:-${qsa_repo}/benchmarks/qsa/runtime_overlay}
 qsa_cutlass_packages=${qsa_workspace}/.runtime/cutlass-dsl-4.7.1/nvidia_cutlass_dsl/dsl_packages
 qsa_python=${QSA_PYTHON:-python3}
 qsa_port=${QSA_PORT:-8000}
@@ -61,6 +61,7 @@ usage:
 
 Environment overrides:
   QSA_PORT, QSA_OUTPUT_ROOT, QSA_CACHE_TAG, QSA_PYTHON,
+  QSA_RUNTIME_OVERLAY,
   QSA_CACHE_ROOT,
   QSA_PREFILL_PROMPTS, QSA_PREFILL_WARMUP_PROMPTS,
   QSA_DECODE_OUTPUT_LEN, QSA_TP_SIZE,
