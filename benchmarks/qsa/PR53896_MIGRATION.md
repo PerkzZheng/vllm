@@ -1219,6 +1219,54 @@ PrimTS server log belongs to the shared sparse indexer/top-k scoring path, not
 the final QSA attention implementation. Raw JSON and server logs are under
 `qsa_e2e_perf/job638504-qwen38img`.
 
+The extended TP2 sweep covers every independent-context point that fits both
+backends' profiled KV capacity. All saved runs completed, use CUDA graphs, and
+were collected after their input/concurrency shapes were exercised. A prior
+32K/BS8 PrimTS run that triggered one reduction-adapter JIT was overwritten by
+the compilation-free repeat. Prefill remains within 20 percent at every input
+length and is slightly faster at 64K.
+
+| input | Triton TTFT (ms) | PrimTS TTFT (ms) | PrimTS / Triton |
+|---:|---:|---:|---:|
+| 8K | 304.56 | 330.44 | 1.085x |
+| 16K | 488.71 | 570.75 | 1.168x |
+| 32K | 881.41 | 970.05 | 1.101x |
+| 64K | 1449.64 | 1431.26 | 0.987x |
+
+Decode uses 128 generated tokens and independent contexts. `throughput ratio`
+is PrimTS/Triton output-token throughput, so values above one favor PrimTS.
+`ITL ratio` is PrimTS/Triton mean inter-token latency, so values below one
+favor PrimTS. MTP arithmetic can change the generated trajectory and
+acceptance rate between backends; throughput is therefore the real serving
+outcome, while ITL is the closer per-token latency indicator.
+
+| input | BS | Triton tok/s | PrimTS tok/s | throughput ratio | Triton ITL (ms) | PrimTS ITL (ms) | ITL ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8K | 1 | 168.19 | 155.97 | 0.927x | 8.375 | 8.405 | 1.004x |
+| 16K | 1 | 180.88 | 166.94 | 0.923x | 8.223 | 8.449 | 1.028x |
+| 32K | 1 | 166.76 | 146.89 | 0.881x | 8.239 | 8.372 | 1.016x |
+| 64K | 1 | 103.14 | 100.85 | 0.978x | 8.495 | 8.618 | 1.014x |
+| 8K | 8 | 377.69 | 323.19 | 0.856x | 32.945 | 40.854 | 1.240x |
+| 16K | 8 | 273.62 | 255.01 | 0.932x | 42.059 | 41.950 | 0.997x |
+| 32K | 8 | 169.98 | 146.02 | 0.859x | 77.615 | 78.018 | 1.005x |
+| 64K | 8 | 102.60 | 69.56 | 0.678x | 123.284 | 154.781 | 1.255x |
+| 8K | 64 | 455.48 | 218.34 | 0.479x | 156.869 | 179.321 | 1.143x |
+
+BS1 ITL is within 2.8 percent throughout. The clear latency misses are BS8 at
+8K and 64K; the largest end-to-end throughput miss is BS64/8K, where PrimTS
+mean TTFT is 13.57 seconds versus 6.14 seconds for Triton even though ITL is
+only 14.3 percent slower. This points first to batched prefill/scheduling and
+metadata integration rather than the steady decode attention kernel alone.
+
+There is also a memory-signoff gap. With the same TP2 server limits, the
+warmed Triton profile reserves 55.9 GiB for 5.36M KV tokens, while the cold
+PrimTS profile reports a 48.5-GiB peak activation and leaves 9.21 GiB for
+0.88M tokens. This prevents the requested BS512 sweep and several longer BS64
+points on the current route. Quantify the per-layer/per-semantic-key attention
+workspace pool, then reduce safe graph-stable duplication before expanding
+the high-concurrency matrix. Do not weaken the per-key lifetime invariant that
+passed the accuracy/liveness gates.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
@@ -1237,10 +1285,10 @@ Work proceeds in this order:
    Q2/Q4 continue to use grouped-union metadata.
 2. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after any
    subsequent kernel or metadata changes.
-3. Measure matched Triton/PrimTS end-to-end prefill and decode speedups with
-   8K, 16K, 32K, and 64K natural input lengths. Decode uses MTP=3 and batch
-   sizes 1, 8, 64, and 512; prefill and decode timings are reported
-   separately.
+3. Extend the initial matched TP2 end-to-end matrix above after fixing the
+   PrimTS workspace-capacity loss. Add the remaining BS64 and BS512 points at
+   8K, 16K, 32K, and 64K where physical KV capacity permits; keep prefill and
+   decode timings separate and preserve independent contexts.
 4. Promote the compact metadata builders into a public FlashInfer integration
    API. The API must support Q1/Q2/Q4, variable query lengths, causal tails,
    caller-owned output/workspace buffers, no host synchronization or replay-

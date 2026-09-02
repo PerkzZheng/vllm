@@ -29,6 +29,7 @@ usage:
 Environment overrides:
   QSA_PORT, QSA_OUTPUT_ROOT, QSA_CACHE_TAG, QSA_PYTHON,
   QSA_PREFILL_PROMPTS, QSA_DECODE_OUTPUT_LEN, QSA_TP_SIZE,
+  QSA_DECODE_WARMUP_PROMPTS,
   QSA_GPU_MEMORY_UTILIZATION, QSA_MAX_NUM_BATCHED_TOKENS,
   QSA_MAX_NUM_SEQS, QSA_CUDAGRAPH_CAPTURE_SIZES,
   QSA_ENABLE_CUTEDSL_WARMUP (default: true)
@@ -160,6 +161,7 @@ case "${action}" in
     else
       measured_prompts=${batch_size}
     fi
+    warmup_prompts=${QSA_DECODE_WARMUP_PROMPTS:-${measured_prompts}}
     warm_seed=$((qsa_seed - 1))
     # MTP3 disables cross-request prefix reuse for this hybrid Mamba/QSA model,
     # so use independent contexts and report combinations that exceed physical
@@ -171,7 +173,7 @@ case "${action}" in
       --random-input-len "${input_len}" \
       --random-output-len "${qsa_decode_output_len}" \
       --random-range-ratio 0 \
-      --num-prompts "${batch_size}" \
+      --num-prompts "${warmup_prompts}" \
       --max-concurrency "${batch_size}" \
       --seed "${warm_seed}"
     run_bench \
