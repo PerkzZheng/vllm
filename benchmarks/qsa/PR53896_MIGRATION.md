@@ -1084,6 +1084,39 @@ issuer count or assigning the failure to scratch ownership. Raw artifacts are
 under `qsa_accuracy/pr53896/s4-load4-workspace-pool-fp8-mtp3-job636732` and
 `qsa_accuracy/pr53896/s4-load4-shared-workspace-fp8-mtp3-job636732`.
 
+### Full S4 production accuracy checkpoint
+
+After the workspace A/B, the unchanged production S4/load4 route completed a
+full FP8-E4M3/MTP3 gate on job 636732. The code-bearing revisions are vLLM
+`e9369c8e7` and FlashInfer `2bb8d808`; later commits on both branches only add
+the qualification notes. The model, TP2 configuration, and exact sampling
+parameters match the corrected PR53896 Triton reference above.
+
+| Benchmark | PR53896 Triton FP8/MTP3 | pooled S4/load4 FP8/MTP3 | observation |
+|---|---:|---:|---|
+| GSM8K | 1290/1319 (97.80%) | 1292/1319 (97.95%) | +2 correct; no truncations |
+| GPQA-Diamond | 363/396 (91.67%), 2 reps | 359/396 (90.66%), 2 reps | -4 correct; 1 vs 2 truncations |
+| AIME26 | 60/60 (100.00%), 2 reps | 88/90 (97.78%), 3 reps | first two S4 reps are 30/30; third is 28/30 |
+
+Every S4 request completed. There are no request errors or invalid
+predictions. GPQA repetitions score 179/198 and 180/198; the second exactly
+matches the separately cited 180/198 FP8 reference. The first has two outputs
+that reach the prescribed 131,072-token cap, while the second has none. AIME's
+third-repetition misses are IDs 10 and 30 after normal EOS, not truncations or
+liveness failures. This distribution does not show a systematic S4 accuracy
+drop, but future arithmetic or metadata changes must rerun the same gate.
+
+The observed token distributions also explain the wall time. GSM8K inputs
+average 789 tokens (range 751--916); outputs average 519, with p95 1,112, p99
+3,217, and range 122--15,492. GPQA inputs average 307 tokens (range 132--2,835).
+Its two output distributions have means 14,228/12,581, p95
+61,157/53,435, p99 98,284/70,888, and maxima 131,072/102,888. The primary
+artifacts are
+`qsa_accuracy/pr53896/s4-load4-workspace-pool-fp8-mtp3-job636732` and
+`qsa_accuracy/pr53896/s4-load4-workspace-pool-fp8-mtp3-job636732-secondary`;
+the first pooled AIME repetition remains under the corresponding job 635397
+directory.
+
 A corrected S4/load1 control also completed 30/30, but it misses the latency
 target badly. The matched TP2/BS1/SQ1 cold-L2 CUDA-graph result is 24.57 us
 attention and 26.61 us metadata-inclusive for tail zero, and 26.77/28.68 us

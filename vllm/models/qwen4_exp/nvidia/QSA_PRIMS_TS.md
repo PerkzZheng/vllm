@@ -1328,7 +1328,15 @@ kernel tolerance tests:
 | PrimTS | BF16 | 0 | 1 | pending | pending | pending |
 | PrimTS | BF16 | 3 | 4 | pending | pending | pending |
 | PrimTS | FP8-E4M3 | 0 | 1 | pending | pending | pending |
-| PrimTS | FP8-E4M3 | 3 | 4 | pending | pending | pending |
+| PrimTS S4/load4 | FP8-E4M3 | 3 | 4 | 1292/1319 | 359/396 (2 reps) | 88/90 (3 reps) |
+
+The populated production row uses vLLM `e9369c8e7`, FlashInfer `2bb8d808`,
+TP2, and the exact xhigh sampling configuration documented in the migration
+runbook. All requests completed with no invalid predictions. GSM8K has no
+truncations; GPQA has two across both repetitions; AIME has none. The differing
+replicate counts are shown explicitly: the first two pooled AIME repetitions
+score 30/30 and the third scores 28/30. See `PR53896_MIGRATION.md` for the
+matched Triton table, token-length distributions, and artifact paths.
 
 For the validated BrightDelta image on nodes where the configured Enroot proxy
 is unreachable, exporting `no_proxy='*'` before the first Pyxis invocation
