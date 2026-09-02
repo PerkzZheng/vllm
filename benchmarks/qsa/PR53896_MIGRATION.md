@@ -1340,9 +1340,8 @@ enqueue skew at the following collectives. Nsight attributes 9.04/79.57 ms of
 all-reduce residency to the two PrimTS ranks versus 45.90/9.22 ms for Triton,
 absorbing the compute saving in synchronization wait. This is no longer a
 metadata-workspace, validation, or shape-resolution issue. The next prefill
-optimization is to capture the prepared metadata-plus-attention sequence as
-one framework graph region (or otherwise reduce the eager split boundary) and
-then remeasure rank alignment.
+work is to reduce or stabilize rank-host enqueue skew while retaining the
+existing eager QSA boundary, then remeasure rank alignment.
 
 The cold-request explanation was tested directly with an exact request-four
 profile. The server health endpoint was checked manually, the benchmark's
@@ -1374,13 +1373,59 @@ an unbalanced attention kernel, or a cold request. The next trace should
 separate framework/rank enqueue timing from GPU work before changing the QSA
 kernel again.
 
+A matched no-Nsight control on the same node confirms that tracing itself
+amplifies this synchronization effect. Both servers used the same three
+serialized warmups followed by 20 measured prompts, with prefix caching and
+profiling disabled:
+
+| no-profiler 8K prefill | Triton | prepared PrimTS | PrimTS / Triton |
+|---|---:|---:|---:|
+| mean TTFT | 208.24 ms | 192.06 ms | 0.922x |
+| median TTFT | 209.17 ms | 191.76 ms | 0.917x |
+
+PrimTS is therefore 7.8 percent faster by mean TTFT and 8.3 percent faster by
+median outside Nsight. The endpoint recovers about 16--17 ms, or roughly half
+of the 31.2 ms QSA GPU-kernel saving. Nsight adds about 24 ms to Triton's
+single request and about 43 ms to PrimTS's, so traced full-span/TTFT values
+must not be used as the serving speedup. They remain useful for per-kernel
+decomposition and show where the profiler-sensitive rank skew occurs. The
+remaining untraced gap is still a framework scheduling/launch target; reducing
+the metadata-plus-attention launch count and preserving rank enqueue overlap
+should be evaluated with this no-profiler control as the acceptance metric.
+
+Piecewise CUDA graphs are enabled for the surrounding model, but this 8K
+prefill executes the opaque QSA boundary eagerly for both backends. The Nsight
+export records zero graph-associated launches for all 216 Triton
+`_expand_qsa_indices_kernel` calls, all 216 `_qsa_mqa_paged_kernel` calls, and
+all 24 final sparse-attention calls across the two ranks. PrimTS metadata and
+attention must likewise remain eager for this comparison; there is no Triton
+graph-capture advantage to reproduce.
+
+A reversible CPU-placement diagnostic assigned every thread of TP worker 0 to
+NUMA-local CPUs 0--35 and worker 1 to CPUs 36--71. Two independent 20-prompt
+runs gave the following ranges:
+
+| eager, no-profiler, pinned workers | Triton | prepared PrimTS |
+|---|---:|---:|
+| mean TTFT range | 206.57--214.17 ms | 185.54--188.78 ms |
+| median TTFT range | 207.59--217.49 ms | 185.95--189.76 ms |
+| two-run mean of means / medians | 210.37 / 212.54 ms | 187.16 / 187.86 ms |
+
+The paired averages save 23.21 ms by mean and 24.69 ms by median, recovering
+about 74--79 percent of the 31.2 ms QSA-kernel reduction without changing
+eager execution. Individual pairings recover 17.8--31.5 ms, so affinity is a
+strong diagnostic but is too variable to install as a production policy from
+this sample alone. The stable result is that PrimTS ranges do not overlap the
+Triton ranges and are 10.5--13.4 percent faster in every pinned comparison.
+
 Artifacts are
 `qsa_nsys/job640295/pfprepared-prims-fp8.{nsys-rep,sqlite}` and
 `qsa_nsys/job640295/pfprepared-triton-fp8.{nsys-rep,sqlite}` inside the
 persistent workspace. Warmed request-four artifacts are
 `qsa_nsys/job641262/warm4-prims-fp8.{nsys-rep,sqlite}` and
 `qsa_nsys/job641343/warm4-triton-fp8.{nsys-rep,sqlite}`. The complete
-FlashInfer QSA metadata test file passes 26 tests; the explicit fused-split
+FlashInfer QSA metadata test file passes 26 tests. No-profiler JSON controls
+are under `qsa_e2e_perf/job641343-no-nsys`; the explicit fused-split
 prepared-plan graph test also passes from a nonzero initial counter.
 
 ## Remaining performance and integration signoff
