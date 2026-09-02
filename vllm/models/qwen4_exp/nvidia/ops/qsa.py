@@ -17,7 +17,7 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
 _QSA_SEMANTIC_PAGE_SIZE = 4
-_QSA_PAGE_MEMBERSHIP_BITS = 4
+_QSA_PAGE_MEMBERSHIP_BITS = 8
 _QSAPrimsTSAPIs = tuple[
     Callable[..., int],
     Callable[..., int],
@@ -1259,8 +1259,8 @@ def qsa_build_page4_grouped_paged_metadata(
 
     The model-facing ``logical_indices`` tensor is unchanged. An internal
     per-query logical-page bitmap forms each consecutive same-request union.
-    Every output CSR word uses ``(locator << 4) | membership``; PrimTS strips
-    the low nibble for TMA and applies it to score rows before softmax. The
+    Every output CSR word uses ``(locator << 8) | membership``; PrimTS strips
+    the low byte for TMA and applies it to score rows before softmax. The
     final partial page remains governed by the grouped causal mask.
     """
 

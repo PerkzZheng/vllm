@@ -51,7 +51,6 @@ import torch
 from vllm.models.qwen4_exp.nvidia.ops.qsa import (
     expand_qsa_block_indices_cuda,
     has_qsa_prims_ts_attention,
-    qsa_build_page4_grouped_paged_metadata,
     qsa_build_page4_paged_metadata,
     qsa_prims_ts_build_page4_metadata,
     qsa_prims_ts_metadata_workspace_size,
@@ -71,7 +70,7 @@ _QSA_MAX_SEQ_LEN = _TOKEN_TOPK + _COMPRESS_RATIO - 1
 _BASELINE_PAGE_SIZE = 128
 _BASELINE_WINDOW_LEFT = _TOKEN_TOPK - 1
 _TOPK_RANDOM_CHUNK_ROWS = 512
-_QSA_PAGE_MEMBERSHIP_BITS = 4
+_QSA_PAGE_MEMBERSHIP_BITS = 8
 _MIN_L2_FLUSH_BYTES = 256 * 1024 * 1024
 _L2_FLUSH_MULTIPLIER = 2
 _L2_FLUSH_BUFFERS: dict[int, torch.Tensor] = {}
@@ -1230,7 +1229,6 @@ def _run_union_upper_bound(
         int(union_spec.config.splits_kv) if union_spec.config.use_split_kv else 1
     )
     union_metadata: Callable[[], object] | None = None
-    union_legacy_metadata: Callable[[], object] | None = None
     if membership_mode == "masked":
         union_page_capacity = group_size * (_BLOCK_TOPK + 1)
         union_indptr = torch.empty(num_groups + 1, dtype=torch.int32, device="cuda")
@@ -1275,30 +1273,6 @@ def _run_union_upper_bound(
                     union_indptr,
                     union_indices,
                     union_seq_lens,
-                )
-
-        def union_legacy_metadata() -> object:
-            with torch.cuda.nvtx.range("union_legacy_metadata"):
-                expand_qsa_block_indices_cuda(
-                    flat_block_indices,
-                    flat_positions,
-                    inputs.sequence_lengths,
-                    flat_token_to_req,
-                    _COMPRESS_RATIO,
-                    _TOKEN_TOPK,
-                    flat_expanded_indices,
-                )
-                return qsa_build_page4_grouped_paged_metadata(
-                    flat_expanded_indices,
-                    inputs.block_table,
-                    flat_token_to_req,
-                    flat_positions,
-                    trace.storage_page_size,
-                    group_size,
-                    bitset_workspace=union_metadata_workspace.view(torch.int32),
-                    paged_kv_indptr=union_indptr,
-                    paged_kv_indices=union_indices,
-                    seq_lens=union_seq_lens,
                 )
 
         gpu_indptr = union_indptr.cpu()
@@ -1559,10 +1533,8 @@ def _run_union_upper_bound(
     if benchmark_flattened:
         timing_functions["flattened"] = flattened_attention
     if union_metadata is not None:
-        assert union_legacy_metadata is not None
         timing_functions = {
             "metadata": union_metadata,
-            "legacy_metadata": union_legacy_metadata,
             **timing_functions,
         }
     timings = _time_cuda_interleaved(timing_functions, **timing_args)
@@ -2390,7 +2362,7 @@ def main() -> None:
         "--decode-union-group-sizes",
         type=int,
         nargs="+",
-        choices=(2, 4),
+        choices=(2, 4, 5),
         default=[],
         help=(
             "Also benchmark exact grouped QSA unions when decode SQ is "
@@ -2748,8 +2720,8 @@ def main() -> None:
                     )
                     _print_result(result)
         if args.topk_dump_union_group_sizes:
-            if any(size not in (2, 4) for size in args.topk_dump_union_group_sizes):
-                raise ValueError("union group sizes must be two or four")
+            if any(size not in (2, 4, 5) for size in args.topk_dump_union_group_sizes):
+                raise ValueError("union group sizes must be two, four, or five")
             _print_union_header()
             for tp_size in args.tp_sizes:
                 num_query_heads, num_kv_heads = _tp_heads(tp_size)

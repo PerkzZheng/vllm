@@ -1463,6 +1463,38 @@ integration; page-1,600 tensor maps, fully active Q4, and inert-tail Q4 groups
 are independently ruled out. The model-level TP4 startup/decode matrix remains
 open and should be revisited after the bounded decode investigation.
 
+### Decode time cap and Q5/MTP4 standalone checkpoint
+
+The bounded decode e2e matrix did not reach a trustworthy complete result
+within the three-hour cap. It is deliberately left open rather than extending
+the allocation indefinitely. The kernel, 1,600-token physical page, prepared
+workspace, and graph-padding regressions above have already ruled out the
+obvious standalone causes; the remaining TP4 failure is a multi-layer/vLLM
+graph-integration problem to revisit separately.
+
+Work therefore advanced to the requested MTP4 grouping experiment. Five query
+tokens at the TP2 local ratio Hq/Hkv=12/1 occupy 60 Q rows and fit the existing
+Q64/KV128 Keeps kernel. FlashInfer now supports Q5 through the same public
+prepared-plan interface and keeps `heads_q_per_kv` compilation-known. Grouped
+locator membership is widened from a low nibble to a low byte, so Q2/Q4/Q5 use
+`(locator << 8) | membership` without adding a new model-facing tensor.
+
+A one-shot overlay captured 8,192 real top-k rows from a normal TP2 BF16,
+MTP3 Triton prefill on job 642187. The Q5 benchmark uses saturated rows starting
+at logical row 4,107; adjacent selected-KV overlap is 69.92% for BS16 and 69.97%
+for BS32. Cold-L2, CUDA-graph, 10-warmup/100-iteration results are:
+
+| BF16 TP2, Hq/Hkv=12/1 | metadata | PrimTS attention | PrimTS e2e | Triton attention | Triton e2e | PrimTS/Triton speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| Q5, BS16 | 10.31 us | 57.31 us | 61.80 us | 44.10 us | 44.99 us | 0.728x |
+| Q5, BS32 | 10.28 us | 57.60 us | 62.22 us | 65.32 us | 65.66 us | 1.055x |
+
+Both rows match flattened PrimTS and Triton with maximum absolute error
+0.00098. A Q4 regression with the new byte encoding also passes at 0.00098 and
+retains its prior performance shape: it is slower than Triton at BS16 and at
+parity by BS32. Raw captures and logs are under
+`qsa_bench/real_topk_job642187`.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
@@ -1491,10 +1523,9 @@ Work proceeds in this order:
    standalone framework-neutral example. Preserve Q1/Q2/Q4, variable query
    lengths, causal tails, caller-owned output/workspace buffers, no host
    synchronization or replay-time allocation, and stable CUDA-graph capacity.
-5. After the e2e matrix, qualify MTP3 with the existing Q4 route, then add a
-   Q5 kernel configuration for MTP4. Start with BF16 BS16/32, Hq/Hkv=12/1,
-   compilation-known `num_q_heads_per_kv`, and real captured top-k rows whose
-   adjacent-query KV overlap is approximately 70 percent. Compare grouped
-   PrimTS directly with Triton QSA for MTP3 before changing the membership
-   representation and metadata contract for five query tokens, then repeat
-   the same comparison for MTP4.
+5. Integrate the qualified Q5 configuration into the framework MTP4 path and
+   measure model-level decode at BS16/32. Keep the automatic policy conservative:
+   it may select Q5 only when request boundaries are five-token aligned, 5 times
+   Hq/Hkv fits TileQ64, and the estimated split work retains one service wave.
+   The standalone result predicts a win at BS32 but not BS16; retain Q1 or
+   Triton at BS16 unless the all-layer measurement overturns that conclusion.

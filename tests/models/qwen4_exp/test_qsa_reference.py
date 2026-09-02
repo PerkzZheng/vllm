@@ -1615,7 +1615,7 @@ def test_qsa_grouped_page4_metadata_reinitializes_owned_bitsets() -> None:
             subpage = logical_block % (storage_page_size // 4)
             physical_page = int(block_table[group, storage_page].item())
             locator = physical_page * (storage_page_size // 4) + subpage
-            expected.append((locator << 4) | membership)
+            expected.append((locator << 8) | membership)
         begin = group * page_capacity
         torch.testing.assert_close(
             locators[begin : begin + len(expected)].cpu(),
