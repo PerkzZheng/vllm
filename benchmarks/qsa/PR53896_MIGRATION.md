@@ -1129,20 +1129,20 @@ load1 as a safety control rather than the default.
 
 Work proceeds in this order:
 
-1. If measured framework-level low-batch latency still misses the acceptance
-   target, remove the standalone Q1 metadata launch. SQ1 has no grouped union or
-   membership mask: retain a fixed 513-entry row stride, consume or emit the
-   512 encoded physical page-4 locators directly, reserve entry 512 for the
-   zero-to-three-token causal tail, preinitialize the fixed CSR indptr, and
-   derive the live compact length from the query position. CUDA-graph padding
-   rows must keep locator -1 and length one. Prefer fusing logical-block to
-   physical-locator translation into the indexer/top-k output; otherwise
-   quantify repeated block-table translation across heads and K/V splits.
-   Keep the existing CSR-facing attention interface. Q2/Q4 continue to use
-   grouped-union metadata.
-2. Profile and close the remaining standalone attention and Q1 end-to-end gap
-   against matched Triton and grouped SWA controls; keep metadata-inclusive
-   latency in every acceptance table.
+1. Measure the accuracy-qualified S4 SQ1/SQ4 route across TP1/TP2 and
+   BS1/8/64/512 against matched Triton and grouped SWA controls. The current
+   demonstrated regression is limited to TP2/BS1/SQ1, tails zero and three;
+   do not extrapolate it to the unmeasured S4 matrix.
+2. TODO next if the broader matrix confirms an isolated low-grid miss: close
+   the TP2/BS1 S4 attention gap and remove the standalone Q1 metadata launch.
+   SQ1 has no grouped union or membership mask: retain a fixed 513-entry row
+   stride, consume or emit the 512 encoded physical page-4 locators directly,
+   reserve entry 512 for the zero-to-three-token causal tail, preinitialize
+   the fixed CSR indptr, and derive the live compact length from the query
+   position. CUDA-graph padding rows must keep locator -1 and length one.
+   Prefer fusing logical-block to physical-locator translation into the
+   indexer/top-k output. Keep the existing CSR-facing attention interface;
+   Q2/Q4 continue to use grouped-union metadata.
 3. Rerun the full PrimTS FP8-E4M3/MTP=3 end-to-end accuracy gate after any
    subsequent kernel or metadata changes.
 4. Measure matched Triton/PrimTS end-to-end prefill and decode speedups with
