@@ -21,6 +21,7 @@ _QSA_PAGE_MEMBERSHIP_BITS = 8
 _QSAPrimsTSAPIs = tuple[
     Callable[..., int],
     Callable[..., int],
+    Callable[..., torch.Tensor],
     Callable[..., object],
 ]
 
@@ -1422,6 +1423,7 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
         from flashinfer.decode import (
             get_prims_ts_qsa_group_size,
             get_prims_ts_qsa_workspace_size,
+            make_prims_ts_qsa_qo_indptr,
             prepare_prims_ts_qsa_attention,
         )
     except (AttributeError, ImportError):
@@ -1431,16 +1433,20 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
         workspace_parameters = signature(
             get_prims_ts_qsa_workspace_size
         ).parameters
+        prepare_parameters = signature(prepare_prims_ts_qsa_attention).parameters
     except (TypeError, ValueError):
         return None
     if (
         "group_size" not in group_parameters
         or "block_topk" not in workspace_parameters
+        or "qo_indptr" not in workspace_parameters
+        or "qo_indptr" not in prepare_parameters
     ):
         return None
     return (
         get_prims_ts_qsa_group_size,
         get_prims_ts_qsa_workspace_size,
+        make_prims_ts_qsa_qo_indptr,
         prepare_prims_ts_qsa_attention,
     )
 
@@ -1458,13 +1464,15 @@ def qsa_prims_ts_combined_workspace_size(
     block_topk: int,
     *,
     out_dtype: torch.dtype | None = None,
+    qo_indptr: torch.Tensor | None = None,
+    max_seq_len_q: int | None = None,
 ) -> int:
-    """Return byte workspace required for a causal Q1/Q2/Q4 launch."""
+    """Return byte workspace required for a packed causal Q1/Q2/Q4/Q5 launch."""
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    _, get_workspace_size, _ = apis
+    _, get_workspace_size, _, _ = apis
     return int(
         get_workspace_size(
             q,
@@ -1472,6 +1480,8 @@ def qsa_prims_ts_combined_workspace_size(
             block_table,
             block_topk=block_topk,
             out_dtype=out_dtype,
+            qo_indptr=qo_indptr,
+            max_seq_len_q=max_seq_len_q,
         )
     )
 
@@ -1547,7 +1557,7 @@ def qsa_prims_ts_group_size(
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    get_group_size, _, _ = apis
+    get_group_size, _, _, _ = apis
     return int(
         get_group_size(
             query_start_loc_cpu,
@@ -1556,6 +1566,48 @@ def qsa_prims_ts_group_size(
             k_cache.shape[1],
             group_size=group_size,
         )
+    )
+
+
+@lru_cache
+def _qsa_prims_ts_qo_indptr_cached(
+    query_starts: tuple[int, ...],
+    num_query_tokens: int,
+    group_size: int,
+) -> torch.Tensor:
+    """Build one immutable CPU route tensor shared by all QSA layers."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide packed page-4 QSA")
+    _, _, make_qo_indptr, _ = apis
+    return make_qo_indptr(
+        torch.tensor(query_starts, dtype=torch.int32),
+        num_query_tokens,
+        group_size=group_size,
+        device="cpu",
+    )
+
+
+def qsa_prims_ts_qo_indptr(
+    query_start_loc_cpu: torch.Tensor | None,
+    num_query_tokens: int,
+    group_size: int,
+) -> torch.Tensor:
+    """Return CPU packed-route offsets for a fixed maximum group size.
+
+    QSA always uses the packed-Q ABI. Keeping one representation for Q1 and
+    grouped Q avoids a divisibility-dependent reshape and makes request tails
+    explicit in every launch.
+    """
+
+    if query_start_loc_cpu is None:
+        raise ValueError("packed QSA requires CPU query boundaries")
+    query_starts = tuple(int(value) for value in query_start_loc_cpu.tolist())
+    return _qsa_prims_ts_qo_indptr_cached(
+        query_starts,
+        num_query_tokens,
+        group_size,
     )
 
 
@@ -1708,13 +1760,15 @@ def qsa_prims_ts_prepare_attention(
     *,
     bmm1_scale: float | None = None,
     bmm2_scale: float = 1.0,
+    qo_indptr: torch.Tensor | None = None,
+    max_seq_len_q: int | None = None,
 ) -> object:
     """Prepare metadata and attention as one framework-owned QSA plan."""
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
         raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    _, _, prepare_attention = apis
+    _, _, _, prepare_attention = apis
     return prepare_attention(
         q,
         (k_cache, v_cache),
@@ -1726,6 +1780,8 @@ def qsa_prims_ts_prepare_attention(
         out=out,
         bmm1_scale=bmm1_scale,
         bmm2_scale=bmm2_scale,
+        qo_indptr=qo_indptr,
+        max_seq_len_q=max_seq_len_q,
     )
 
 
@@ -2153,6 +2209,7 @@ __all__ = [
     "qsa_prims_ts_combined_workspace_size",
     "qsa_prims_ts_group_size",
     "qsa_prims_ts_metadata_workspace_size",
+    "qsa_prims_ts_qo_indptr",
     "qsa_prims_ts_paged_attention",
     "qsa_prims_ts_prepare_attention",
     "qsa_prims_ts_prepare_paged_attention",

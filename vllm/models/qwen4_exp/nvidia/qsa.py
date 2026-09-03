@@ -208,14 +208,17 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         block_table: torch.Tensor,
         block_topk: int,
         out_dtype: torch.dtype,
+        qo_indptr_cpu: torch.Tensor,
+        group_size: int,
     ) -> torch.Tensor:
         from .ops.qsa import qsa_prims_ts_combined_workspace_size
 
-        seq_len_q = query.shape[1] if query.ndim == 4 else 1
+        num_query_groups = qo_indptr_cpu.numel() - 1
         workspace_key = (
             query.device,
             query.shape[0],
-            seq_len_q,
+            num_query_groups,
+            group_size,
             tuple(key_cache.shape),
             key_cache.data_ptr(),
             block_table.shape[1],
@@ -235,6 +238,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 block_table,
                 block_topk,
                 out_dtype=out_dtype,
+                qo_indptr=qo_indptr_cpu,
+                max_seq_len_q=group_size,
             )
             # CUDA graphs replay without re-entering this Python owner. Give
             # every semantic graph key and KV-cache generation its own
@@ -267,11 +272,14 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         out: torch.Tensor,
         bmm1_scale: float,
         bmm2_scale: float,
+        qo_indptr_cpu: torch.Tensor,
+        group_size: int,
     ) -> object:
         """Return a validated plan for one graph-stable QSA semantic key."""
 
         from .ops.qsa import qsa_prims_ts_prepare_attention
 
+        qo_topology = (qo_indptr_cpu.data_ptr(), qo_indptr_cpu.numel())
         plan_key = (
             query.device,
             tuple(query.shape),
@@ -291,6 +299,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             workspace.data_ptr(),
             float(bmm1_scale),
             float(bmm2_scale),
+            group_size,
+            qo_topology,
         )
         plan_pool = getattr(layer, "_qsa_prims_ts_plan_pool", None)
         if plan_pool is None:
@@ -298,6 +308,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             layer._qsa_prims_ts_plan_pool = plan_pool
         plan = plan_pool.get(plan_key)
         if plan is None:
+            qo_indptr = qo_indptr_cpu.to(query.device, non_blocking=True)
             plan = qsa_prims_ts_prepare_attention(
                 query,
                 key_cache,
@@ -310,6 +321,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 out,
                 bmm1_scale=bmm1_scale,
                 bmm2_scale=bmm2_scale,
+                qo_indptr=qo_indptr,
+                max_seq_len_q=group_size,
             )
             plan_pool[plan_key] = plan
         return plan
@@ -381,6 +394,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         if self.use_qsa_prims_ts:
             from .ops.qsa import (
                 qsa_prims_ts_group_size,
+                qsa_prims_ts_qo_indptr,
                 qsa_prims_ts_run_prepared,
             )
 
@@ -412,7 +426,11 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 query_start_loc_cpu,
                 group_size=int(configured_group_size),
             )
-            route_rows = num_tokens // group_size
+            route_qo_indptr_cpu = qsa_prims_ts_qo_indptr(
+                query_start_loc_cpu,
+                num_tokens,
+                group_size,
+            )
             _qsa_nvtx_pop()
 
             _qsa_nvtx_push("qsa_prims_plan_lookup")
@@ -435,17 +453,11 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             metadata_block_table = attn_metadata.block_table[
                 :, :active_storage_pages
             ]
-            if group_size == 1:
-                route_query = query_for_attention
-                route_output = prims_output
-            else:
-                route_query = query_for_attention.view(
-                    route_rows,
-                    group_size,
-                    query.shape[1],
-                    query.shape[2],
-                )
-                route_output = prims_output.view_as(route_query)
+            # Keep vLLM's native flattened token-major layout for every group
+            # size. qo_indptr partitions it into request-safe routes, including
+            # partial final groups, without reshaping or copying Q/O.
+            route_query = query_for_attention
+            route_output = prims_output
             workspace = self._get_qsa_prims_ts_workspace(
                 layer,
                 route_query,
@@ -453,6 +465,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 metadata_block_table,
                 logical_indices.shape[1],
                 route_output.dtype,
+                route_qo_indptr_cpu,
+                group_size,
             )
             plan = self._get_qsa_prims_ts_plan(
                 layer,
@@ -467,6 +481,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 route_output,
                 bmm1_scale,
                 bmm2_scale,
+                route_qo_indptr_cpu,
+                group_size,
             )
             _qsa_nvtx_pop()
 

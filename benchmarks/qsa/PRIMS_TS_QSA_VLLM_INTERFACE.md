@@ -38,7 +38,9 @@ Let:
 
 - `R` be the number of flattened query tokens in the current forward;
 - `G` be the selected query grouping, one of 1, 2, 4, or 5;
-- `M = R / G` be the number of attention routes;
+- `L_i` be the flattened query length of request `i`;
+- `M = sum_i ceil(L_i / G)` (plus separately chunked graph-padding rows) be
+  the number of attention routes;
 - `K` be the compact top-k width in page-4 blocks (512 for this model);
 - `P` be the number of physical storage pages;
 - `N` be the physical storage-page size; and
@@ -48,15 +50,14 @@ The real inputs and caller-owned outputs are:
 
 | Value | Shape and dtype | Meaning |
 |---|---|---|
-| `query` before grouping | `[R, Hq, D]` | Flattened Q rows local to this TP rank |
-| `route_query`, Q1 | `[R, Hq, D]` | One query per attention route |
-| `route_query`, Q2/Q4/Q5 | `[M, G, Hq, D]` | `G` adjacent queries sharing one exact page union |
+| `query`, all group sizes | `[R, Hq, D]` | Packed flattened Q rows local to this TP rank; never reshaped |
+| `qo_indptr` | `[M + 1]`, Int32 | Packed route boundaries; each route contains one to `G` rows from one request |
 | `k_cache`, `v_cache` | `[P, Hkv, N, D]` | Logical HND K/V views; vLLM creates these without copying |
 | `block_indices` | `[R, K]`, Int32 | Logical IDs of selected four-token blocks |
 | `block_table` | `[B, max_storage_pages]`, Int32 | Per-request logical-to-physical storage-page table |
 | `token_to_request` | `[R]`, Int32 | Request ID for every flattened query |
 | `query_positions` | `[R]`, Int32 or Int64 | Absolute position of every query |
-| `out` | same shape as `route_query` | Caller-owned attention output |
+| `out` | `[R, Hq, D]` | Caller-owned packed attention output |
 
 The caller does **not** allocate or pass `qsa_page_indptr`,
 `qsa_page_indices`, or `seq_lens` to the combined QSA API. They are internal
@@ -81,7 +82,7 @@ QSA indexer
   v
 caller-provided fixed group -> validate G in {1, 2, 4, 5}
   v
-reshape Q/O to [M,G,Hq,D] when G > 1
+partition each request into packed routes of at most G rows
   v
 workspace-size query -> persistent byte allocation
   v
@@ -105,6 +106,7 @@ import torch
 from flashinfer.decode import (
     get_prims_ts_qsa_group_size,
     get_prims_ts_qsa_workspace_size,
+    make_prims_ts_qsa_qo_indptr,
     prepare_prims_ts_qsa_attention,
 )
 
@@ -125,28 +127,29 @@ group_size = get_prims_ts_qsa_group_size(
     k_cache.shape[1],
     group_size=requested_group_size,
 )
-num_groups = block_indices.shape[0] // group_size
-
-route_q = (
-    q
-    if group_size == 1
-    else q.view(num_groups, group_size, q.shape[1], q.shape[2])
+qo_indptr = make_prims_ts_qsa_qo_indptr(
+    query_start_loc_cpu,
+    block_indices.shape[0],
+    group_size=group_size,
+    device=q.device,
 )
-route_out = torch.empty_like(route_q, dtype=torch.bfloat16)
+route_out = torch.empty_like(q, dtype=torch.bfloat16)
 
 workspace_bytes = get_prims_ts_qsa_workspace_size(
-    route_q,
+    q,
     k_cache,
     block_table,
     block_topk=block_indices.shape[1],
     out_dtype=route_out.dtype,
+    qo_indptr=qo_indptr,
+    max_seq_len_q=group_size,
 )
 workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
 qk_scale = q.shape[-1] ** -0.5
 v_scale = 1.0  # Include the cache value descale here for quantized K/V.
 
 plan = prepare_prims_ts_qsa_attention(
-    route_q,
+    q,
     (k_cache, v_cache),
     block_indices,
     block_table,
@@ -156,11 +159,13 @@ plan = prepare_prims_ts_qsa_attention(
     out=route_out,
     bmm1_scale=qk_scale,
     bmm2_scale=v_scale,
+    qo_indptr=qo_indptr,
+    max_seq_len_q=group_size,
 )
 
 # Repeated hot-path call. All tensors must preserve the prepared geometry.
 plan.run(
-    route_q,
+    q,
     block_indices,
     block_table,
     token_to_request,
@@ -174,6 +179,9 @@ The vLLM wrappers in
 `qsa_prims_ts_group_size`, `qsa_prims_ts_combined_workspace_size`,
 `qsa_prims_ts_prepare_attention`, and `qsa_prims_ts_run_prepared`. Those names
 are vLLM-internal adapter functions, not an additional application API.
+vLLM caches the request-derived `qo_indptr` on CPU, copies it into stable CUDA
+storage once when preparing each layer plan, and retains that storage for eager
+runs or graph replay.
 
 ## Workspace ownership and sizing
 
@@ -200,22 +208,23 @@ exclusive to one in-flight plan or captured graph.
 The internal page-index capacity is graph stable:
 
 ```text
-qsa_page_indices_numel = R * (K + 1)
-qsa_page_indices_bytes = R * (K + 1) * 4
+qsa_page_indices_numel = M * G * (K + 1)
+qsa_page_indices_bytes = M * G * (K + 1) * 4
 ```
 
-Grouping does not add another multiplier: `R` already includes all member
-queries. Each of the `M` CSR rows reserves `G * (K + 1)` entries, and
-`qsa_page_indptr` advances by that fixed capacity. `seq_lens` exposes only the
-live packed prefix. The workspace also owns `M + 1` Int32 indptr entries and
-`M` Int32 sequence lengths; each region begins at a 256-byte-aligned offset.
+Each of the `M` CSR rows reserves `G * (K + 1)` entries, and
+`qsa_page_indptr` advances by that fixed capacity. A partial route reserves the
+same capacity as a full route, so the allocation may contain at most `G - 1`
+unused member slots per request tail. `seq_lens` exposes only the live packed
+prefix. The workspace also owns `M + 1` Int32 indptr entries and `M` Int32
+sequence lengths; each region begins at a 256-byte-aligned offset.
 
 For Q2/Q4/Q5, the bitmap bound is:
 
 ```text
 logical_page4_capacity = max_storage_pages * N / 4
 bitset_words = ceil(logical_page4_capacity / 32)
-metadata_scratch_bytes = R * bitset_words * 4
+metadata_scratch_bytes = M * G * bitset_words * 4
 ```
 
 Here `max_storage_pages` is `block_table.shape[1]`, not the selected-page count.
@@ -307,39 +316,35 @@ decoding the page locator and applies the membership plus causal token mask
 before softmax. The final partial page is therefore masked exactly for each
 query, including early positions with fewer than 2051 visible compact tokens.
 
-The grouped value contract is important: every group must contain consecutive
-query positions from one request. The GPU packer checks this without a host
-readback. An invalid group is made inert; the framework's fixed-group
-validation is responsible for preventing such groups in normal execution.
+The grouped value contract is important: every route must contain consecutive
+query positions from one request. `qo_indptr` is built from authoritative CPU
+request boundaries, so a request tail becomes a shorter final route instead of
+being joined to the next request. The GPU packer also checks this contract; an
+invalid route is made inert.
 
 ## Caller-owned fixed grouping for prefill and decode
 
 **Current.** The framework supplies one fixed QSA group size for each prepared
 semantic geometry. FlashInfer does not choose Q1/Q2/Q4/Q5 from the batch size,
-SM count, or a performance threshold. The query tensor rank communicates that
-caller choice to workspace sizing and preparation:
-
-- `[M, Hq, D]` means Q1;
-- `[M, 2, Hq, D]` means Q2;
-- `[M, 4, Hq, D]` means Q4; and
-- `[M, 5, Hq, D]` means Q5.
+SM count, or a performance threshold. Every case uses the same packed query
+ABI: Q and output remain `[R, Hq, D]`, `qo_indptr` partitions them into routes,
+and `max_seq_len_q=G` communicates the fixed maximum group size. This includes
+Q1, whose `qo_indptr` contains one row per route.
 
 `get_prims_ts_qsa_group_size(...)` is now a boundary/capacity validator, not a
 selector. Its `group_size=` argument is mandatory. It returns that exact group
-when three correctness gates pass:
+when two correctness gates pass:
 
 1. CPU request boundaries must be present, valid, nondecreasing, and cover no
    more than the padded query extent. Missing or unsafe grouped boundaries are
    rejected.
-2. Every nonempty request length, the real-token boundary, and the padded
-   extent must be divisible by `G`; no group may cross requests or the
-   real/padding boundary.
-3. `G * (Hq / Hkv) <= 64`, so the complete token/head group fits TileQ64.
+2. `G * (Hq / Hkv) <= 64`, so the complete token/head group fits TileQ64.
 The low byte can represent up to eight query members, but only Q1/Q2/Q4/Q5 are
 currently qualified. Unsafe request boundaries or TileQ64 overflow raise an
 error; they never trigger a different grouped size. The attention policy
 reuses the dense PrimTS grouped-Q candidate geometry and selects the smallest
-canonical tile that holds the caller's complete group.
+canonical tile that holds the caller's maximum group. Request lengths and the
+total flattened extent need not be divisible by `G`.
 
 Consequences by phase:
 
@@ -378,7 +383,8 @@ not usable split-KV storage.
 - workspace, K/V, and all captured input/output addresses remain alive and
   stable;
 - shapes, strides, dtypes, device, group size, head geometry, page sizes,
-  top-k, block-table width, and scale values retain the prepared semantics;
+  top-k, block-table width, route topology, and scale values retain the
+  prepared semantics;
 - tensor contents are updated only between completed launches or replays; and
 - one workspace is not used concurrently by multiple plans or graphs.
 
@@ -412,7 +418,8 @@ Framework authors should treat the following as part of the current contract:
 - SM100/SM103 only for this PrimTS implementation;
 - semantic QSA page size fixed at four; physical storage page size must be a
   positive multiple of four;
-- Q grouping limited to 1, 2, 4, or 5 and `R` divisible by `G`;
+- Q grouping limited to 1, 2, 4, or 5; every packed route is nonempty and no
+  longer than `G`;
 - head dimension supported by the underlying path: 64, 128, or 256;
 - valid grouped-query head geometry (`Hq` divisible by `Hkv`, with
   `1 <= Hq/Hkv <= 32`);
@@ -440,7 +447,7 @@ not supported by this QSA owner.
 - the combined plan is allocation-free and host-readback-free on its run path.
 
 The simplified workspace-owned-metadata interface was qualified on SM103 with
-CUTLASS DSL 4.7.1 by all 38 tests in
+CUTLASS DSL 4.7.1 by all 41 tests in
 `tests/attention/test_attention_ts_qsa_metadata.py`, the standalone
 CUDA-graph example in `examples/prims_ts/qsa_page4_attention.py`, and an FP8
 TP2/MTP3 vLLM smoke run with four 4K-context concurrent requests (8/8 measured

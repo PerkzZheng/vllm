@@ -1076,6 +1076,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     block_table = torch.zeros(2, 256, dtype=torch.int32)
     token_to_req = torch.tensor([0, 1, 0], dtype=torch.int32)
     logical_positions = torch.tensor([2, 3, 4], dtype=torch.int64)
+    query_start_loc_cpu = torch.tensor([0, rows], dtype=torch.int32)
+    route_qo_indptr_cpu = torch.arange(rows + 1, dtype=torch.int32)
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
         qsa_prims_ts_group_size=1,
@@ -1098,6 +1100,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         block_topk: int,
         *,
         out_dtype: torch.dtype,
+        qo_indptr: torch.Tensor | None,
+        max_seq_len_q: int | None,
     ) -> int:
         assert actual_query.shape == (
             route_capacity,
@@ -1109,6 +1113,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         assert actual_block_table.shape == (2, 3)
         assert block_topk == selection_width
         assert out_dtype == torch.bfloat16
+        torch.testing.assert_close(qo_indptr, route_qo_indptr_cpu)
+        assert max_seq_len_q == 1
         return 128
 
     def fake_prepare(
@@ -1124,6 +1130,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         *,
         bmm1_scale: float,
         bmm2_scale: float,
+        qo_indptr: torch.Tensor | None,
+        max_seq_len_q: int | None,
     ) -> object:
         torch.testing.assert_close(actual_query, query)
         assert (
@@ -1143,6 +1151,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         torch.testing.assert_close(actual_output, output)
         assert bmm1_scale == head_dim**-0.5
         assert bmm2_scale == 1.0
+        torch.testing.assert_close(qo_indptr, route_qo_indptr_cpu)
+        assert max_seq_len_q == 1
         assert workspace.shape == (128,)
         calls["prepare_count"] = int(calls.get("prepare_count", 0)) + 1
         calls["workspace"] = workspace
@@ -1173,6 +1183,11 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         lambda *_args, **_kwargs: 1,
     )
     monkeypatch.setattr(
+        qsa_ops,
+        "qsa_prims_ts_qo_indptr",
+        lambda *_args, **_kwargs: route_qo_indptr_cpu,
+    )
+    monkeypatch.setattr(
         qsa_ops, "qsa_prims_ts_combined_workspace_size", fake_workspace_size
     )
     monkeypatch.setattr(qsa_ops, "qsa_prims_ts_prepare_attention", fake_prepare)
@@ -1196,6 +1211,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         output,
         token_to_req,
         logical_positions,
+        query_start_loc_cpu=query_start_loc_cpu,
     )
 
     assert result is output
@@ -1213,6 +1229,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         output,
         token_to_req,
         logical_positions,
+        query_start_loc_cpu=query_start_loc_cpu,
     )
     assert second_result is output
     assert torch.all(output == 5)
@@ -1233,11 +1250,153 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         output,
         token_to_req,
         logical_positions,
+        query_start_loc_cpu=query_start_loc_cpu,
     )
     assert rebound_result is output
     assert torch.all(output == 5)
     assert calls["prepare_count"] == 2
     assert calls["workspace"] is not first_workspace
+
+
+def test_qsa_prims_ts_keeps_nondivisible_grouped_query_flat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
+
+    rows = 7
+    group_size = 4
+    num_query_heads = 6
+    head_dim = 256
+    storage_page_size = 16
+    selection_width = 512
+    query = torch.zeros(rows, num_query_heads, head_dim, dtype=torch.bfloat16)
+    kv_cache = torch.zeros(
+        3,
+        1,
+        storage_page_size,
+        2 * head_dim,
+        dtype=torch.bfloat16,
+    )
+    output = torch.empty_like(query)
+    block_table = torch.zeros(2, 256, dtype=torch.int32)
+    token_to_req = torch.tensor([0] * 4 + [1] * 3, dtype=torch.int32)
+    logical_positions = torch.tensor([0, 1, 2, 3, 0, 1, 2], dtype=torch.int64)
+    query_start_loc_cpu = torch.tensor([0, 4, 7], dtype=torch.int32)
+    route_qo_indptr_cpu = torch.tensor([0, 4, 7], dtype=torch.int32)
+    layer = SimpleNamespace(
+        qsa_indices_are_blocks=True,
+        qsa_prims_ts_group_size=group_size,
+        topk_indices_buffer=torch.zeros(
+            rows,
+            selection_width,
+            dtype=torch.int32,
+        ),
+        _qsa_prims_ts_workspace=None,
+    )
+    metadata = SimpleNamespace(
+        num_actual_tokens=rows,
+        block_table=block_table,
+        max_seq_len=33,
+    )
+    calls: dict[str, object] = {}
+
+    def fake_workspace_size(
+        actual_query: torch.Tensor,
+        _key_cache: torch.Tensor,
+        _block_table: torch.Tensor,
+        _block_topk: int,
+        *,
+        out_dtype: torch.dtype,
+        qo_indptr: torch.Tensor | None,
+        max_seq_len_q: int | None,
+    ) -> int:
+        assert actual_query.shape == (rows, num_query_heads, head_dim)
+        assert out_dtype == torch.bfloat16
+        torch.testing.assert_close(qo_indptr, route_qo_indptr_cpu)
+        assert max_seq_len_q == group_size
+        return 128
+
+    def fake_prepare(
+        actual_query: torch.Tensor,
+        _key_cache: torch.Tensor,
+        _value_cache: torch.Tensor,
+        _block_indices: torch.Tensor,
+        _block_table: torch.Tensor,
+        _token_to_req: torch.Tensor,
+        _positions: torch.Tensor,
+        _workspace: torch.Tensor,
+        actual_output: torch.Tensor,
+        *,
+        bmm1_scale: float,
+        bmm2_scale: float,
+        qo_indptr: torch.Tensor | None,
+        max_seq_len_q: int | None,
+    ) -> object:
+        assert actual_query.shape == (rows, num_query_heads, head_dim)
+        assert actual_output.shape == actual_query.shape
+        torch.testing.assert_close(qo_indptr, route_qo_indptr_cpu)
+        assert max_seq_len_q == group_size
+        assert bmm1_scale == head_dim**-0.5
+        assert bmm2_scale == 1.0
+        calls["plan"] = object()
+        return calls["plan"]
+
+    def fake_run(
+        plan: object,
+        actual_query: torch.Tensor,
+        _block_indices: torch.Tensor,
+        _block_table: torch.Tensor,
+        _token_to_req: torch.Tensor,
+        _positions: torch.Tensor,
+        actual_output: torch.Tensor,
+    ) -> torch.Tensor:
+        assert plan is calls["plan"]
+        assert actual_query.shape == (rows, num_query_heads, head_dim)
+        actual_output.fill_(7)
+        return actual_output
+
+    monkeypatch.setattr(
+        qsa_ops,
+        "qsa_prims_ts_group_size",
+        lambda *_args, **_kwargs: group_size,
+    )
+    monkeypatch.setattr(
+        qsa_ops,
+        "qsa_prims_ts_qo_indptr",
+        lambda *_args, **_kwargs: route_qo_indptr_cpu,
+    )
+    monkeypatch.setattr(
+        qsa_ops,
+        "qsa_prims_ts_combined_workspace_size",
+        fake_workspace_size,
+    )
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_prepare_attention", fake_prepare)
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_run_prepared", fake_run)
+    impl = Qwen4ExpQSAFlashAttentionImpl.__new__(Qwen4ExpQSAFlashAttentionImpl)
+    impl.head_size = head_dim
+    impl.scale = head_dim**-0.5
+    impl.kv_cache_dtype = "auto"
+    impl.alibi_slopes = None
+    impl.sinks = None
+    impl.sliding_window = (-1, -1)
+    impl.use_qsa_prims_ts = True
+
+    result = impl.forward_qsa(
+        layer,
+        query,
+        query,
+        query,
+        kv_cache,
+        metadata,
+        output,
+        token_to_req,
+        logical_positions,
+        query_start_loc_cpu=query_start_loc_cpu,
+    )
+
+    assert result is output
+    assert result.shape == query.shape
+    assert torch.all(result == 7)
 
 
 def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
@@ -1252,8 +1411,12 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
         _block_topk: int,
         *,
         out_dtype: torch.dtype,
+        qo_indptr: torch.Tensor | None,
+        max_seq_len_q: int | None,
     ) -> int:
         assert out_dtype == torch.bfloat16
+        assert qo_indptr is not None
+        assert max_seq_len_q == 1
         return 128 if query.shape[0] <= 3 else 256
 
     monkeypatch.setattr(
@@ -1263,6 +1426,9 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
     layer = SimpleNamespace(_qsa_prims_ts_workspace=None)
     key_cache = torch.empty(1, 1, 16, 256, dtype=torch.bfloat16)
     block_table = torch.empty(1, 4, dtype=torch.int32)
+    qo_two = torch.arange(3, dtype=torch.int32)
+    qo_three = torch.arange(4, dtype=torch.int32)
+    qo_four = torch.arange(5, dtype=torch.int32)
 
     first = impl._get_qsa_prims_ts_workspace(
         layer,
@@ -1271,6 +1437,8 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
         block_table,
         512,
         torch.bfloat16,
+        qo_two,
+        1,
     )
     first.fill_(0xA5)
     second = impl._get_qsa_prims_ts_workspace(
@@ -1280,6 +1448,8 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
         block_table,
         512,
         torch.bfloat16,
+        qo_three,
+        1,
     )
 
     assert second.data_ptr() != first.data_ptr()
@@ -1292,6 +1462,8 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
         block_table,
         512,
         torch.bfloat16,
+        qo_three,
+        1,
     )
     assert same_key.data_ptr() == second.data_ptr()
     assert torch.all(same_key == 0x5A)
@@ -1303,6 +1475,8 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
         block_table,
         512,
         torch.bfloat16,
+        qo_four,
+        1,
     )
     assert larger.numel() == 256
     assert larger.data_ptr() not in (first.data_ptr(), second.data_ptr())
@@ -1315,6 +1489,8 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
         block_table,
         512,
         torch.bfloat16,
+        qo_three,
+        1,
     )
     assert rebound.data_ptr() != same_key.data_ptr()
 
@@ -1346,11 +1522,16 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     num_query_heads = 6
     head_dim = 256
     query = torch.zeros(
-        groups,
-        group_size,
+        groups * group_size,
         num_query_heads,
         head_dim,
         dtype=torch.bfloat16,
+    )
+    qo_indptr = torch.arange(
+        0,
+        groups * group_size + 1,
+        group_size,
+        dtype=torch.int32,
     )
     key_cache = torch.zeros(8, 1, 16, head_dim, dtype=torch.bfloat16)
     value_cache = torch.zeros_like(key_cache)
@@ -1380,6 +1561,7 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
         lambda: (
             lambda *_args, **_kwargs: 1,
             fake_workspace_size,
+            lambda *_args, **_kwargs: None,
             fake_prepare,
         ),
     )
@@ -1390,6 +1572,8 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
             block_table,
             512,
             out_dtype=torch.bfloat16,
+            qo_indptr=qo_indptr,
+            max_seq_len_q=group_size,
         )
         == 320
     )
@@ -1400,6 +1584,8 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     assert isinstance(workspace_kwargs, dict)
     assert workspace_kwargs["block_topk"] == 512
     assert workspace_kwargs["out_dtype"] == torch.bfloat16
+    assert workspace_kwargs["qo_indptr"] is qo_indptr
+    assert workspace_kwargs["max_seq_len_q"] == group_size
 
     workspace = torch.empty(320, dtype=torch.uint8)
     output = torch.empty_like(query)
@@ -1416,6 +1602,8 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
             output,
             bmm1_scale=0.125,
             bmm2_scale=1.25,
+            qo_indptr=qo_indptr,
+            max_seq_len_q=group_size,
         )
         is plan
     )
@@ -1428,6 +1616,8 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     assert isinstance(prepare_kwargs, dict)
     assert prepare_kwargs["bmm1_scale"] == 0.125
     assert prepare_kwargs["bmm2_scale"] == 1.25
+    assert prepare_kwargs["qo_indptr"] is qo_indptr
+    assert prepare_kwargs["max_seq_len_q"] == group_size
 
 
 def _qsa_page4_paged_metadata_reference(
