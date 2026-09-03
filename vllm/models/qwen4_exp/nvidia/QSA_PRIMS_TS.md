@@ -10,7 +10,8 @@ The current implementation supersedes the older occupancy-based grouping
 history retained later in this document:
 
 - prefill and mixed batches always use packed `[R,Hq,D]` Q/O with Q4 routes;
-- uniform decode uses fixed `[B,1,G,Hq,D]` Q/O, where `G=MTP+1`;
+- uniform decode uses fixed `[B,Nq,G,Hq,D]` Q/O, where `G=MTP+1`;
+  current vLLM decode calls have `Nq=1`;
 - fixed decode omits `qo_indptr`; FlashInfer flattens `[B,Nq]` into its internal
   route axis as a zero-copy view;
 - fixed decode is selected only after proving every live request has exactly
@@ -53,8 +54,9 @@ attention and optional split-KV scratch
 
 Prefill passes packed Q/O plus `qo_indptr`; each request is chunked into routes
 of at most four rows, so a partial request tail never crosses into another
-request. Uniform decode instead passes fixed `[B,1,G,Hq,D]` Q/O and omits query
-offsets. Both layouts feed the same metadata and attention kernels.
+request. Uniform decode instead passes fixed `[B,Nq,G,Hq,D]` Q/O and omits
+query offsets; current vLLM decode calls use `Nq=1`. Both layouts feed the same
+metadata and attention kernels.
 
 CUDA-graph padding rows have logical position `-1`. The adapter gives them the
 reserved PrimTS inert-row encoding, `seq_len=1` and locator `-1`. Its TMA
@@ -77,13 +79,13 @@ plan.run(query, block_indices, block_table,
 ```
 
 Workspace is allocated lazily at the exact public size and pooled by query
-shape, cache geometry, and dtype. Each pool entry is zero-initialized once and
-keeps stable addresses for CUDA-graph capture and replay. Prefill does not
-allocate split-KV scratch. Decode split counters occupy a disjoint workspace
-section, are initialized during plan preparation, and are restored by the
-qualified reducer after each launch. The previous Triton sparse-attention path
-remains the fallback on unsupported architectures or when the complete
-FlashInfer page-four API is absent.
+shape, cache geometry, and dtype. Each pool entry keeps stable addresses for
+CUDA-graph capture and replay. Metadata outputs are fully overwritten on every
+run. Prefill does not allocate split-KV scratch. Decode split counters occupy a
+disjoint workspace section, are initialized during plan preparation, and are
+restored by the qualified reducer after each launch. The previous Triton
+sparse-attention path remains the fallback on unsupported architectures or
+when the complete FlashInfer page-four API is absent.
 
 CPU request boundaries prove whether a decode batch is uniform. Every live
 request must contribute exactly `G` adjacent rows and any inert graph-padding
@@ -331,8 +333,8 @@ select the smallest canonical TileQ containing the complete group, avoiding
 unnecessary padding. Q4 therefore uses TileQ64/32/16 at TP1-2/TP4/TP8, while
 Q2 uses TileQ32/16/8.
 
-Every real Q2/Q4 group must contain adjacent rows from one request; an inert
-CUDA-graph padding suffix must begin and end on the same group boundary.
+Every real Q2/Q4/Q5 group must contain adjacent rows from one request; an
+inert CUDA-graph padding suffix must begin and end on the same group boundary.
 Consequently ordinary SQ1 decode remains Q1 even at a large batch; validation
 never groups unrelated requests.
 

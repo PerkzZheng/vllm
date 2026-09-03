@@ -1409,6 +1409,7 @@ def test_qsa_prims_ts_keeps_nondivisible_grouped_query_flat(
     ("query_starts", "num_tokens", "group_size", "has_prefill", "expected"),
     [
         pytest.param([0, 4, 8], 8, 4, False, True, id="uniform-decode"),
+        pytest.param([0, 5, 10], 10, 5, False, True, id="uniform-mtp4-decode"),
         pytest.param([0, 4, 8, 8], 12, 4, False, True, id="graph-padding"),
         pytest.param([0, 4, 8], 8, 4, True, False, id="prefill"),
         pytest.param([0, 4, 7], 7, 4, False, False, id="partial-request"),
