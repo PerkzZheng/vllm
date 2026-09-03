@@ -387,6 +387,17 @@ Q4 meets the target for every TP;
 at batch 64 its attention kernel meets the target for every TP, while
 end-to-end still misses at TP1/TP4/TP8.
 
+The fixed-Q5/MTP4 qualification on job 646850 uses real consecutive top-k
+rows, BF16 D256, cold L2, CUDA graphs, and a production-stable 10,260-token
+compact-KV capacity. The TP1 BS16/32 rows select S4/S2 and complete in
+34.84/46.29 us including metadata, versus Triton's 65.52/106.65 us including
+index expansion (1.881x/2.304x speedups). TP2 selects S8/S4 and completes in
+30.65/35.59 us versus 45.21/65.58 us (1.475x/1.842x). Isolated metadata takes
+10.65--12.28 us, while its incremental cost in the combined graph is
+4.98--6.05 us because the prepared metadata-to-attention cache handoff stays
+live. All rows match the independent reference within `9.8e-4`; the full
+table is in `benchmarks/qsa/PR53896_MIGRATION.md`.
+
 All SQ1 and grouped Q2/Q4 outputs differ from their independent-route
 references by at most `9.8e-4`. Reported selected-KV bandwidth is a logical
 byte rate and may exceed GB300's roughly 8-TB/s physical HBM limit because

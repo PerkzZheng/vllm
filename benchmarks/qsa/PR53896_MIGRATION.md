@@ -1770,6 +1770,34 @@ level and confirms at 34.92 us, only 1.5% slower than S4, so retain it as the
 fallback if sustained BF16/MTP3 accuracy rejects S4. The complete split curve
 and confirmation logs are under `qsa_bench/forced_q4_split_job646409/`.
 
+### Fixed Q5/MTP4 with one-wave split-KV
+
+Job 646850 closes the fixed-Q5 standalone rebenchmark on one isolated SM103
+GB300. The BF16 problem uses D=256, five consecutive real model top-k rows
+starting at logical position 4,107, causal membership, cold L2, CUDA graphs,
+20 warmups, and 300 balanced samples. Each request is one Q5 group with local
+Hq/Hkv=12/1. TP1 owns two KV heads and TP2 owns one, so the generic one-wave
+policy selects TP1 BS16/32 S4/S2 and TP2 BS16/32 S8/S4. The graph-stable
+compact-KV capacity is the production Q5 bound of 10,260 tokens. Triton
+end-to-end includes index expansion; PrimTS end-to-end includes metadata,
+attention, and split reduction.
+
+| TP | BS | split | metadata alone | PrimTS attention | PrimTS e2e | Triton attention | Triton e2e | Triton / PrimTS e2e |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 16 | 4 | 10.65 us | 28.79 us | 34.84 us | 64.11 us | 65.52 us | 1.881x |
+| 1 | 32 | 2 | 12.19 us | 40.91 us | 46.29 us | 106.59 us | 106.65 us | 2.304x |
+| 2 | 16 | 8 | 12.11 us | 24.62 us | 30.65 us | 44.85 us | 45.21 us | 1.475x |
+| 2 | 32 | 4 | 12.28 us | 30.61 us | 35.59 us | 65.66 us | 65.58 us | 1.842x |
+
+Measured as one prepared metadata-plus-attention graph, metadata adds 6.05,
+5.38, 6.03, and 4.98 us over attention-only, respectively, or 11.6--19.7% of
+PrimTS end-to-end latency. This is lower than the 10.65--12.28 us isolated
+metadata timing because cold L2 is flushed once before the combined graph and
+the metadata-to-attention cache handoff remains live. Isolated component
+times therefore must not be added. Every PrimTS and Triton output differs
+from the independent-route reference by at most 9.8e-4. Raw output is under
+`qsa_bench/q5_fixed_wave_job646850/`.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
@@ -1805,9 +1833,10 @@ Work proceeds in this order:
    `examples/prims_ts/qsa_page4_attention.py` is the framework-neutral
    capture/replay example; the vLLM call site passes only semantic inputs and
    the unified workspace.
-5. Completed on job 642187: integrate Q5 into the framework MTP4 path and
-   measure model-level decode at BS16/32. The historical automatic policy kept
-   Q1 at BS16 and selected Q5 at BS32; the current interface instead obeys the
-   caller's fixed Q group at both batch sizes. The measured result was tied at
-   BS16 and 1.7--2.0% behind Triton at BS32, so rebenchmark fixed Q5 with
-   wave-quantized split-KV before making an end-to-end speedup claim.
+5. Completed on jobs 642187 and 646850: integrate Q5 into the framework MTP4
+   path and measure BS16/32. The historical automatic model run kept Q1 at
+   BS16 and selected Q5 at BS32. The current interface instead preserves
+   caller-owned Q5 and independently selects one-wave split-KV. Its qualified
+   standalone result is 1.475--2.304x faster than Triton end-to-end across
+   TP1/TP2 BS16/32. A matched full-model rerun with fixed Q5 and the current
+   split policy remains a separate model-level signoff item.
