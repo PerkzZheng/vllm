@@ -25,42 +25,36 @@ route grid is known.
 
 ## Metadata route
 
-Each query token is flattened into one independent `SQ=1` attention row. For
-the model configuration (`token_topk=2048`, compression ratio and semantic page
-size `4`), the indexer returns `[R, 2051]` logical token IDs:
-
-- up to 512 complete selected groups, with four adjacent IDs per group;
-- an optional causal tail of one to three IDs;
-- `-1` padding after the live prefix.
-
-`qsa_build_page4_paged_metadata` reads only column `4 * page_rank`, maps that
-logical token through the request's existing vLLM block table, and writes the
-encoded locator expected by FlashInfer:
+The indexer supplies compact page-four block IDs as Int32
+`[num_query_tokens, block_topk]`; vLLM does not run the Triton token-expansion
+kernel on the PrimTS path. FlashInfer maps each logical page through the
+request's existing block table:
 
 ```text
 subpages_per_storage_page = storage_page_size / 4
 locator = physical_page * subpages_per_storage_page + token_offset / 4
 ```
 
-The generated tensors are:
+Q1 builds one CSR row per query. Q2/Q4/Q5 build per-query bitmaps, pack one
+sorted union per route, and put the exact query-membership mask in the low byte
+of each encoded locator. The optional causal tail is inserted into the same
+union. Pages with zero membership are omitted.
+
+The public prepared plan owns the following views inside one caller-provided
+byte workspace:
 
 ```text
-paged_kv_indptr: [R + 1]
-paged_kv_indices: [R * 513]
-seq_lens: [R]
+qsa_page_indptr: [num_routes + 1]
+qsa_page_indices: [num_routes * G * (block_topk + 1)]
+seq_lens: [num_routes]
+metadata scratch
+attention and optional split-KV scratch
 ```
 
-CSR rows have fixed capacity 513, so `indptr[r] = r * 513`. `seq_lens[r]`
-selects the live prefix: `min(floor((position + 1) / 4), 512) * 4` complete
-tokens plus `(position + 1) % 4` tail tokens. This makes the same buffers usable
-for decode, MTP, variable-length prefill, and CUDA graph replay without a host
-synchronization or per-forward allocation.
-
-The eventual PrimTS call uses `mask_type="causal"`. A flattened row's compact
-query offset is `seq_lens[r] - 1`; therefore complete selected groups are fully
-visible and only the one-to-three-token tail needs an element mask once the
-2048-token selection budget is saturated. Earlier rows use the same causal path
-and mask their shorter compact K/V extent.
+Prefill passes packed Q/O plus `qo_indptr`; each request is chunked into routes
+of at most four rows, so a partial request tail never crosses into another
+request. Uniform decode instead passes fixed `[B,1,G,Hq,D]` Q/O and omits query
+offsets. Both layouts feed the same metadata and attention kernels.
 
 CUDA-graph padding rows have logical position `-1`. The adapter gives them the
 reserved PrimTS inert-row encoding, `seq_len=1` and locator `-1`. Its TMA
@@ -74,83 +68,31 @@ FlashInfer exposes encoded page-4 support. PR 53896 exposes the combined vLLM
 cache as `[physical_page, storage_page_size, Hkv, 2D]`. The owner creates a
 zero-copy transposed view, splits K/V on the final dimension, and
 canonicalizes the resulting `[physical_page, Hkv, storage_page_size, D]`
-strides. The adapter writes into registered maximum-token buffers, and the
-owner passes their live slices to the ordinary PrimTS arguments:
+strides. It allocates one combined workspace per semantic launch key, prepares
+the metadata and attention plan outside the hot path, and then calls:
 
 ```text
-(query, (k_cache, v_cache), workspace,
- paged_kv_indptr, paged_kv_indices, seq_lens)
+plan.run(query, block_indices, block_table,
+         token_to_request, query_positions, out=output)
 ```
 
-Workspace is allocated lazily at the exact policy size and pooled by semantic
-launch key. The key includes the query-group size, token count, and physical
-page extent. Each key receives a separately zero-initialized allocation because
-PrimTS section offsets can change; this also keeps every warmed CUDA graph's
-storage address stable when the scheduler alternates graph buckets. The
-previous Triton sparse-attention path remains the fallback on other
-architectures or when the page-4 API is absent.
+Workspace is allocated lazily at the exact public size and pooled by query
+shape, cache geometry, and dtype. Each pool entry is zero-initialized once and
+keeps stable addresses for CUDA-graph capture and replay. Prefill does not
+allocate split-KV scratch. Decode split counters occupy a disjoint workspace
+section, are initialized during plan preparation, and are restored by the
+qualified reducer after each launch. The previous Triton sparse-attention path
+remains the fallback on unsupported architectures or when the complete
+FlashInfer page-four API is absent.
 
-This per-key pool replaced a short-lived diagnostic implementation that shared
-one uninitialized attention scratch allocation across all captured graph
-shapes. The shared implementation produced one intermittent FP8/MTP3
-sustained-decode stall at 28/30 AIME26 requests. Unchanged S4/load4 with the
-per-key pool subsequently completed three sustained gates without a liveness
-failure. A one-variable A/B also completed two consecutive 30/30 runs with the
-old shared allocation, so scratch reuse is not proven to be the historical
-stall's root cause. The pool remains the production invariant because it
-prevents cross-shape semantic layouts from aliasing at negligible memory cost.
-The vLLM owner still uses explicit registered metadata buffers plus separate
-attention scratch; it does not call FlashInfer's public unified-workspace entry
-point.
+CPU request boundaries prove whether a decode batch is uniform. Every live
+request must contribute exactly `G` adjacent rows and any inert graph-padding
+suffix must be group aligned. `fast_build` drafting metadata omits CPU
+boundaries because only its total is authoritative, so it deliberately uses
+request-independent fixed Q1. This is a correctness fallback, not an occupancy
+policy.
 
-The production owner now chooses one request-safe route for the complete
-launch. Q1 keeps one independent CSR row per query token. Q2/Q4 reshape Q and O
-to `[route, 2|4, Hq, D]`, build the exact union of the member rows, and encode
-per-query membership in the high nibble of each ordinary
-`paged_kv_indices` entry. They therefore keep the existing PrimTS interface and
-do not add a top-k argument. Grouped launches use fixed graph bounds of 4,104
-and 8,208 tokens; Q1 uses 2,051.
-
-CPU query boundaries gate grouping. Every nonempty request and any inert CUDA
-graph suffix must begin and end on the selected group boundary, preventing a
-group from crossing between requests or between real and padded rows.
-Zero-length padding requests are ignored. `fast_build` adaptive-verification
-metadata deliberately omits its CPU boundaries because only its total is
-authoritative; it consequently takes Q1. Other variable-length prefill/MTP
-batches also remain functional through Q1 when no common grouping is safe.
-Before evaluating those shapes, the owner computes a stable grouping-work
-estimate
-
-```text
-estimated_kv_tasks = flattened_query_rows * local_kv_heads * 4
-```
-
-The factor four is the assumed split-KV opportunity for this profitability
-policy; it is not the dynamically resolved Q1 split count. If the estimate is
-no larger than the CUDA device's SM count, the complete launch stays on Q1
-because there is too little potential work to amortize union metadata.
-Flattened query rows, rather than request count alone, are used because each
-MTP/prefill query token is an independent Q1 route. The remaining qualified
-whole-launch policy, applied only after this one-wave gate, is:
-
-- Q4 at 256 or more Q4 groups for every TP;
-- Q4 at 64 or more Q4 groups for TP1, TP2, and TP8;
-- Q2 at that 64-group crossover for TP4 (128 Q2 groups);
-- Q4 at eight or more Q4 groups for TP1 and TP2;
-- Q2 for aligned SQ2 routes at 512 groups on TP1/TP2 or 128 groups on
-  TP4/TP8;
-- Q1 otherwise.
-
-On the 152-SM GB300 checkpoint, TP1's two local KV heads cross the gate above
-19 flattened rows, while the one-local-KV-head TP2/TP4/TP8 shapes cross above
-38 rows. Request alignment and the measured Q2/Q4 crossover thresholds still
-apply after that gate. SM100 uses its own device SM count.
-
-The owner lazily retains an exact-size Int32 bitmap workspace for grouped
-metadata and reuses the registered maximum-token CSR buffers. Both addresses
-are stable after warmup, so capture does not allocate or resize them.
-
-## Validation status
+## Historical validation and performance log
 
 The metadata kernel is covered on SM103 with both 16-token and 256-token
 physical cache pages. The tests include early causal positions, all tail sizes,
