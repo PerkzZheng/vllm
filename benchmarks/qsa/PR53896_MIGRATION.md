@@ -1667,12 +1667,17 @@ The strict TP4/BS256 FP8/MTP3 model rerun uses the same 32K server capacity,
 | 16,384 | 1.2709 s | 1.4047 s | 1.3813 s | 8.0% lower latency |
 
 The three 8K repeats are 1.2511/1.2550/1.2515 seconds; the three 16K repeats
-are 1.2673/1.2727/1.2728 seconds. A matched 8K Nsight capture attributes 2.254
-milliseconds to PrimTS attention plus split reduction and 0.336 milliseconds
-to metadata per rank/iteration. The prior one-loader values were 6.257/0.335
-milliseconds, and Triton is 5.956/0.092 milliseconds. Thus the new complete
-PrimTS QSA segment is 2.34x faster than Triton, while profiled model wall time
-is 1.2705 versus Triton's 1.3806 seconds. Raw JSON is under
+are 1.2673/1.2727/1.2728 seconds. Matched Nsight captures give:
+
+| input | PrimTS attention | PrimTS metadata | Triton attention | Triton metadata | QSA speedup | profiled PrimTS/Triton wall |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8,192 | 2.254 ms | 0.336 ms | 5.956 ms | 0.092 ms | 2.34x | 1.2705/1.3806 s |
+| 16,384 | 2.315 ms | 0.337 ms | 5.993 ms | 0.091 ms | 2.29x | 1.2903/1.4061 s |
+
+Values are per rank and decode iteration and include split reduction in
+attention. The previous one-loader 8K PrimTS values were 6.257/0.335
+milliseconds, confirming that the model-level improvement comes from the
+producer topology rather than metadata or host timing. Raw JSON is under
 `qsa_e2e_perf/job643892-tp4-load4`; the report, SQLite export, and summaries
 are under `qsa_nsys/job643892/load4`.
 
