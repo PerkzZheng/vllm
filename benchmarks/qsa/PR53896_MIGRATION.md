@@ -1738,6 +1738,34 @@ Auditable artifacts are under
 `qsa_accuracy/pr53896/post-rollback-fp8-mtp3-tp4-job644750-retry32`, and
 `qsa_accuracy/pr53896/post-rollback-fp8-mtp3-tp4-job645045`.
 
+### Forced grouped-Q4 split-KV rebenchmark
+
+The BF16 Q4/MTP3 standalone route was rebenchmarked on job 646409 with
+grouped Q forced and Q64/KV128 Keeps split explicitly from one through eight.
+The TP2-equivalent shape is Hq/Hkv=12/1, D=256, BS16/32, and query position
+4,107. It uses the rank-0 real top-k capture from job 642187, causal masks,
+cold L2, CUDA graphs, and matched interleaved timing. Triton end-to-end
+includes its index expansion; PrimTS end-to-end includes union metadata,
+attention, and split reduction.
+
+| BS | direct PrimTS e2e | selected split | split PrimTS e2e | Triton e2e | Triton / PrimTS |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 57.38 us | S8 | 28.26 us | 43.08 us | 1.525x |
+| 32 | 59.39 us | S4 | 34.40 us | 60.44 us | 1.757x |
+
+Both selected configurations launch 128 attention CTAs, near one wave on
+152 SMs. S8 reduces BS16 PrimTS end-to-end latency by 50.7% from direct; S4
+reduces BS32 latency by 42.1%. The selected results are also no worse than
+1.12x the raw contiguous grouped-SWA timings and comfortably beat the
+non-shared-ratio projected SWA reference.
+
+This is not yet a framework policy change. BS32/S4 has a 1.95e-3 maximum
+absolute difference from the flattened reference. BS32/S3 retains the
+0.98e-3 direct/Triton error level and confirms at 34.92 us, only 1.5% slower
+than S4. Qualify S3 and S4 with sustained BF16/MTP3 model accuracy and
+liveness before enabling split-KV automatically. The complete split curve
+and confirmation logs are under `qsa_bench/forced_q4_split_job646409/`.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
