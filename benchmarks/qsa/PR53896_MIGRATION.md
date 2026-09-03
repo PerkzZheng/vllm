@@ -259,8 +259,9 @@ lengths were 4,259, 6,004, 4,401, and 3,139 tokens. Outputs differed across
 otherwise identical repetitions, so the original miss is not a reproducible
 PrimTS kernel failure; it is consistent with scheduling/numerical sensitivity
 in stochastic autoregressive sampling.
-The four raw replay records are retained under
-`qsa_accuracy/pr53896/prims-fp8-mtp3-sampling-v2/`.
+The four raw replay records remain recoverable from pre-cleanup commit
+`80f04d4e5`; generated model responses are intentionally excluded from the
+current source tree.
 
 The FP8/MTP=3 runtime used the portable local CUDA 13/Torch 2.13 image and the
 locally rebuilt 15-argument GDN extension described below. Fresh-node caches

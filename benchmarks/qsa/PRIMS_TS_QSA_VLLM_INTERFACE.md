@@ -503,7 +503,8 @@ requests completed). The smoke artifact is
 - finish public API naming, documentation, examples, and compatibility policy;
 - qualify the prepared path across the intended framework graph lifecycles and
   supported SM100/SM103 environments;
-- replace the wave-only Q1/Q2/Q4/Q5 heuristic with a measured QSA-aware cost model;
+- calibrate split-KV and reduction-mode costs for scattered page-four loads
+  and grouped-union metadata;
 - requalify PDL before enabling it in the prepared path; and
 - expose any useful policy/workspace diagnostics without making frameworks
   depend on private layout objects.
