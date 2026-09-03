@@ -1757,11 +1757,14 @@ Work proceeds in this order:
 2. Completed after Q5 on jobs 642187 and 643015: the full PrimTS
    FP8-E4M3/MTP=3 gate matches the Triton distribution. Rerun it after any
    subsequent arithmetic, kernel, or metadata changes.
-3. Extend the initial matched TP2 end-to-end matrix using warmed Triton and
-   PrimTS compile caches. Add the remaining BS64 and BS512 points at 8K, 16K,
-   32K, and 64K where the matched physical KV capacity permits; keep prefill
-   and decode timings separate and preserve independent contexts. The current
-   5.34M-token PrimTS capacity fits BS64 through 64K and BS512 at 8K.
+3. Completed for every capacity-feasible TP2 row: the warmed matrix covers
+   BS1, BS8, and BS64 at 8K, 16K, 32K, and 64K. BS512 is not feasible even at
+   8K. Although the attention KV cache holds about 5.34M tokens, a matched
+   FP8/MTP3 server at 0.91 memory utilization exposes only 258 Mamba cache
+   blocks and rejects `max_num_seqs=512` before graph capture. Each independent
+   decode sequence requires one block. Revisit BS512 on TP4 or with a
+   decode-state injection harness; do not report a scheduler-wave result as a
+   simultaneous 512-request cohort.
 4. Completed in FlashInfer `a30a38b9` and vLLM `40c0cf4ce`: the compact
    metadata builders and prepared metadata-plus-attention plan are exposed
    through one caller-owned byte workspace. The API preserves Q1/Q2/Q4,
