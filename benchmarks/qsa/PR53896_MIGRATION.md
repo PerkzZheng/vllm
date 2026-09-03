@@ -4,11 +4,15 @@
 
 - vLLM base: `13c80fb30ab835cbe387c01c4611970b7c3373e1`, the fetched
   `refs/pull/53896/head` on 2026-08-30.
-- Source integration: local branch `qsa-prims-ts-pr53896`; the FP8 accuracy
-  gate used implementation revision `8dd467f74`. Each production port commit
-  carries its original `Cherry-picked-from` revision.
+- Source integration: local branch `qsa-prims-ts-pr53896`. The 2026-09-03
+  dual-layout accuracy gate used runtime revision `a87ccd96f`; later branch
+  commits through `2c837d962` change only benchmark documentation and result
+  summarization. Each production port commit carries its original
+  `Cherry-picked-from` revision.
 - Compact PrimTS metadata integration: vLLM revision `778d2bd87`.
-- FlashInfer kernel branch: `qsa-page4-prims-ts` at `68fd2bf5`.
+- FlashInfer kernel branch: `qsa-packed-query` at `7125943a`, with the
+  review-only exact-output-arity check that was subsequently committed as
+  `426a2525` already present in the Python source used by the gate.
 - Accuracy model: [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/main)
   revision `de4b8e4`, staged locally as `models/Qwen3.8-Flash-Next-de4b8e4`.
   The model config identifies the implementation as `qwen4_exp`, uses 24 Q
@@ -275,6 +279,53 @@ With autotuning disabled, TP=2 FP8/MTP=3 startup, graph capture, and all three
 accuracy tasks completed normally. The two AIME repetitions used
 `--max-cudagraph-capture-size 64`; generation and scoring arguments remained
 identical to the matrix protocol.
+
+### Dual-layout requalification (2026-09-03)
+
+The packed-prefill/fixed-decode integration was requalified after the Q5 and
+workspace changes. PrimTS used vLLM runtime `a87ccd96f`, FlashInfer source
+`7125943a` plus the exact-output-arity review edit later committed as
+`426a2525`, model `de4b8e4`, TP2, and the exact sampling policy above. Native
+Triton uses the matching `sampling-v2` artifacts as the paired reference.
+
+| KV cache | MTP | Backend | GSM8K | GPQA-Diamond, 2 reps | AIME26, 2 reps |
+|---|---:|---|---:|---:|---:|
+| BF16 | 0 | Triton | 1292/1319 (97.95%) | 362/396 (91.41%) | 55/60 (91.67%) |
+| BF16 | 0 | PrimTS | 1292/1319 (97.95%) | 362/396 (91.41%) | 59/60 (98.33%) |
+| BF16 | 3 | Triton | 1294/1319 (98.10%) | 363/396 (91.67%) | 59/60 (98.33%) |
+| BF16 | 3 | PrimTS | 1290/1319 (97.80%) | 359/396 (90.66%) | 60/60 (100.00%) |
+| FP8-E4M3 | 0 | Triton | 1290/1319 (97.80%) | 368/396 (92.93%) | 60/60 (100.00%) |
+| FP8-E4M3 | 0 | PrimTS | 1286/1319 (97.50%) | 361/396 (91.16%) | 58/60 (96.67%) |
+| FP8-E4M3 | 3 | Triton | 1290/1319 (97.80%) | 363/396 (91.67%) | 60/60 (100.00%) |
+| FP8-E4M3 | 3 | PrimTS | 1291/1319 (97.88%) | 360/396 (90.91%) | 60/60 (100.00%) |
+
+Every qualified repetition completed its full denominator with zero request
+errors. PrimTS BF16/MTP0 AIME had one invalid, length-capped response; PrimTS
+FP8/MTP0 GPQA had two invalid parses and three length-capped responses; and
+PrimTS FP8/MTP3 AIME had one length-capped response whose answer was still
+parsed correctly. The other dual-layout PrimTS cells had no invalid parses or
+truncations. Four correctly targeted serial replays of the repeated
+FP8/MTP0 AIME miss answered correctly, so the sampled score differences do not
+identify a deterministic attention failure.
+
+The original BF16 GPQA-r2 and AIME artifacts from job 647304 are excluded:
+PLE prefill activation OOM terminated their server, leaving partial/error
+denominators. Qualified recovery artifacts came from jobs 647826, 648101, and
+648102, which used isolated GPU pairs and `gpu_memory_utilization=0.89`.
+Artifacts are rooted at:
+
+- `qsa_accuracy/pr53896/dual-layout-bf16-mtp0-job647304` and
+  `dual-layout-bf16-mtp0-recovery-job647826`;
+- `qsa_accuracy/pr53896/dual-layout-bf16-mtp3-job647304` and
+  `dual-layout-bf16-mtp3-normal-job648101`;
+- `qsa_accuracy/pr53896/dual-layout-fp8-mtp0-job647402`;
+- `qsa_accuracy/pr53896/dual-layout-fp8-mtp3-job647402` and
+  `dual-layout-fp8-mtp3-normal-job648102`.
+
+Accuracy is closed for the pre-cleanup tree. GPQA evaluator wall time still
+shows a substantial MTP3 serving-performance gap: the complete PrimTS
+repetitions took roughly 90--105 minutes, versus 31--36 minutes for Triton.
+Treat that as decode-performance follow-up, not as an accuracy failure.
 
 ## Current validation
 
