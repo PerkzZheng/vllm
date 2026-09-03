@@ -1633,11 +1633,11 @@ and disables only the exhaustive search.  The explicit
 A fresh BF16 TP4 PrimTS server completes all 4--1,024 graph captures and the
 strict BS256 profile with this change.
 
-### FP8 TP4 Q4 producer-warp optimization
+### FP8 TP4 Q4 producer-warp experiment (rejected)
 
 The TP4/MTP3 PrimTS plan groups four query tokens with local Hq/Hkv=6/1 into
 TileQ32, splits KV twice, and uses a separate reduction kernel. Its original
-single TMA loader shared warp 13 with scheduler duties. FlashInfer now moves
+single TMA loader shares warp 13 with scheduler duties. The experiment moved
 this exact FP8 Q4/TileQ32 route to four producer-only loader warps at 16--19;
 all query, MMA, split, masking, metadata, and reduction geometry is unchanged.
 The promotion is deliberately narrow and leaves other TP/group shapes on
@@ -1680,6 +1680,17 @@ milliseconds, confirming that the model-level improvement comes from the
 producer topology rather than metadata or host timing. Raw JSON is under
 `qsa_e2e_perf/job643892-tp4-load4`; the report, SQLite export, and summaries
 are under `qsa_nsys/job643892/load4`.
+
+These performance results are retained as useful experimental evidence, but
+the multi-issuer route is not production-safe. In a sustained TP4 FP8/MTP3
+AIME26 run, four issuers completed 7/30 requests and then stopped making
+forward progress: rank 1 blocked in `cl_sync_io_wait` while ranks 0, 2, and 3
+remained runnable at 100% GPU. A reduced two-issuer candidate repeated the
+same failure after 5/30 responses with the same asymmetric rank state. The
+10,000-replay standalone graph check therefore did not cover this serving
+liveness failure. FlashInfer restores the proven scheduler-shared single
+issuer. Correcting the multi-issuer task schedule and qualifying it with
+sustained multi-rank, variable-shape traffic remains a TODO.
 
 ## Remaining performance and integration signoff
 
