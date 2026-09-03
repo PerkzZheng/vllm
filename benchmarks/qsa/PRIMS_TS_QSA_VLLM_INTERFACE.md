@@ -329,23 +329,24 @@ selector. Its `group_size=` argument is mandatory. It returns that exact group
 when three correctness gates pass:
 
 1. CPU request boundaries must be present, valid, nondecreasing, and cover no
-   more than the padded query extent. Missing or unsafe boundaries return Q1.
+   more than the padded query extent. Missing or unsafe grouped boundaries are
+   rejected.
 2. Every nonempty request length, the real-token boundary, and the padded
    extent must be divisible by `G`; no group may cross requests or the
    real/padding boundary.
 3. `G * (Hq / Hkv) <= 64`, so the complete token/head group fits TileQ64.
 The low byte can represent up to eight query members, but only Q1/Q2/Q4/Q5 are
-currently qualified. Unsafe request boundaries or TileQ64 overflow return Q1;
-they never trigger a different grouped size. The attention policy reuses the
-dense PrimTS grouped-Q candidate geometry and selects the smallest canonical
-tile that holds the caller's complete group.
+currently qualified. Unsafe request boundaries or TileQ64 overflow raise an
+error; they never trigger a different grouped size. The attention policy
+reuses the dense PrimTS grouped-Q candidate geometry and selects the smallest
+canonical tile that holds the caller's complete group.
 
 Consequences by phase:
 
 - ordinary decode supplies Q1;
 - MTP3 supplies Q4 and MTP4 supplies Q5, independent of batch occupancy;
 - prefill supplies its configured fixed chunk size; and
-- geometry without authoritative aligned boundaries uses Q1.
+- geometry without authoritative aligned boundaries must explicitly supply Q1.
 
 In the vLLM integration, `qsa_query_group_size` is the explicit model-config
 override. When it is absent, the user-selected uniform MTP query width is used

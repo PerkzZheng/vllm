@@ -360,7 +360,8 @@ choice against CPU request boundaries and head geometry; it does not infer a
 different group from the batch size or SM count. vLLM exposes
 `qsa_query_group_size` as an explicit model-config override and otherwise uses
 the user-selected uniform MTP query width when it is a supported Q1/Q2/Q4/Q5
-width.
+width. Invalid grouped boundaries or TileQ64 overflow are rejected rather than
+silently changing the requested group.
 
 The group must also fit as complete query-head rows in TileQ64:
 `group_size * (Hq / Hkv) <= 64`. This capacity check and the supported grouping
