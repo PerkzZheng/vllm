@@ -4,6 +4,25 @@ This integration keeps the QSA indexer's existing fixed-width token output and
 adapts it to FlashInfer PrimTS native paged-KV metadata. It does not add a
 kernel-specific top-k argument.
 
+## Current query-layout policy
+
+The current implementation supersedes the older occupancy-based grouping
+history retained later in this document:
+
+- prefill and mixed batches always use packed `[R,Hq,D]` Q/O with Q4 routes;
+- uniform decode uses fixed `[B,1,G,Hq,D]` Q/O, where `G=MTP+1`;
+- fixed decode omits `qo_indptr`; FlashInfer flattens `[B,Nq]` into its internal
+  route axis as a zero-copy view;
+- fixed decode is selected only after proving every live request has exactly
+  `G` rows and any graph-padding suffix is group aligned; and
+- irregular decode retains packed storage, while adaptive verification without
+  authoritative CPU boundaries uses fixed Q1.
+
+The compiled groups are Q1/Q2/Q4/Q5. MTP2 therefore falls back to Q1 until a
+Q3 configuration is implemented. Group size is not selected from batch size,
+SM count, or measured thresholds; split-KV is resolved independently after the
+route grid is known.
+
 ## Metadata route
 
 Each query token is flattened into one independent `SQ=1` attention row. For
@@ -354,14 +373,14 @@ Triton kernel. The small TP4/TP8 grids reverse that result because forced Q4
 underfills the GPU. Group selection is now an explicit caller decision, so
 that observation no longer causes an automatic fallback to Q1.
 
-The framework supplies a fixed group size for prefill, MTP, or decode.
-FlashInfer's `get_prims_ts_qsa_group_size` interface validates that exact
-choice against CPU request boundaries and head geometry; it does not infer a
-different group from the batch size or SM count. vLLM exposes
-`qsa_query_group_size` as an explicit model-config override and otherwise uses
-the user-selected uniform MTP query width when it is a supported Q1/Q2/Q4/Q5
-width. Unsupported widths, invalid grouped boundaries, and TileQ64 overflow
-are rejected rather than silently changing the requested group.
+The framework supplies a phase-owned group size: prefill and mixed batches use
+packed Q4, while uniform decode uses `G=MTP+1`. FlashInfer's
+`get_prims_ts_qsa_group_size` interface validates that exact choice against
+CPU request boundaries and head geometry; it does not infer a different group
+from batch size or SM count. The currently compiled decode widths are
+Q1/Q2/Q4/Q5. Until Q3 is implemented, MTP2 safely uses fixed Q1. Invalid
+grouped boundaries and TileQ64 overflow are rejected rather than silently
+mixing rows from different requests.
 
 The group must also fit as complete query-head rows in TileQ64:
 `group_size * (Hq / Hkv) <= 64`. This capacity check and the supported grouping

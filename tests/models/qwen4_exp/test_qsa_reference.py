@@ -1076,11 +1076,11 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     block_table = torch.zeros(2, 256, dtype=torch.int32)
     token_to_req = torch.tensor([0, 1, 0], dtype=torch.int32)
     logical_positions = torch.tensor([2, 3, 4], dtype=torch.int64)
-    query_start_loc_cpu = torch.tensor([0, rows], dtype=torch.int32)
-    route_qo_indptr_cpu = torch.arange(rows + 1, dtype=torch.int32)
+    query_start_loc_cpu = torch.arange(rows + 1, dtype=torch.int32)
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
-        qsa_prims_ts_group_size=1,
+        qsa_prims_ts_decode_group_size=1,
+        qsa_prims_ts_prefill_group_size=4,
         topk_indices_buffer=torch.full(
             (route_capacity, selection_width), -1, dtype=torch.int32
         ),
@@ -1105,6 +1105,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     ) -> int:
         assert actual_query.shape == (
             route_capacity,
+            1,
+            1,
             num_query_heads,
             head_dim,
         )
@@ -1113,8 +1115,8 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         assert actual_block_table.shape == (2, 3)
         assert block_topk == selection_width
         assert out_dtype == torch.bfloat16
-        torch.testing.assert_close(qo_indptr, route_qo_indptr_cpu)
-        assert max_seq_len_q == 1
+        assert qo_indptr is None
+        assert max_seq_len_q is None
         return 128
 
     def fake_prepare(
@@ -1133,7 +1135,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         qo_indptr: torch.Tensor | None,
         max_seq_len_q: int | None,
     ) -> object:
-        torch.testing.assert_close(actual_query, query)
+        torch.testing.assert_close(actual_query.view_as(query), query)
         assert (
             key_cache.shape
             == value_cache.shape
@@ -1148,11 +1150,11 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         assert actual_block_table.shape == (2, 3)
         torch.testing.assert_close(actual_token_to_req, token_to_req)
         torch.testing.assert_close(actual_positions, logical_positions)
-        torch.testing.assert_close(actual_output, output)
+        torch.testing.assert_close(actual_output.view_as(output), output)
         assert bmm1_scale == head_dim**-0.5
         assert bmm2_scale == 1.0
-        torch.testing.assert_close(qo_indptr, route_qo_indptr_cpu)
-        assert max_seq_len_q == 1
+        assert qo_indptr is None
+        assert max_seq_len_q is None
         assert workspace.shape == (128,)
         calls["prepare_count"] = int(calls.get("prepare_count", 0)) + 1
         calls["workspace"] = workspace
@@ -1169,7 +1171,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         actual_output: torch.Tensor,
     ) -> torch.Tensor:
         assert plan is calls["plan"]
-        torch.testing.assert_close(actual_query, query)
+        torch.testing.assert_close(actual_query.view_as(query), query)
         assert block_indices.shape == (rows, selection_width)
         assert actual_block_table.shape == (2, 3)
         torch.testing.assert_close(actual_token_to_req, token_to_req)
@@ -1185,7 +1187,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     monkeypatch.setattr(
         qsa_ops,
         "qsa_prims_ts_qo_indptr",
-        lambda *_args, **_kwargs: route_qo_indptr_cpu,
+        lambda *_args, **_kwargs: pytest.fail("fixed decode built qo_indptr"),
     )
     monkeypatch.setattr(
         qsa_ops, "qsa_prims_ts_combined_workspace_size", fake_workspace_size
@@ -1212,6 +1214,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         token_to_req,
         logical_positions,
         query_start_loc_cpu=query_start_loc_cpu,
+        has_prefill=False,
     )
 
     assert result is output
@@ -1230,6 +1233,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         token_to_req,
         logical_positions,
         query_start_loc_cpu=query_start_loc_cpu,
+        has_prefill=False,
     )
     assert second_result is output
     assert torch.all(output == 5)
@@ -1251,6 +1255,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         token_to_req,
         logical_positions,
         query_start_loc_cpu=query_start_loc_cpu,
+        has_prefill=False,
     )
     assert rebound_result is output
     assert torch.all(output == 5)
@@ -1285,7 +1290,8 @@ def test_qsa_prims_ts_keeps_nondivisible_grouped_query_flat(
     route_qo_indptr_cpu = torch.tensor([0, 4, 7], dtype=torch.int32)
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
-        qsa_prims_ts_group_size=group_size,
+        qsa_prims_ts_decode_group_size=group_size,
+        qsa_prims_ts_prefill_group_size=group_size,
         topk_indices_buffer=torch.zeros(
             rows,
             selection_width,
@@ -1397,6 +1403,34 @@ def test_qsa_prims_ts_keeps_nondivisible_grouped_query_flat(
     assert result is output
     assert result.shape == query.shape
     assert torch.all(result == 7)
+
+
+@pytest.mark.parametrize(
+    ("query_starts", "num_tokens", "group_size", "has_prefill", "expected"),
+    [
+        pytest.param([0, 4, 8], 8, 4, False, True, id="uniform-decode"),
+        pytest.param([0, 4, 8, 8], 12, 4, False, True, id="graph-padding"),
+        pytest.param([0, 4, 8], 8, 4, True, False, id="prefill"),
+        pytest.param([0, 4, 7], 7, 4, False, False, id="partial-request"),
+        pytest.param([0, 4, 8], 10, 4, False, False, id="partial-padding"),
+    ],
+)
+def test_qsa_prims_ts_fixed_decode_layout_proof(
+    query_starts: list[int],
+    num_tokens: int,
+    group_size: int,
+    has_prefill: bool,
+    expected: bool,
+) -> None:
+    assert (
+        qsa_ops.qsa_prims_ts_use_fixed_decode_layout(
+            torch.tensor(query_starts, dtype=torch.int32),
+            num_tokens,
+            group_size,
+            has_prefill=has_prefill,
+        )
+        is expected
+    )
 
 
 def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
@@ -1537,9 +1571,7 @@ def test_qsa_prims_ts_wrappers_forward_grouped_sq(
     value_cache = torch.zeros_like(key_cache)
     block_table = torch.zeros(groups, 64, dtype=torch.int32)
     block_indices = torch.zeros(groups * group_size, 512, dtype=torch.int32)
-    token_to_req = torch.arange(groups, dtype=torch.int32).repeat_interleave(
-        group_size
-    )
+    token_to_req = torch.arange(groups, dtype=torch.int32).repeat_interleave(group_size)
     logical_positions = torch.arange(groups * group_size, dtype=torch.int64)
     calls: dict[str, object] = {}
 

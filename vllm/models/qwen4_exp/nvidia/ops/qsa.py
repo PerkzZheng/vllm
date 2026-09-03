@@ -1430,9 +1430,7 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
         return None
     try:
         group_parameters = signature(get_prims_ts_qsa_group_size).parameters
-        workspace_parameters = signature(
-            get_prims_ts_qsa_workspace_size
-        ).parameters
+        workspace_parameters = signature(get_prims_ts_qsa_workspace_size).parameters
         prepare_parameters = signature(prepare_prims_ts_qsa_attention).parameters
     except (TypeError, ValueError):
         return None
@@ -1467,7 +1465,7 @@ def qsa_prims_ts_combined_workspace_size(
     qo_indptr: torch.Tensor | None = None,
     max_seq_len_q: int | None = None,
 ) -> int:
-    """Return byte workspace required for a packed causal Q1/Q2/Q4/Q5 launch."""
+    """Return bytes required for a fixed or packed causal QSA launch."""
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
@@ -1546,13 +1544,9 @@ def qsa_prims_ts_group_size(
         torch.bfloat16,
         torch.float8_e4m3fn,
     ):
-        raise ValueError(
-            "QSA fixed-group validation requires matching BF16 or FP8 Q/K"
-        )
+        raise ValueError("QSA fixed-group validation requires matching BF16 or FP8 Q/K")
     if q.shape[2] != k_cache.shape[3]:
-        raise ValueError(
-            "QSA fixed-group validation requires matching head dimensions"
-        )
+        raise ValueError("QSA fixed-group validation requires matching head dimensions")
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
@@ -1596,9 +1590,9 @@ def qsa_prims_ts_qo_indptr(
 ) -> torch.Tensor:
     """Return CPU packed-route offsets for a fixed maximum group size.
 
-    QSA always uses the packed-Q ABI. Keeping one representation for Q1 and
-    grouped Q avoids a divisibility-dependent reshape and makes request tails
-    explicit in every launch.
+    Prefill and irregular decode use this packed-Q representation so request
+    tails remain explicit. Uniform decode omits ``qo_indptr`` and uses the
+    fixed five-dimensional QSA layout instead.
     """
 
     if query_start_loc_cpu is None:
@@ -1609,6 +1603,49 @@ def qsa_prims_ts_qo_indptr(
         num_query_tokens,
         group_size,
     )
+
+
+def qsa_prims_ts_use_fixed_decode_layout(
+    query_start_loc_cpu: torch.Tensor | None,
+    num_query_tokens: int,
+    group_size: int,
+    *,
+    has_prefill: bool,
+) -> bool:
+    """Return whether flattened vLLM rows form fixed complete decode groups.
+
+    Fixed QSA storage is valid only for a pure decode call in which every live
+    request contributes exactly ``group_size`` adjacent rows. CUDA-graph
+    padding may add zero-length request entries and an inert token suffix, but
+    that suffix must also contain complete groups. Prefill and irregular
+    decode calls retain the packed-Q representation with explicit boundaries.
+    """
+
+    if has_prefill or query_start_loc_cpu is None:
+        return False
+    if group_size not in (1, 2, 4, 5):
+        return False
+    if num_query_tokens <= 0 or num_query_tokens % group_size:
+        return False
+    if (
+        query_start_loc_cpu.device.type != "cpu"
+        or query_start_loc_cpu.ndim != 1
+        or query_start_loc_cpu.numel() < 2
+        or query_start_loc_cpu.dtype not in (torch.int32, torch.int64)
+    ):
+        return False
+    query_starts = tuple(int(value) for value in query_start_loc_cpu.tolist())
+    if (
+        query_starts[0] != 0
+        or query_starts[-1] < 0
+        or query_starts[-1] > num_query_tokens
+        or (num_query_tokens - query_starts[-1]) % group_size
+    ):
+        return False
+    query_lengths = tuple(
+        end - begin for begin, end in zip(query_starts, query_starts[1:], strict=False)
+    )
+    return all(length in (0, group_size) for length in query_lengths)
 
 
 def qsa_prims_ts_metadata_workspace_size(
@@ -1739,7 +1776,7 @@ def qsa_prims_ts_run_prepared_attention(
 ) -> torch.Tensor:
     """Run a raw attention-only plan for component benchmarks."""
 
-    return getattr(plan, "run")(
+    return plan.run(
         q,
         out=out,
         bmm1_scale=bmm1_scale,
@@ -1796,7 +1833,7 @@ def qsa_prims_ts_run_prepared(
 ) -> torch.Tensor:
     """Launch an unchecked framework-owned metadata-plus-attention plan."""
 
-    return getattr(plan, "run")(
+    return plan.run(
         q,
         block_indices,
         block_table,
@@ -2215,6 +2252,7 @@ __all__ = [
     "qsa_prims_ts_prepare_paged_attention",
     "qsa_prims_ts_run_prepared",
     "qsa_prims_ts_run_prepared_attention",
+    "qsa_prims_ts_use_fixed_decode_layout",
     "qsa_prims_ts_workspace_size",
     "qsa_select_paged_tokens",
     "qsa_sparse_paged_attention",

@@ -38,6 +38,8 @@ Let:
 
 - `R` be the number of flattened query tokens in the current forward;
 - `G` be the selected query grouping, one of 1, 2, 4, or 5;
+- `B` be the fixed decode batch extent, including graph-padding requests;
+- `Nq` be the number of fixed query groups per request;
 - `L_i` be the flattened query length of request `i`;
 - `M = sum_i ceil(L_i / G)` (plus separately chunked graph-padding rows) be
   the number of attention routes;
@@ -50,14 +52,15 @@ The real inputs and caller-owned outputs are:
 
 | Value | Shape and dtype | Meaning |
 |---|---|---|
-| `query`, all group sizes | `[R, Hq, D]` | Packed flattened Q rows local to this TP rank; never reshaped |
-| `qo_indptr` | `[M + 1]`, Int32 | Packed route boundaries; each route contains one to `G` rows from one request |
+| packed `query` | `[R, Hq, D]` | Flattened prefill, mixed-batch, or irregular-decode rows |
+| fixed `query` | `[B, Nq, G, Hq, D]` | Complete uniform decode groups; vLLM currently uses `Nq=1` |
+| `qo_indptr` | `[M + 1]`, Int32, optional | Packed route boundaries; omitted for fixed Q |
 | `k_cache`, `v_cache` | `[P, Hkv, N, D]` | Logical HND K/V views; vLLM creates these without copying |
 | `block_indices` | `[R, K]`, Int32 | Logical IDs of selected four-token blocks |
 | `block_table` | `[B, max_storage_pages]`, Int32 | Per-request logical-to-physical storage-page table |
 | `token_to_request` | `[R]`, Int32 | Request ID for every flattened query |
 | `query_positions` | `[R]`, Int32 or Int64 | Absolute position of every query |
-| `out` | `[R, Hq, D]` | Caller-owned packed attention output |
+| `out` | Same shape as `query` | Caller-owned attention output |
 
 The caller does **not** allocate or pass `qsa_page_indptr`,
 `qsa_page_indices`, or `seq_lens` to the combined QSA API. They are internal
@@ -80,9 +83,9 @@ QSA indexer
   |  PrimTS: compact logical page-4 IDs [R, 512]
   |  Triton: expanded logical token IDs [R, 2051]
   v
-caller-provided fixed group -> validate G in {1, 2, 4, 5}
+phase policy -> prefill/mixed G=4, decode G=MTP+1
   v
-partition each request into packed routes of at most G rows
+prefill/mixed/irregular: packed routes; uniform decode: fixed [B,1,G,Hq,D]
   v
 workspace-size query -> persistent byte allocation
   v
@@ -174,14 +177,48 @@ plan.run(
 )
 ```
 
+Uniform MTP decode uses the same sizing and prepared-plan calls but changes
+only the Q/O layout and omits packed offsets:
+
+```python
+# flat_decode_q is vLLM's [B * G, Hq, D] contiguous token storage.
+group_size = mtp_num_speculative_tokens + 1
+decode_q = flat_decode_q.view(batch_size, 1, group_size, hq, head_dim)
+decode_out = flat_decode_out.view_as(decode_q)
+
+workspace_bytes = get_prims_ts_qsa_workspace_size(
+    decode_q,
+    k_cache,
+    block_table,
+    block_topk=block_indices.shape[1],
+    out_dtype=decode_out.dtype,
+)
+workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=decode_q.device)
+plan = prepare_prims_ts_qsa_attention(
+    decode_q,
+    (k_cache, v_cache),
+    block_indices,
+    block_table,
+    token_to_request,
+    query_positions,
+    workspace,
+    out=decode_out,
+)
+```
+
+Here `decode_q.data_ptr() == flat_decode_q.data_ptr()`; the view does not move
+or duplicate query data. The explicit `Nq` axis is retained for frameworks
+that may later expose more than one complete fixed group per request.
+
 The vLLM wrappers in
 `vllm/models/qwen4_exp/nvidia/ops/qsa.py` present the same operations as
 `qsa_prims_ts_group_size`, `qsa_prims_ts_combined_workspace_size`,
 `qsa_prims_ts_prepare_attention`, and `qsa_prims_ts_run_prepared`. Those names
 are vLLM-internal adapter functions, not an additional application API.
-vLLM caches the request-derived `qo_indptr` on CPU, copies it into stable CUDA
-storage once when preparing each layer plan, and retains that storage for eager
-runs or graph replay.
+vLLM caches the request-derived `qo_indptr` on CPU only for packed calls,
+copies it into stable CUDA storage once when preparing each layer plan, and
+retains that storage for eager runs or graph replay. Uniform decode does not
+build, copy, or read Q-offset metadata.
 
 ## Workspace ownership and sizing
 
@@ -322,22 +359,30 @@ request boundaries, so a request tail becomes a shorter final route instead of
 being joined to the next request. The GPU packer also checks this contract; an
 invalid route is made inert.
 
-## Caller-owned fixed grouping for prefill and decode
+## Phase-owned grouping and query layout
 
-**Current.** The framework supplies one fixed QSA group size for each prepared
-semantic geometry. FlashInfer does not choose Q1/Q2/Q4/Q5 from the batch size,
-SM count, or a performance threshold. Every case uses the same packed query
-ABI: Q and output remain `[R, Hq, D]`, `qo_indptr` partitions them into routes,
-and `max_seq_len_q=G` communicates the fixed maximum group size. This includes
-Q1, whose `qo_indptr` contains one row per route.
+**Current.** vLLM supplies one group size and one layout for each prepared
+semantic geometry. FlashInfer does not choose Q1/Q2/Q4/Q5 from batch size, SM
+count, or a performance threshold. Prefill and any mixed batch use packed
+`[R,Hq,D]` storage with `G=4`; request boundaries split the rows into routes
+of at most four tokens, including partial final groups. Uniform decode uses
+fixed `[B,1,G,Hq,D]` storage with `G=MTP+1` and omits `qo_indptr`. The fixed
+five-dimensional ABI preserves separate batch and query-group axes; FlashInfer
+flattens only `[B,Nq]` into its internal route axis through a zero-copy view.
+
+Before using fixed decode, vLLM proves that every live request contributes
+exactly `G` adjacent rows. Zero-length graph-padding requests are accepted,
+and an inert token suffix must also be divisible by `G`. If the proof fails,
+the call retains packed storage. Adaptive verification without authoritative
+CPU boundaries uses request-independent fixed Q1.
 
 `get_prims_ts_qsa_group_size(...)` is now a boundary/capacity validator, not a
 selector. Its `group_size=` argument is mandatory. It returns that exact group
 when two correctness gates pass:
 
-1. CPU request boundaries must be present, valid, nondecreasing, and cover no
-   more than the padded query extent. Missing or unsafe grouped boundaries are
-   rejected.
+1. Packed grouped calls require valid, nondecreasing CPU request boundaries
+   covering no more than the padded query extent. Fixed decode omits these
+   offsets after vLLM has proved its uniform layout.
 2. `G * (Hq / Hkv) <= 64`, so the complete token/head group fits TileQ64.
 The low byte can represent up to eight query members, but only Q1/Q2/Q4/Q5 are
 currently qualified. Unsafe request boundaries or TileQ64 overflow raise an
@@ -348,15 +393,14 @@ total flattened extent need not be divisible by `G`.
 
 Consequences by phase:
 
-- ordinary decode supplies Q1;
-- MTP3 supplies Q4 and MTP4 supplies Q5, independent of batch occupancy;
-- prefill supplies its configured fixed chunk size; and
-- geometry without authoritative aligned boundaries must explicitly supply Q1.
+- ordinary decode supplies fixed Q1 as `[B,1,1,Hq,D]`;
+- MTP3 supplies fixed Q4 and MTP4 supplies fixed Q5, independent of occupancy;
+- prefill and mixed batches supply packed Q4; and
+- geometry without authoritative CPU boundaries supplies fixed Q1.
 
-In the vLLM integration, `qsa_query_group_size` is the explicit model-config
-override. When it is absent, the user-selected uniform MTP query width is used
-when that width is one of Q1/Q2/Q4/Q5; unsupported widths are rejected rather
-than silently substituting Q1.
+The decode width comes from `VllmConfig.uniform_decode_query_len`, which is
+`MTP+1`. The current compiled set is Q1/Q2/Q4/Q5. Until Q3 is implemented,
+MTP2 safely falls back to Q1 instead of padding or changing visibility.
 
 ## Split-KV behavior
 
@@ -419,7 +463,7 @@ Framework authors should treat the following as part of the current contract:
 - semantic QSA page size fixed at four; physical storage page size must be a
   positive multiple of four;
 - Q grouping limited to 1, 2, 4, or 5; every packed route is nonempty and no
-  longer than `G`;
+  longer than `G`, and fixed Q/O are contiguous `[B,Nq,G,Hq,D]` tensors;
 - head dimension supported by the underlying path: 64, 128, or 256;
 - valid grouped-query head geometry (`Hq` divisible by `Hkv`, with
   `1 <= Hq/Hkv <= 32`);
@@ -447,7 +491,7 @@ not supported by this QSA owner.
 - the combined plan is allocation-free and host-readback-free on its run path.
 
 The simplified workspace-owned-metadata interface was qualified on SM103 with
-CUTLASS DSL 4.7.1 by all 41 tests in
+CUTLASS DSL 4.7.1 by all 47 tests in
 `tests/attention/test_attention_ts_qsa_metadata.py`, the standalone
 CUDA-graph example in `examples/prims_ts/qsa_page4_attention.py`, and an FP8
 TP2/MTP3 vLLM smoke run with four 4K-context concurrent requests (8/8 measured
@@ -464,7 +508,7 @@ requests completed). The smoke artifact is
 - expose any useful policy/workspace diagnostics without making frameworks
   depend on private layout objects.
 
-From a framework user's perspective, the intended surface is small: choose a
-request-safe grouping, query and allocate one byte workspace, prepare once per
-semantic geometry, and run repeatedly. Prefill, normal decode, and MTP use that
-same interface.
+From a framework user's perspective, the intended surface is small: select a
+fixed or packed layout from phase metadata, query and allocate one byte
+workspace, prepare once per semantic geometry, and run repeatedly. Prefill,
+normal decode, and MTP use that same interface.

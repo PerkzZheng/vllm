@@ -208,12 +208,16 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         block_table: torch.Tensor,
         block_topk: int,
         out_dtype: torch.dtype,
-        qo_indptr_cpu: torch.Tensor,
+        qo_indptr_cpu: torch.Tensor | None,
         group_size: int,
     ) -> torch.Tensor:
         from .ops.qsa import qsa_prims_ts_combined_workspace_size
 
-        num_query_groups = qo_indptr_cpu.numel() - 1
+        num_query_groups = (
+            qo_indptr_cpu.numel() - 1
+            if qo_indptr_cpu is not None
+            else query.shape[0] * query.shape[1]
+        )
         workspace_key = (
             query.device,
             query.shape[0],
@@ -239,7 +243,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 block_topk,
                 out_dtype=out_dtype,
                 qo_indptr=qo_indptr_cpu,
-                max_seq_len_q=group_size,
+                max_seq_len_q=group_size if qo_indptr_cpu is not None else None,
             )
             # CUDA graphs replay without re-entering this Python owner. Give
             # every semantic graph key and KV-cache generation its own
@@ -272,14 +276,18 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         out: torch.Tensor,
         bmm1_scale: float,
         bmm2_scale: float,
-        qo_indptr_cpu: torch.Tensor,
+        qo_indptr_cpu: torch.Tensor | None,
         group_size: int,
     ) -> object:
         """Return a validated plan for one graph-stable QSA semantic key."""
 
         from .ops.qsa import qsa_prims_ts_prepare_attention
 
-        qo_topology = (qo_indptr_cpu.data_ptr(), qo_indptr_cpu.numel())
+        qo_topology = (
+            None
+            if qo_indptr_cpu is None
+            else (qo_indptr_cpu.data_ptr(), qo_indptr_cpu.numel())
+        )
         plan_key = (
             query.device,
             tuple(query.shape),
@@ -308,7 +316,11 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             layer._qsa_prims_ts_plan_pool = plan_pool
         plan = plan_pool.get(plan_key)
         if plan is None:
-            qo_indptr = qo_indptr_cpu.to(query.device, non_blocking=True)
+            qo_indptr = (
+                None
+                if qo_indptr_cpu is None
+                else qo_indptr_cpu.to(query.device, non_blocking=True)
+            )
             plan = qsa_prims_ts_prepare_attention(
                 query,
                 key_cache,
@@ -322,7 +334,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 bmm1_scale=bmm1_scale,
                 bmm2_scale=bmm2_scale,
                 qo_indptr=qo_indptr,
-                max_seq_len_q=group_size,
+                max_seq_len_q=group_size if qo_indptr is not None else None,
             )
             plan_pool[plan_key] = plan
         return plan
@@ -339,6 +351,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         token_to_req: torch.Tensor,
         logical_positions: torch.Tensor,
         query_start_loc_cpu: torch.Tensor | None = None,
+        has_prefill: bool = True,
         output_scale: torch.Tensor | None = None,
         output_block_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -396,6 +409,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 qsa_prims_ts_group_size,
                 qsa_prims_ts_qo_indptr,
                 qsa_prims_ts_run_prepared,
+                qsa_prims_ts_use_fixed_decode_layout,
             )
 
             if not indices_are_blocks:
@@ -417,20 +431,46 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             # route exactly the live rows. Full CUDA graphs already capture a
             # fixed token extent and do not need a second staging policy here.
             prims_output = output[:num_tokens]
-            configured_group_size = getattr(layer, "qsa_prims_ts_group_size", None)
-            if configured_group_size is None:
-                raise RuntimeError("QSA owner must provide a fixed query group size")
+            configured_group_size = (
+                layer.qsa_prims_ts_prefill_group_size
+                if has_prefill
+                else layer.qsa_prims_ts_decode_group_size
+            )
+            if query_start_loc_cpu is None:
+                # Adaptive verification has device-only request boundaries.
+                # Q1 is request-independent and remains safe in that mode.
+                configured_group_size = 1
             group_size = qsa_prims_ts_group_size(
                 query_for_attention,
                 prims_key_cache,
                 query_start_loc_cpu,
                 group_size=int(configured_group_size),
             )
-            route_qo_indptr_cpu = qsa_prims_ts_qo_indptr(
+            use_fixed_decode = qsa_prims_ts_use_fixed_decode_layout(
                 query_start_loc_cpu,
                 num_tokens,
                 group_size,
+                has_prefill=has_prefill,
             )
+            route_qo_indptr_cpu = None
+            if use_fixed_decode or query_start_loc_cpu is None:
+                num_query_groups = num_tokens // group_size
+                route_query = query_for_attention.view(
+                    num_query_groups,
+                    1,
+                    group_size,
+                    query_for_attention.shape[1],
+                    query_for_attention.shape[2],
+                )
+                route_output = prims_output.view_as(route_query)
+            else:
+                route_qo_indptr_cpu = qsa_prims_ts_qo_indptr(
+                    query_start_loc_cpu,
+                    num_tokens,
+                    group_size,
+                )
+                route_query = query_for_attention
+                route_output = prims_output
             _qsa_nvtx_pop()
 
             _qsa_nvtx_push("qsa_prims_plan_lookup")
@@ -443,21 +483,10 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             # model-length upper bound.
             active_storage_pages = min(
                 attn_metadata.block_table.shape[1],
-                (
-                    attn_metadata.max_seq_len
-                    + prims_key_cache.shape[2]
-                    - 1
-                )
+                (attn_metadata.max_seq_len + prims_key_cache.shape[2] - 1)
                 // prims_key_cache.shape[2],
             )
-            metadata_block_table = attn_metadata.block_table[
-                :, :active_storage_pages
-            ]
-            # Keep vLLM's native flattened token-major layout for every group
-            # size. qo_indptr partitions it into request-safe routes, including
-            # partial final groups, without reshaping or copying Q/O.
-            route_query = query_for_attention
-            route_output = prims_output
+            metadata_block_table = attn_metadata.block_table[:, :active_storage_pages]
             workspace = self._get_qsa_prims_ts_workspace(
                 layer,
                 route_query,
@@ -691,17 +720,13 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         )
         max_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         self.qsa_indices_are_blocks = self.impl.use_qsa_prims_ts
-        configured_group_size = getattr(config, "qsa_query_group_size", None)
-        if configured_group_size is None:
-            # The user-selected MTP width is a fixed semantic Q group, not a
-            # performance heuristic.
-            configured_group_size = vllm_config.uniform_decode_query_len
-        if configured_group_size not in (1, 2, 4, 5):
-            raise ValueError(
-                "fixed QSA query group must be one of 1, 2, 4, or 5; got "
-                f"{configured_group_size}"
-            )
-        self.qsa_prims_ts_group_size = int(configured_group_size)
+        decode_group_size = vllm_config.uniform_decode_query_len
+        # TODO: add a Q3 kernel configuration instead of falling back to Q1
+        # when a framework configures MTP=2.
+        if decode_group_size not in (1, 2, 4, 5):
+            decode_group_size = 1
+        self.qsa_prims_ts_decode_group_size = int(decode_group_size)
+        self.qsa_prims_ts_prefill_group_size = 4
         selection_width = (
             self.indexer.block_topk
             if self.qsa_indices_are_blocks
@@ -815,6 +840,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             token_to_req=side_metadata.token_to_req,
             logical_positions=side_metadata.logical_positions,
             query_start_loc_cpu=side_metadata.query_start_loc_cpu,
+            has_prefill=side_metadata.has_prefill,
         )
 
     def forward(
