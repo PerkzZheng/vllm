@@ -33,6 +33,11 @@ def _load_results(root: Path) -> dict[str, dict[str, dict[str, Any]]]:
         # of the qualified accuracy matrix.
         if result.get("api_mode") != "chat":
             continue
+        # Explicit item subsets are smoke/replay diagnostics even when they
+        # use the full generation cap and inherit a production run label.
+        # Qualified task runs consume the complete dataset (`indices=null`).
+        if result.get("indices") is not None:
+            continue
         run_name = str(result["run_name"])
         if "smoke" in run_name:
             continue
