@@ -1716,11 +1716,14 @@ Work proceeds in this order:
    32K, and 64K where the matched physical KV capacity permits; keep prefill
    and decode timings separate and preserve independent contexts. The current
    5.34M-token PrimTS capacity fits BS64 through 64K and BS512 at 8K.
-4. The compact metadata builders and prepared metadata-plus-attention plan are
-   now exposed through FlashInfer. Finish public API naming/review and add a
-   standalone framework-neutral example. Preserve Q1/Q2/Q4, variable query
-   lengths, causal tails, caller-owned output/workspace buffers, no host
+4. Completed in FlashInfer `a30a38b9` and vLLM `40c0cf4ce`: the compact
+   metadata builders and prepared metadata-plus-attention plan are exposed
+   through one caller-owned byte workspace. The API preserves Q1/Q2/Q4,
+   variable query lengths, causal tails, caller-owned output, no host
    synchronization or replay-time allocation, and stable CUDA-graph capacity.
+   `examples/prims_ts/qsa_page4_attention.py` is the framework-neutral
+   capture/replay example; the vLLM call site passes only semantic inputs and
+   the unified workspace.
 5. Completed on job 642187: integrate Q5 into the framework MTP4 path and
    measure model-level decode at BS16/32. The automatic policy selects Q5 only
    for safe five-token boundaries whose TileQ64 source-row estimate reaches
