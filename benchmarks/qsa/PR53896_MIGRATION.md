@@ -1692,6 +1692,52 @@ liveness failure. FlashInfer restores the proven scheduler-shared single
 issuer. Correcting the multi-issuer task schedule and qualifying it with
 sustained multi-rank, variable-shape traffic remains a TODO.
 
+### Restored-route FP8/MTP3 accuracy qualification
+
+The restored scheduler-shared single issuer passes the complete TP4
+FP8-E4M3/MTP=3 accuracy gate. The run uses vLLM `5a38ea40d`, FlashInfer
+`db4cb591`, model snapshot `de4b8e4`, and the prescribed sampling policy:
+temperature 0.6, top-p 0.95, top-k 20, seed 42,
+`reasoning_effort=xhigh`, `n=1`, no streaming, and a 131,072-token output cap.
+
+| benchmark | PR53896 Triton FP8/MTP3 | post-Q5 PrimTS | restored one-issuer PrimTS |
+|---|---:|---:|---:|
+| GSM8K | 1290/1319 (97.80%) | 1291/1319 (97.88%) | 1293/1319 (98.03%) |
+| GPQA-diamond, 2 reps | 363/396 (91.67%) | 362/396 (91.41%) | 364/396 (91.92%) |
+| AIME26, 2 reps | 60/60 (100.00%) | 60/60 (100.00%) | 60/60 (100.00%) |
+
+All 1,319 GSM8K requests complete with unique IDs and no errors, invalid
+predictions, or truncations. GPQA repetitions are 182/198 and 182/198; the
+first has one invalid response at the output cap and the second has none.
+Both AIME repetitions are 30/30 without errors, invalid predictions, or
+truncations. The small score differences from Triton and the prior PrimTS run
+are consistent with sampled trajectory variation and show no accuracy drop
+after the safety rollback.
+
+The measured token distributions are:
+
+| task | samples | input tokens min/p50/p90/max/mean | output tokens min/p50/p90/max/mean |
+|---|---:|---:|---:|
+| GSM8K | 1,319 | 751/785/820/916/789 | 131/358/754/19,933/519 |
+| GPQA-diamond | 396 | 132/273/430/2,835/307 | 146/5,254/44,107/131,072/13,798 |
+| AIME26 | 60 | 125/209/268/453/215 | 1,114/10,099/36,323/87,782/17,212 |
+
+GSM8K needed an OOM-safe replay because two high-concurrency attempts left
+only 108--224 MiB free when the sampler requested a transient 238--240 MiB
+buffer. The first attempt used 0.95 memory utilization and prefix caching; the
+second used 0.90 without prefix caching and completed 711 requests before the
+same sampling-path OOM. The final result combines those 711 completed records
+with an exact-ID rerun of the 608 failures at 0.85 utilization,
+`max_num_seqs=32`, and no prefix caching. The resulting union has exactly
+1,319 unique IDs. This is a serving-capacity issue rather than a QSA workspace
+or arithmetic fault; neither partial OOM artifact is a valid standalone
+accuracy result.
+
+Auditable artifacts are under
+`qsa_accuracy/pr53896/post-rollback-fp8-mtp3-tp4-job644750-lowmem`,
+`qsa_accuracy/pr53896/post-rollback-fp8-mtp3-tp4-job644750-retry32`, and
+`qsa_accuracy/pr53896/post-rollback-fp8-mtp3-tp4-job645045`.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
