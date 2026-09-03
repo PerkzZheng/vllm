@@ -17,10 +17,9 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import ModuleType
-
 
 _IMAGE_VLLM = Path("/usr/local/lib/python3.12/dist-packages/vllm")
 _IMAGE_SITE_PACKAGES = _IMAGE_VLLM.parent
@@ -143,6 +142,7 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
     for name in (
         "get_prims_ts_batch_decode_workspace_size",
         "get_prims_ts_qsa_group_size",
+        "make_prims_ts_qsa_qo_indptr",
         "prepare_prims_ts_batch_decode_with_kv_cache",
         "prims_ts_batch_decode_with_kv_cache",
     ):
