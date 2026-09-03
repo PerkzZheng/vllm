@@ -403,11 +403,14 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             # route exactly the live rows. Full CUDA graphs already capture a
             # fixed token extent and do not need a second staging policy here.
             prims_output = output[:num_tokens]
+            configured_group_size = getattr(layer, "qsa_prims_ts_group_size", None)
+            if configured_group_size is None:
+                raise RuntimeError("QSA owner must provide a fixed query group size")
             group_size = qsa_prims_ts_group_size(
                 query_for_attention,
                 prims_key_cache,
                 query_start_loc_cpu,
-                group_size=int(getattr(layer, "qsa_prims_ts_group_size", 1)),
+                group_size=int(configured_group_size),
             )
             route_rows = num_tokens // group_size
             _qsa_nvtx_pop()
@@ -675,13 +678,11 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         configured_group_size = getattr(config, "qsa_query_group_size", None)
         if configured_group_size is None:
             # The user-selected MTP width is a fixed semantic Q group, not a
-            # performance heuristic. Unsupported widths stay on Q1.
+            # performance heuristic.
             configured_group_size = vllm_config.uniform_decode_query_len
-            if configured_group_size not in (1, 2, 4, 5):
-                configured_group_size = 1
-        elif configured_group_size not in (1, 2, 4, 5):
+        if configured_group_size not in (1, 2, 4, 5):
             raise ValueError(
-                "qsa_query_group_size must be one of 1, 2, 4, or 5; got "
+                "fixed QSA query group must be one of 1, 2, 4, or 5; got "
                 f"{configured_group_size}"
             )
         self.qsa_prims_ts_group_size = int(configured_group_size)

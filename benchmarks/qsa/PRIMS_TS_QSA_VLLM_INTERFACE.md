@@ -350,17 +350,19 @@ Consequences by phase:
 
 In the vLLM integration, `qsa_query_group_size` is the explicit model-config
 override. When it is absent, the user-selected uniform MTP query width is used
-when that width is one of Q1/Q2/Q4/Q5; unsupported widths use Q1.
+when that width is one of Q1/Q2/Q4/Q5; unsupported widths are rejected rather
+than silently substituting Q1.
 
 ## Split-KV behavior
 
 **Current.** After the caller's fixed group is known, split-KV is selected by
 the prepared attention policy from the grouped logical grid. It does not feed
-back into group selection. For the qualified ratio-12 BF16 Q4 route, the
-bounded wave rule chooses S8 for a 16-union grid and S4 for a 32-union grid.
-Split routes receive a dedicated attention-scratch region containing partial
-output, softmax statistics, and a completion counter. The bitmap and split-KV
-regions never alias.
+back into group selection. Encoded page-4 grouped routes fill at most one CTA
+service wave subject to useful KV work and an eight-split cap. At ratio 12,
+the bounded wave rule chooses S8 for a 16-union grid and S4 for a 32-union
+grid, independently for fixed Q2, Q4, or Q5. Split routes receive a dedicated
+attention-scratch region containing partial output, softmax statistics, and a
+completion counter. The bitmap and split-KV regions never alias.
 
 The fused split reducer uses a wrapping completion counter. Preparation zeros
 it once; the final arriving CTA restores it to zero for the next eager call or

@@ -360,8 +360,8 @@ choice against CPU request boundaries and head geometry; it does not infer a
 different group from the batch size or SM count. vLLM exposes
 `qsa_query_group_size` as an explicit model-config override and otherwise uses
 the user-selected uniform MTP query width when it is a supported Q1/Q2/Q4/Q5
-width. Invalid grouped boundaries or TileQ64 overflow are rejected rather than
-silently changing the requested group.
+width. Unsupported widths, invalid grouped boundaries, and TileQ64 overflow
+are rejected rather than silently changing the requested group.
 
 The group must also fit as complete query-head rows in TileQ64:
 `group_size * (Hq / Hkv) <= 64`. This capacity check and the supported grouping
@@ -381,8 +381,9 @@ forced Q4's 1.135x and 1.313x. Its roughly 12.8-microsecond metadata build is
 the remaining reason end-to-end exceeds 1.20x. The caller may choose Q2 for
 that shape; FlashInfer will not override the fixed group. Split-KV remains
 automatic after grouping and is quantized from the post-group CTA grid toward
-a service wave. For the qualified TP2 ratio-12 BF16 Q4 cases, this selects S8
-at BS16 and S4 at BS32. At batch 256 forced Q4 meets the target for every TP;
+a service wave, bounded by useful KV work and an eight-split cap. For TP2
+ratio-12 Q2/Q4/Q5, this selects S8 at BS16 and S4 at BS32. At batch 256 forced
+Q4 meets the target for every TP;
 at batch 64 its attention kernel meets the target for every TP, while
 end-to-end still misses at TP1/TP4/TP8.
 

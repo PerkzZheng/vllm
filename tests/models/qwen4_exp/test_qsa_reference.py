@@ -1078,6 +1078,7 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     logical_positions = torch.tensor([2, 3, 4], dtype=torch.int64)
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
+        qsa_prims_ts_group_size=1,
         topk_indices_buffer=torch.full(
             (route_capacity, selection_width), -1, dtype=torch.int32
         ),
