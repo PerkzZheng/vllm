@@ -1759,11 +1759,15 @@ reduces BS32 latency by 42.1%. The selected results are also no worse than
 1.12x the raw contiguous grouped-SWA timings and comfortably beat the
 non-shared-ratio projected SWA reference.
 
-This is not yet a framework policy change. BS32/S4 has a 1.95e-3 maximum
-absolute difference from the flattened reference. BS32/S3 retains the
-0.98e-3 direct/Triton error level and confirms at 34.92 us, only 1.5% slower
-than S4. Qualify S3 and S4 with sustained BF16/MTP3 model accuracy and
-liveness before enabling split-KV automatically. The complete split curve
+With Q4 fixed by the caller, FlashInfer independently quantizes split-KV from
+the resulting ratio-12 union grid: TP2 BS16 selects S8 and BS32 selects S4. A
+production-selector run without the benchmark override reproduces both
+choices and their expected 0.98e-3/1.95e-3 errors. Metadata is effectively
+independent of the selected split: the 300-sample confirmations measure
+10.19 us at BS16 and 10.32 us at BS32; a shorter cross-node revalidation
+measures 12.08 and 11.54 us. BS32/S3 retains the 0.98e-3 direct/Triton error
+level and confirms at 34.92 us, only 1.5% slower than S4, so retain it as the
+fallback if sustained BF16/MTP3 accuracy rejects S4. The complete split curve
 and confirmation logs are under `qsa_bench/forced_q4_split_job646409/`.
 
 ## Remaining performance and integration signoff
@@ -1802,8 +1806,8 @@ Work proceeds in this order:
    capture/replay example; the vLLM call site passes only semantic inputs and
    the unified workspace.
 5. Completed on job 642187: integrate Q5 into the framework MTP4 path and
-   measure model-level decode at BS16/32. The automatic policy selects Q5 only
-   for safe five-token boundaries whose TileQ64 source-row estimate reaches
-   four SM waves. It retains Q1 at BS16 and selects Q5 at BS32. The model-level
-   result is tied at BS16 and 1.7--2.0% behind Triton at BS32, so any claim of
-   an end-to-end Q5 speedup remains deferred pending all-layer profiling.
+   measure model-level decode at BS16/32. The historical automatic policy kept
+   Q1 at BS16 and selected Q5 at BS32; the current interface instead obeys the
+   caller's fixed Q group at both batch sizes. The measured result was tied at
+   BS16 and 1.7--2.0% behind Triton at BS32, so rebenchmark fixed Q5 with
+   wave-quantized split-KV before making an end-to-end speedup claim.

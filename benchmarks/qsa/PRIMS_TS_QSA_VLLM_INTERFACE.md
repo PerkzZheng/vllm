@@ -79,7 +79,7 @@ QSA indexer
   |  PrimTS: compact logical page-4 IDs [R, 512]
   |  Triton: expanded logical token IDs [R, 2051]
   v
-FlashInfer grouping policy -> G in {1, 2, 4, 5}
+caller-provided fixed group -> validate G in {1, 2, 4, 5}
   v
 reshape Q/O to [M,G,Hq,D] when G > 1
   v
@@ -116,12 +116,14 @@ from flashinfer.decode import (
 # query_positions:      [R] int32/int64
 # query_start_loc_cpu:  CPU cumulative request boundaries, [num_requests + 1]
 
+# Fixed caller choice. It is not inferred from batch size or SM occupancy.
+requested_group_size = 4
 group_size = get_prims_ts_qsa_group_size(
     query_start_loc_cpu,
     block_indices.shape[0],
     q.shape[1],
     k_cache.shape[1],
-    device=q.device,
+    group_size=requested_group_size,
 )
 num_groups = block_indices.shape[0] // group_size
 
@@ -307,22 +309,24 @@ query, including early positions with fewer than 2051 visible compact tokens.
 
 The grouped value contract is important: every group must contain consecutive
 query positions from one request. The GPU packer checks this without a host
-readback. An invalid group is made inert; the framework grouping policy is
-responsible for preventing such groups in normal execution.
+readback. An invalid group is made inert; the framework's fixed-group
+validation is responsible for preventing such groups in normal execution.
 
-## One grouping policy for prefill and decode
+## Caller-owned fixed grouping for prefill and decode
 
-**Current.** vLLM flattens all Q tokens first, then calls FlashInfer's exported
-`get_prims_ts_qsa_group_size(...)`. There is no separate prefill/decode API.
-The query tensor rank communicates the chosen grouping to workspace sizing and
-preparation:
+**Current.** The framework supplies one fixed QSA group size for each prepared
+semantic geometry. FlashInfer does not choose Q1/Q2/Q4/Q5 from the batch size,
+SM count, or a performance threshold. The query tensor rank communicates that
+caller choice to workspace sizing and preparation:
 
 - `[M, Hq, D]` means Q1;
 - `[M, 2, Hq, D]` means Q2;
 - `[M, 4, Hq, D]` means Q4; and
 - `[M, 5, Hq, D]` means Q5.
 
-The current policy has four gates:
+`get_prims_ts_qsa_group_size(...)` is now a boundary/capacity validator, not a
+selector. Its `group_size=` argument is mandatory. It returns that exact group
+when three correctness gates pass:
 
 1. CPU request boundaries must be present, valid, nondecreasing, and cover no
    more than the padded query extent. Missing or unsafe boundaries return Q1.
@@ -330,44 +334,32 @@ The current policy has four gates:
    extent must be divisible by `G`; no group may cross requests or the
    real/padding boundary.
 3. `G * (Hq / Hkv) <= 64`, so the complete token/head group fits TileQ64.
-4. The estimated work after grouping retains one SM wave. For candidate `G`,
-   the implemented test is
-   `R * Hkv * 4 >= G * num_sms`, where four is an assumed maximum split-KV
-   opportunity for this grouping heuristic.
-
-The policy tries Q5, Q4, then Q2. The low byte can represent up to eight query
-members, but only Q1/Q2/Q4/Q5 are currently qualified. The head-capacity gate
-naturally permits more token grouping when `Hq/Hkv` is smaller at a TP layout.
-The attention policy then reuses the dense PrimTS grouped-Q candidate geometry
-and selects the smallest canonical tile that holds the complete group; it does
-not always pad to TileQ64.
+The low byte can represent up to eight query members, but only Q1/Q2/Q4/Q5 are
+currently qualified. Unsafe request boundaries or TileQ64 overflow return Q1;
+they never trigger a different grouped size. The attention policy reuses the
+dense PrimTS grouped-Q candidate geometry and selects the smallest canonical
+tile that holds the caller's complete group.
 
 Consequences by phase:
 
-- ordinary decode has one Q row per request, so request safety keeps it Q1 even
-  at large batch size;
-- MTP with three draft tokens may group the target plus three draft rows as Q4
-  when alignment, head capacity, and occupancy permit;
-- MTP with four draft tokens may use Q5 when all five rows are request-safe;
-- prefill commonly has enough adjacent rows for Q4, but variable request
-  lengths can select Q2 or Q1; and
-- adaptive metadata that lacks authoritative CPU boundaries conservatively
-  stays Q1.
+- ordinary decode supplies Q1;
+- MTP3 supplies Q4 and MTP4 supplies Q5, independent of batch occupancy;
+- prefill supplies its configured fixed chunk size; and
+- geometry without authoritative aligned boundaries uses Q1.
 
-**TODO.** The current policy is topology and wave based. FlashInfer has a code
-TODO to reuse the dense PrimTS candidate cost model after calibrating the
-extra costs of scattered page-4 loads and bitmap/union metadata. Supporting
-Q8/Q16 would also require a wider membership representation; it is not merely
-a policy change.
+In the vLLM integration, `qsa_query_group_size` is the explicit model-config
+override. When it is absent, the user-selected uniform MTP query width is used
+when that width is one of Q1/Q2/Q4/Q5; unsupported widths use Q1.
 
 ## Split-KV behavior
 
-**Current.** Split-KV is selected by the prepared attention policy, not by the
-metadata builder. Large prefill routes commonly resolve to direct attention
-and therefore allocate no real split-KV partials or counters. Small decode
-grids may resolve to split-KV and receive a dedicated attention-scratch region
-containing partial output, softmax statistics, and a completion counter. The
-bitmap and split-KV regions never alias.
+**Current.** After the caller's fixed group is known, split-KV is selected by
+the prepared attention policy from the grouped logical grid. It does not feed
+back into group selection. For the qualified ratio-12 BF16 Q4 route, the
+bounded wave rule chooses S8 for a 16-union grid and S4 for a 32-union grid.
+Split routes receive a dedicated attention-scratch region containing partial
+output, softmax statistics, and a completion counter. The bitmap and split-KV
+regions never alias.
 
 The fused split reducer uses a wrapping completion counter. Preparation zeros
 it once; the final arriving CTA restores it to zero for the next eager call or
@@ -437,7 +429,7 @@ not supported by this QSA owner.
 
 **Current in this local FlashInfer branch:**
 
-- grouping policy is exposed as `get_prims_ts_qsa_group_size`;
+- fixed-group validation is exposed as `get_prims_ts_qsa_group_size`;
 - metadata output shapes and metadata-only sizing/build helpers are exported;
 - one combined workspace-size query owns all metadata outputs plus disjoint
   metadata/attention scratch;

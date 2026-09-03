@@ -1118,8 +1118,6 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         actual_block_table: torch.Tensor,
         actual_token_to_req: torch.Tensor,
         actual_positions: torch.Tensor,
-        _paged_kv_indptr: torch.Tensor,
-        _seq_lens: torch.Tensor,
         workspace: torch.Tensor,
         actual_output: torch.Tensor,
         *,
@@ -1139,9 +1137,9 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         )
         assert block_indices.shape == (rows, selection_width)
         assert actual_block_table.shape == (2, 3)
-        assert actual_token_to_req is token_to_req
-        assert actual_positions is logical_positions
-        assert actual_output is output
+        torch.testing.assert_close(actual_token_to_req, token_to_req)
+        torch.testing.assert_close(actual_positions, logical_positions)
+        torch.testing.assert_close(actual_output, output)
         assert bmm1_scale == head_dim**-0.5
         assert bmm2_scale == 1.0
         assert workspace.shape == (128,)
@@ -1163,12 +1161,16 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
         torch.testing.assert_close(actual_query, query)
         assert block_indices.shape == (rows, selection_width)
         assert actual_block_table.shape == (2, 3)
-        assert actual_token_to_req is token_to_req
-        assert actual_positions is logical_positions
+        torch.testing.assert_close(actual_token_to_req, token_to_req)
+        torch.testing.assert_close(actual_positions, logical_positions)
         actual_output.fill_(5)
         return actual_output
 
-    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_group_size", lambda *_args: 1)
+    monkeypatch.setattr(
+        qsa_ops,
+        "qsa_prims_ts_group_size",
+        lambda *_args, **_kwargs: 1,
+    )
     monkeypatch.setattr(
         qsa_ops, "qsa_prims_ts_combined_workspace_size", fake_workspace_size
     )

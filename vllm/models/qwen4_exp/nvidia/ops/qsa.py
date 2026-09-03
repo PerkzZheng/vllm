@@ -1427,12 +1427,16 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
     except (AttributeError, ImportError):
         return None
     try:
+        group_parameters = signature(get_prims_ts_qsa_group_size).parameters
         workspace_parameters = signature(
             get_prims_ts_qsa_workspace_size
         ).parameters
     except (TypeError, ValueError):
         return None
-    if "block_topk" not in workspace_parameters:
+    if (
+        "group_size" not in group_parameters
+        or "block_topk" not in workspace_parameters
+    ):
         return None
     return (
         get_prims_ts_qsa_group_size,
@@ -1515,20 +1519,30 @@ def qsa_prims_ts_group_size(
     q: torch.Tensor,
     k_cache: torch.Tensor,
     query_start_loc_cpu: torch.Tensor | None,
+    *,
+    group_size: int,
 ) -> int:
-    """Ask FlashInfer how many adjacent Q rows each metadata route should own."""
+    """Validate the framework-selected fixed QSA query group size."""
 
     if q.ndim != 3 or k_cache.ndim != 4:
-        raise ValueError("QSA grouping policy expects Q [R,Hq,D] and K [P,Hkv,N,D]")
+        raise ValueError(
+            "QSA fixed-group validation expects Q [R,Hq,D] and K [P,Hkv,N,D]"
+        )
     if not q.is_cuda or q.device != k_cache.device:
-        raise ValueError("QSA grouping policy expects Q and K on one CUDA device")
+        raise ValueError(
+            "QSA fixed-group validation expects Q and K on one CUDA device"
+        )
     if q.dtype != k_cache.dtype or q.dtype not in (
         torch.bfloat16,
         torch.float8_e4m3fn,
     ):
-        raise ValueError("QSA grouping policy requires matching BF16 or FP8 Q/K")
+        raise ValueError(
+            "QSA fixed-group validation requires matching BF16 or FP8 Q/K"
+        )
     if q.shape[2] != k_cache.shape[3]:
-        raise ValueError("QSA grouping policy requires matching head dimensions")
+        raise ValueError(
+            "QSA fixed-group validation requires matching head dimensions"
+        )
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
@@ -1540,7 +1554,7 @@ def qsa_prims_ts_group_size(
             q.shape[0],
             q.shape[1],
             k_cache.shape[1],
-            device=q.device,
+            group_size=group_size,
         )
     )
 

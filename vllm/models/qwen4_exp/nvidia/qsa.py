@@ -407,6 +407,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 query_for_attention,
                 prims_key_cache,
                 query_start_loc_cpu,
+                group_size=int(getattr(layer, "qsa_prims_ts_group_size", 1)),
             )
             route_rows = num_tokens // group_size
             _qsa_nvtx_pop()
@@ -671,6 +672,19 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         )
         max_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         self.qsa_indices_are_blocks = self.impl.use_qsa_prims_ts
+        configured_group_size = getattr(config, "qsa_query_group_size", None)
+        if configured_group_size is None:
+            # The user-selected MTP width is a fixed semantic Q group, not a
+            # performance heuristic. Unsupported widths stay on Q1.
+            configured_group_size = vllm_config.uniform_decode_query_len
+            if configured_group_size not in (1, 2, 4, 5):
+                configured_group_size = 1
+        elif configured_group_size not in (1, 2, 4, 5):
+            raise ValueError(
+                "qsa_query_group_size must be one of 1, 2, 4, or 5; got "
+                f"{configured_group_size}"
+            )
+        self.qsa_prims_ts_group_size = int(configured_group_size)
         selection_width = (
             self.indexer.block_topk
             if self.qsa_indices_are_blocks
