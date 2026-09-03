@@ -1633,6 +1633,49 @@ and disables only the exhaustive search.  The explicit
 A fresh BF16 TP4 PrimTS server completes all 4--1,024 graph captures and the
 strict BS256 profile with this change.
 
+### FP8 TP4 Q4 producer-warp optimization
+
+The TP4/MTP3 PrimTS plan groups four query tokens with local Hq/Hkv=6/1 into
+TileQ32, splits KV twice, and uses a separate reduction kernel. Its original
+single TMA loader shared warp 13 with scheduler duties. FlashInfer now moves
+this exact FP8 Q4/TileQ32 route to four producer-only loader warps at 16--19;
+all query, MMA, split, masking, metadata, and reduction geometry is unchanged.
+The promotion is deliberately narrow and leaves other TP/group shapes on
+their independently qualified profiles.
+
+Cold-L2 CUDA-graph measurements with 256 Q4 groups show the following
+attention-only progression. The synthetic case has independent top-k and a
+mean 1,400.5-page union; the captured 8K model case has a mean 554.4-page
+union and roughly 70% adjacent-token overlap.
+
+| top-k pattern | 1 loader | 2 loaders | 4 loaders | 8 loaders |
+|---|---:|---:|---:|---:|
+| independent synthetic | 609.71 us | 296.52 us | 217.65 us | 287.31 us |
+| captured 8K | 280.28 us | -- | 105.84 us | -- |
+
+Every measured route matches the reference within 0.0009, and 10,000 warm
+CUDA-graph replays complete without deadlock. Eight loaders regress because
+their larger CTA and issue pressure outweigh additional TMA parallelism.
+
+The strict TP4/BS256 FP8/MTP3 model rerun uses the same 32K server capacity,
+4--1,024 graph buckets, independent contexts, disabled prefix caching, and
+32-step synchronized measurement window as the earlier table:
+
+| input | four-loader PrimTS | previous PrimTS | Triton | PrimTS vs Triton |
+|---:|---:|---:|---:|---:|
+| 8,192 | 1.2525 s | 1.3830 s | 1.3655 s | 8.3% lower latency |
+| 16,384 | 1.2709 s | 1.4047 s | 1.3813 s | 8.0% lower latency |
+
+The three 8K repeats are 1.2511/1.2550/1.2515 seconds; the three 16K repeats
+are 1.2673/1.2727/1.2728 seconds. A matched 8K Nsight capture attributes 2.254
+milliseconds to PrimTS attention plus split reduction and 0.336 milliseconds
+to metadata per rank/iteration. The prior one-loader values were 6.257/0.335
+milliseconds, and Triton is 5.956/0.092 milliseconds. Thus the new complete
+PrimTS QSA segment is 2.34x faster than Triton, while profiled model wall time
+is 1.2705 versus Triton's 1.3806 seconds. Raw JSON is under
+`qsa_e2e_perf/job643892-tp4-load4`; the report, SQLite export, and summaries
+are under `qsa_nsys/job643892/load4`.
+
 ## Remaining performance and integration signoff
 
 Work proceeds in this order:
