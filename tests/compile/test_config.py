@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.passes.utility.fix_functionalization import (
@@ -30,6 +30,7 @@ from vllm.utils.torch_utils import (
     _is_torch_equal_or_newer,
     is_torch_equal,
 )
+from vllm.v1.attention.backend import AttentionCGSupport
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 
 # This import automatically registers `torch.ops.silly.attention`
@@ -499,6 +500,86 @@ def test_cudagraph_sizes_post_init(
             vllm_config.compilation_config.max_cudagraph_capture_size
             == expected_max_size
         )
+
+
+def test_piecewise_exact_capture_sizes_are_normalized_and_bounded():
+    compilation_config = CompilationConfig(
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+        cudagraph_capture_sizes=[1, 8],
+        piecewise_cudagraph_exact_capture_sizes=[8192, 128, 8192, 16384],
+    )
+    config = _mock_config_for_cudagraph_sizes(
+        max_num_seqs=8,
+        num_speculative_tokens=0,
+        max_num_batched_tokens=8192,
+        compilation_config=compilation_config,
+    )
+
+    VllmConfig._set_cudagraph_sizes(config)
+
+    assert compilation_config.cudagraph_capture_sizes == [1, 8]
+    assert compilation_config.max_cudagraph_capture_size == 8
+    assert compilation_config.piecewise_cudagraph_exact_capture_sizes == [128, 8192]
+
+
+def test_piecewise_exact_capture_sizes_affect_hash_and_serialization():
+    default_config = CompilationConfig()
+    exact_config = CompilationConfig(piecewise_cudagraph_exact_capture_sizes=[8192])
+
+    assert default_config.compute_hash() != exact_config.compute_hash()
+    serialized = TypeAdapter(CompilationConfig).dump_python(exact_config)
+    assert serialized["piecewise_cudagraph_exact_capture_sizes"] == [8192]
+
+
+def test_piecewise_exact_capture_sizes_must_be_positive():
+    with pytest.raises(
+        ValidationError, match="piecewise_cudagraph_exact_capture_sizes"
+    ):
+        CompilationConfig(piecewise_cudagraph_exact_capture_sizes=[0, 8192])
+
+
+def test_piecewise_exact_capture_sizes_require_piecewise_execution():
+    compilation_config = CompilationConfig(
+        mode=CompilationMode.VLLM_COMPILE,
+        cudagraph_mode=CUDAGraphMode.FULL,
+        cudagraph_capture_sizes=[1, 8],
+        piecewise_cudagraph_exact_capture_sizes=[8192],
+    )
+
+    with pytest.raises(ValueError, match="requires.*PIECEWISE"):
+        compilation_config.resolve_cudagraph_mode_and_sizes(
+            min_cg_support=AttentionCGSupport.ALWAYS,
+            min_cg_attn_backend="test",
+            use_v2_model_runner=True,
+        )
+
+
+def test_piecewise_exact_capture_sizes_reject_sequence_parallel_rounding():
+    compilation_config = CompilationConfig(
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+        cudagraph_capture_sizes=[2, 8],
+        piecewise_cudagraph_exact_capture_sizes=[8191],
+    )
+    compilation_config.pass_config.enable_sp = True
+    config = _mock_config_for_cudagraph_sizes(
+        max_num_seqs=8,
+        num_speculative_tokens=0,
+        max_num_batched_tokens=8192,
+        compilation_config=compilation_config,
+    )
+    config.parallel_config = SimpleNamespace(tensor_parallel_size=2)
+    config.update_sizes_for_sequence_parallelism = lambda sizes: (
+        VllmConfig.update_sizes_for_sequence_parallelism(config, sizes)
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "piecewise_cudagraph_exact_capture_sizes must be divisible by "
+            "tensor_parallel_size"
+        ),
+    ):
+        VllmConfig._set_cudagraph_sizes(config)
 
 
 def _mock_config_for_cudagraph_sizes(

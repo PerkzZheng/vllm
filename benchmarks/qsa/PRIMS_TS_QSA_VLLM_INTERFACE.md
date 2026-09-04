@@ -274,25 +274,60 @@ For CUDA graphs:
 4. retain every referenced allocation for the lifetime of the graph.
 
 vLLM maintains a finite dictionary of per-layer prepared states for FULL
-decode graph buckets and one clear-and-replace eager state for packed prefill,
-piecewise execution, and irregular decode. Graph warmup metadata explicitly
-marks capture bucket shapes so their plans are prepared before capture. This
-marker is also required by the standalone MTP graph manager, whose recorded
-body deliberately reports runtime graph mode `NONE`. A missing persistent state
-discovered while the CUDA stream is capturing is an error; capture is never
-allowed to allocate or prepare a new plan.
+decode graph buckets and a four-entry least-recently-used cache for eager
+packed prefill, piecewise execution, and irregular decode. The eager cache is
+needed because chunked prefill alternates active block-table widths: retaining
+the 8K and 16K geometries prevents every request from rebuilding both plans.
+Every eager lookup checks CUDA capture state before consulting the cache, so an
+eager workspace cannot be captured and later evicted. Graph warmup metadata
+explicitly marks capture bucket shapes so persistent plans are prepared before
+capture. This marker is also required by the standalone MTP graph manager,
+whose recorded body deliberately reports runtime graph mode `NONE`. A
+persistent cache hit remains valid during capture; a missing persistent state
+discovered while the CUDA stream is capturing is an error, because capture is
+never allowed to allocate or prepare a new plan.
 
 FULL graph states use the full stable block-table width. Eager execution slices
 the dense block table to the active context width, which avoids bitmap scratch
-sized for unused model context. KV-cache unbind/rebind clears both the graph
-state dictionary and the eager state, preventing plans from retaining stale K/V
-views or profiling allocations.
+sized for unused model context. Up to four eager geometry plans share one
+growable arena per layer. If a larger geometry needs more storage, vLLM clears
+the plans before replacing the arena; otherwise plans reuse it sequentially on
+the current stream. Thus the retained eager storage is the largest arena, not
+the sum of four arenas: about 24 MiB per layer, or 288 MiB across twelve layers,
+for the 8K Q4/top-k-512 and 32K-KV example. This is a bounded tradeoff until
+top-k-bounded metadata removes the context-sized bitmap. Concurrent QSA
+streams or microbatches would require separate workspace ownership; this model
+currently rejects both. KV-cache unbind/rebind clears the graph-state
+dictionary, eager LRU, and shared arena, preventing plans from retaining stale
+K/V views or profiling allocations.
 
 Piecewise prefill currently executes QSA metadata and attention eagerly at the
 opaque attention boundary. Full decode graphs capture the prepared metadata
 and attention launches. Grouped bitmap-to-pack dependencies may use PDL on
 supported devices; metadata-to-attention ordering remains ordinary same-stream
 ordering and requires no framework-managed event.
+
+Large predictable prefill chunks can opt into an exact-only piecewise graph
+without adding a high-padding endpoint to the ordinary capture ladder:
+
+```bash
+vllm serve ... \
+  --cudagraph-capture-sizes 2 4 8 16 24 32 40 48 56 64 \
+  --compilation-config \
+  '{"piecewise_cudagraph_exact_capture_sizes":[8192]}'
+```
+
+An exact size matches only the same scheduled token count. It does not cause
+65--8,191-token batches to pad to 8K and does not add a FULL decode graph. Exact
+sizes augment a nonempty ordinary capture-size list; this preserves existing
+full-graph memory sizing and capture-backend assumptions. Sizes must be
+positive and compatible with a piecewise graph mode; entries larger than
+`max_num_batched_tokens` are warned about and dropped. Sizes must also be
+TP-divisible when sequence parallelism is enabled. The 8K graph keeps QSA and
+its metadata eager while graphing the safe regions between splitting ops.
+On the measured TP2 BF16 model it reduced available KV memory by about
+2.31 GiB per rank, so frameworks should opt in only for stable high-value
+chunk sizes rather than populate a dense long-context ladder.
 
 ## Current constraints
 

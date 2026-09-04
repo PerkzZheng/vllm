@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar, cast
@@ -66,6 +67,7 @@ _QSA_PRIMS_TS_HEAD_SIZE = 256
 _QSA_PRIMS_TS_SPARSE_BLOCK_SIZE = 4
 _QSA_PRIMS_TS_TILE_Q = 64
 _QSA_PRIMS_TS_DEVICE_CAPABILITIES = (100, 103)
+_QSA_PRIMS_TS_EAGER_PLAN_CACHE_CAPACITY = 4
 
 
 @dataclass(frozen=True)
@@ -310,21 +312,21 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         )
         if persistent:
             state = layer._qsa_prims_ts_graph_states.get(state_key)
+            if state is not None:
+                return state
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError(
+                    "QSA PrimTS plans must be prepared during CUDA-graph warmup"
+                )
         else:
-            state = layer._qsa_prims_ts_eager_state
-            if state is not None and state.key != state_key:
-                state = None
-        capturing = torch.cuda.is_current_stream_capturing()
-        if capturing and not persistent:
-            raise RuntimeError(
-                "eager QSA PrimTS state cannot be used during CUDA-graph capture"
-            )
-        if state is not None:
-            return state
-        if capturing:
-            raise RuntimeError(
-                "QSA PrimTS plans must be prepared during CUDA-graph warmup"
-            )
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError(
+                    "eager QSA PrimTS state cannot be used during CUDA-graph capture"
+                )
+            state = layer._qsa_prims_ts_eager_states.get(state_key)
+            if state is not None:
+                layer._qsa_prims_ts_eager_states.move_to_end(state_key)
+                return state
 
         qo_indptr = (
             None
@@ -341,11 +343,33 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             max_seq_len_q=group_size if qo_indptr_cpu is not None else None,
             sparse_block_size=sparse_block_size,
         )
-        workspace = torch.empty(
-            required_bytes,
-            dtype=torch.uint8,
-            device=query.device,
-        )
+        if persistent:
+            workspace = torch.empty(
+                required_bytes,
+                dtype=torch.uint8,
+                device=query.device,
+            )
+        else:
+            eager_workspace = layer._qsa_prims_ts_eager_workspace
+            if (
+                eager_workspace is None
+                or eager_workspace.device != query.device
+                or eager_workspace.numel() < required_bytes
+            ):
+                # Every eager plan binds typed views into this arena. Drop those
+                # plans and the old arena before growing so none retain stale
+                # workspace storage. Qwen4Exp rejects DBO/microbatching, and
+                # ordinary eager launches are sequential on the current stream.
+                layer._qsa_prims_ts_eager_states.clear()
+                layer._qsa_prims_ts_eager_workspace = None
+                del eager_workspace
+                eager_workspace = torch.empty(
+                    required_bytes,
+                    dtype=torch.uint8,
+                    device=query.device,
+                )
+                layer._qsa_prims_ts_eager_workspace = eager_workspace
+            workspace = eager_workspace
         plan = qsa_prims_ts_prepare_attention(
             query,
             key_cache,
@@ -366,8 +390,11 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         if persistent:
             layer._qsa_prims_ts_graph_states[state_key] = state
         else:
-            # Eager and piecewise execution retain only the latest geometry.
-            layer._qsa_prims_ts_eager_state = state
+            eager_states = layer._qsa_prims_ts_eager_states
+            eager_states[state_key] = state
+            eager_states.move_to_end(state_key)
+            while len(eager_states) > _QSA_PRIMS_TS_EAGER_PLAN_CACHE_CAPACITY:
+                eager_states.popitem(last=False)
         return state
 
     def forward_qsa(
@@ -582,11 +609,15 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
 
     supports_dcp = False
     _qsa_prims_ts_graph_states: dict[tuple[object, ...], _QSAPrimsTSPreparedState]
-    _qsa_prims_ts_eager_state: _QSAPrimsTSPreparedState | None
+    _qsa_prims_ts_eager_states: OrderedDict[
+        tuple[object, ...], _QSAPrimsTSPreparedState
+    ]
+    _qsa_prims_ts_eager_workspace: torch.Tensor | None
 
     def _clear_qsa_prims_ts_prepared_storage(self) -> None:
         self._qsa_prims_ts_graph_states.clear()
-        self._qsa_prims_ts_eager_state = None
+        self._qsa_prims_ts_eager_states.clear()
+        self._qsa_prims_ts_eager_workspace = None
 
     def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
         """Bind one cache generation and discard plans bound to its predecessor.
@@ -800,7 +831,8 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 persistent=False,
             )
         self._qsa_prims_ts_graph_states = {}
-        self._qsa_prims_ts_eager_state = None
+        self._qsa_prims_ts_eager_states = OrderedDict()
+        self._qsa_prims_ts_eager_workspace = None
 
         static_context = vllm_config.compilation_config.static_forward_context
         if self.layer_name in static_context:

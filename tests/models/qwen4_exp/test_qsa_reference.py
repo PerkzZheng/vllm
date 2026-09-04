@@ -4,6 +4,8 @@
 import gc
 import math
 import weakref
+from collections import OrderedDict
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
 
@@ -1298,7 +1300,8 @@ def _make_qsa_prims_ts_owner_case(
         _k_scale_float=3.0,
         _v_scale_float=4.0,
         _qsa_prims_ts_graph_states={},
-        _qsa_prims_ts_eager_state=None,
+        _qsa_prims_ts_eager_states=OrderedDict(),
+        _qsa_prims_ts_eager_workspace=None,
     )
     metadata = SimpleNamespace(
         num_actual_tokens=num_tokens,
@@ -1446,7 +1449,8 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
         _k_scale_float=1.0,
         _v_scale_float=1.0,
         _qsa_prims_ts_graph_states={},
-        _qsa_prims_ts_eager_state=None,
+        _qsa_prims_ts_eager_states=OrderedDict(),
+        _qsa_prims_ts_eager_workspace=None,
     )
     metadata = SimpleNamespace(
         num_actual_tokens=num_tokens,
@@ -1517,7 +1521,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
 
     if has_prefill:
         assert not layer._qsa_prims_ts_graph_states
-        assert layer._qsa_prims_ts_eager_state is not None
+        assert len(layer._qsa_prims_ts_eager_states) == 1
         return
 
     prepared_state = next(iter(layer._qsa_prims_ts_graph_states.values()))
@@ -1973,13 +1977,208 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
     assert torch.all(output == 5)
 
 
+def _qsa_prims_ts_prepared_state_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    workspace_size_for_width: Callable[[int], int] | None = None,
+) -> tuple[
+    SimpleNamespace,
+    Callable[..., object],
+    list[tuple[int, torch.Tensor]],
+]:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    prepared: list[tuple[int, torch.Tensor]] = []
+    if workspace_size_for_width is None:
+        workspace_size_for_width = lambda _width: 64
+    full_block_table = torch.empty(1, 8, dtype=torch.int32)
+    query = torch.empty(8, 12, 256, dtype=torch.bfloat16)
+    cache = torch.empty(8, 1, 16, 256, dtype=torch.bfloat16)
+    block_indices = torch.empty(8, 512, dtype=torch.int32)
+    token_to_req = torch.zeros(8, dtype=torch.int32)
+    logical_positions = torch.arange(8, dtype=torch.int64)
+    out = torch.empty_like(query)
+    qo_indptr = torch.tensor([0, 4, 8], dtype=torch.int32)
+    layer = SimpleNamespace(
+        _qsa_prims_ts_graph_states={},
+        _qsa_prims_ts_eager_states=OrderedDict(),
+        _qsa_prims_ts_eager_workspace=None,
+    )
+    impl = qsa_model.Qwen4ExpQSAFlashAttentionImpl.__new__(
+        qsa_model.Qwen4ExpQSAFlashAttentionImpl
+    )
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_current_stream_capturing",
+        lambda: False,
+    )
+
+    def workspace_size(
+        _query: torch.Tensor,
+        _key_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        *_args: object,
+        **_kwargs: object,
+    ) -> int:
+        assert workspace_size_for_width is not None
+        return workspace_size_for_width(block_table.shape[1])
+
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_combined_workspace_size", workspace_size)
+
+    def prepare(
+        _query: torch.Tensor,
+        _key_cache: torch.Tensor,
+        _value_cache: torch.Tensor,
+        _block_indices: torch.Tensor,
+        block_table: torch.Tensor,
+        _token_to_req: torch.Tensor,
+        _logical_positions: torch.Tensor,
+        workspace: torch.Tensor,
+        _out: torch.Tensor,
+        **_kwargs: object,
+    ) -> object:
+        prepared.append((block_table.shape[1], workspace))
+        return object()
+
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_prepare_attention", prepare)
+
+    def get_state(width: int, *, persistent: bool = False) -> object:
+        return impl._get_qsa_prims_ts_prepared_state(
+            layer,
+            query,
+            cache,
+            cache,
+            block_indices,
+            full_block_table[:, :width],
+            token_to_req,
+            logical_positions,
+            out,
+            0.125,
+            1.0,
+            qo_indptr,
+            (0, 8),
+            4,
+            4,
+            persistent=persistent,
+        )
+
+    return layer, get_state, prepared
+
+
+def test_qsa_prims_ts_eager_plan_cache_reuses_alternating_geometries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(monkeypatch)
+
+    state_a = get_state(2)
+    state_b = get_state(4)
+
+    assert get_state(2) is state_a
+    assert get_state(4) is state_b
+    assert [width for width, _ in prepared] == [2, 4]
+    assert prepared[0][1] is prepared[1][1]
+    assert prepared[0][1] is layer._qsa_prims_ts_eager_workspace
+    cached_states = tuple(layer._qsa_prims_ts_eager_states.values())
+    assert cached_states[0] is state_a
+    assert cached_states[1] is state_b
+    assert not layer._qsa_prims_ts_graph_states
+
+
+def test_qsa_prims_ts_eager_plan_cache_is_bounded_lru(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(monkeypatch)
+    capacity = qsa_model._QSA_PRIMS_TS_EAGER_PLAN_CACHE_CAPACITY
+    assert capacity == 4
+    states = {width: get_state(width) for width in range(1, capacity + 1)}
+
+    assert get_state(1) is states[1]
+    state_after_eviction = get_state(capacity + 1)
+
+    assert len(layer._qsa_prims_ts_eager_states) == capacity
+    cached_states = tuple(layer._qsa_prims_ts_eager_states.values())
+    assert any(state is states[1] for state in cached_states)
+    assert all(state is not states[2] for state in cached_states)
+    assert any(state is state_after_eviction for state in cached_states)
+    rebuilt_state = get_state(2)
+    assert rebuilt_state is not states[2]
+    assert len(layer._qsa_prims_ts_eager_states) == capacity
+    assert [width for width, _ in prepared] == [1, 2, 3, 4, 5, 2]
+
+
+def test_qsa_prims_ts_eager_workspace_growth_clears_plans_then_reuses_arena(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(
+        monkeypatch,
+        workspace_size_for_width=lambda width: width * 64,
+    )
+
+    old_small_state = get_state(2)
+    old_workspace = layer._qsa_prims_ts_eager_workspace
+    large_state = get_state(4)
+    grown_workspace = layer._qsa_prims_ts_eager_workspace
+
+    assert old_workspace is not None
+    assert grown_workspace is not None
+    assert grown_workspace is not old_workspace
+    assert grown_workspace.numel() == 4 * 64
+    assert all(
+        state is not old_small_state
+        for state in layer._qsa_prims_ts_eager_states.values()
+    )
+    rebuilt_small_state = get_state(2)
+    assert prepared[-1][1] is grown_workspace
+    assert get_state(4) is large_state
+    assert get_state(2) is rebuilt_small_state
+    assert [width for width, _ in prepared] == [2, 4, 2]
+    assert len(layer._qsa_prims_ts_eager_states) == 2
+
+
+def test_qsa_prims_ts_eager_cache_rechecks_capture_and_persistent_hit_skips_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(monkeypatch)
+    get_state(2)
+    graph_state = get_state(3, persistent=True)
+    capture_checks = 0
+
+    def capturing() -> bool:
+        nonlocal capture_checks
+        capture_checks += 1
+        return True
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_current_stream_capturing",
+        capturing,
+    )
+    assert get_state(3, persistent=True) is graph_state
+    assert capture_checks == 0
+
+    with pytest.raises(RuntimeError, match="eager QSA PrimTS state"):
+        get_state(2)
+    with pytest.raises(RuntimeError, match="eager QSA PrimTS state"):
+        get_state(4)
+    with pytest.raises(RuntimeError, match="must be prepared during CUDA-graph warmup"):
+        get_state(4, persistent=True)
+    assert capture_checks == 3
+    assert [width for width, _ in prepared] == [2, 3]
+    assert len(layer._qsa_prims_ts_eager_states) == 1
+    assert len(layer._qsa_prims_ts_graph_states) == 1
+
+
 def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAAttention
 
     layer = Qwen4ExpQSAAttention.__new__(Qwen4ExpQSAAttention)
     torch.nn.Module.__init__(layer)
     layer._qsa_prims_ts_graph_states = {"profiling": object()}
-    layer._qsa_prims_ts_eager_state = object()
+    layer._qsa_prims_ts_eager_states = OrderedDict([("profiling", object())])
+    layer._qsa_prims_ts_eager_workspace = torch.empty(64, dtype=torch.uint8)
     layer.kv_cache = torch.empty(0)
     real_kv_cache = torch.empty(2, 1, 16, 512)
 
@@ -1987,7 +2186,8 @@ def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
 
     assert layer.kv_cache is real_kv_cache
     assert not layer._qsa_prims_ts_graph_states
-    assert layer._qsa_prims_ts_eager_state is None
+    assert not layer._qsa_prims_ts_eager_states
+    assert layer._qsa_prims_ts_eager_workspace is None
 
 
 def test_qsa_generic_kv_cache_teardown_releases_prepared_storage() -> None:
@@ -2005,7 +2205,8 @@ def test_qsa_generic_kv_cache_teardown_releases_prepared_storage() -> None:
     value_ref = weakref.ref(value_cache)
     workspace_ref = weakref.ref(workspace)
     layer._qsa_prims_ts_graph_states = {"graph": state}
-    layer._qsa_prims_ts_eager_state = state
+    layer._qsa_prims_ts_eager_states = OrderedDict([("eager", state)])
+    layer._qsa_prims_ts_eager_workspace = workspace
     del key_cache, value_cache, workspace, plan, state
 
     clear_layer_kv_caches([layer])
@@ -2013,7 +2214,8 @@ def test_qsa_generic_kv_cache_teardown_releases_prepared_storage() -> None:
 
     assert layer.kv_cache.numel() == 0
     assert not layer._qsa_prims_ts_graph_states
-    assert layer._qsa_prims_ts_eager_state is None
+    assert not layer._qsa_prims_ts_eager_states
+    assert layer._qsa_prims_ts_eager_workspace is None
     assert key_ref() is None
     assert value_ref() is None
     assert workspace_ref() is None
