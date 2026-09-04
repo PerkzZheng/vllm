@@ -268,6 +268,22 @@ def _qsa_sparse_paged_attention_reference(
             4,
             id="uniform-g4-with-graph-padding",
         ),
+        pytest.param(
+            (0, 1, 2, 2),
+            16,
+            4,
+            False,
+            1,
+            id="uniform-g1-with-varlen-graph-bound",
+        ),
+        pytest.param(
+            (0, 2, 4),
+            4,
+            4,
+            False,
+            None,
+            id="uniform-g2-cannot-use-larger-graph-bound",
+        ),
         pytest.param((0, 1, 4), 4, 4, False, None, id="unsafe-one-plus-three"),
         pytest.param((0, 4, 8), 8, 4, True, None, id="prefill"),
         pytest.param(None, 8, 4, False, None, id="device-only-boundaries"),
@@ -361,6 +377,34 @@ def test_qsa_side_metadata_marks_cudagraph_padding_inert() -> None:
     assert prefill_metadata.query_start_offsets == (0, 4, 8, 12)
     assert prefill_metadata.uniform_decode_query_len is None
     assert not prefill_metadata.prepare_cudagraph_plan
+
+    # Missing phase metadata cannot distinguish one-token prefill from decode,
+    # so both ordinary builds and capture builds stay conservative. Producers
+    # that reconstruct common metadata must preserve the original phase.
+    common.is_prefilling = None
+    unknown_phase_metadata = builder.build(0, common)
+    assert unknown_phase_metadata.has_prefill
+    assert unknown_phase_metadata.uniform_decode_query_len is None
+    capture_metadata = builder.build_for_cudagraph_capture(common)
+    assert capture_metadata.has_prefill
+    assert capture_metadata.uniform_decode_query_len is None
+    assert capture_metadata.prepare_cudagraph_plan
+
+    # Piecewise graph profiling may retain the configured G4 upper bound while
+    # supplying one real row per request. Preserve that proven Q1 ownership so
+    # the owner can prepare the request-independent fixed layout.
+    q1_query_start_loc = torch.tensor([0, 1, 2], dtype=torch.int32, device=device)
+    token_to_req = torch.tensor([0, 1] + [0] * 14, dtype=torch.int32, device=device)
+    common.num_reqs = 2
+    common.query_start_loc = q1_query_start_loc
+    common.query_start_loc_cpu = q1_query_start_loc.cpu()
+    common.seq_lens = torch.tensor([65, 65], dtype=torch.int32, device=device)
+    common.is_prefilling = torch.zeros(2, dtype=torch.bool, device=device)
+    q1_metadata = builder.build(0, common)
+    assert not q1_metadata.has_prefill
+    assert q1_metadata.query_start_offsets == (0, 1, 2)
+    assert q1_metadata.uniform_decode_query_len == 1
+    assert q1_metadata.prepare_cudagraph_plan
 
 
 @requires_qsa_kernels
@@ -1548,6 +1592,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
         "query_starts",
         "query_start_offsets",
         "expected_qo_indptr",
+        "expected_route_group_size",
     ),
     [
         pytest.param(
@@ -1558,6 +1603,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             (0, 5, 8),
             (0, 5, 8),
             (0, 4, 5, 8),
+            4,
             id="packed-prefill-g4",
         ),
         pytest.param(
@@ -1568,17 +1614,41 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             (0, 1, 2),
             (0, 1, 2),
             None,
+            1,
             id="fixed-decode-g1",
         ),
         pytest.param(
             "bfloat16",
             False,
+            1,
+            4,
+            (0, 1, 2),
+            (0, 1, 2),
+            None,
+            1,
+            id="fixed-mtp-recurrence-g1-from-decode-g4",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
             4,
             4,
             (0, 4, 8),
             (0, 4, 8),
             None,
+            4,
             id="fixed-decode-g4",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
+            2,
+            4,
+            (0, 2, 4),
+            (0, 2, 4),
+            (0, 2, 4),
+            4,
+            id="packed-decode-runtime-g2-with-configured-g4",
         ),
         pytest.param(
             "bfloat16",
@@ -1588,6 +1658,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             (0, 5, 10),
             (0, 5, 10),
             None,
+            5,
             id="fixed-decode-g5",
         ),
         pytest.param(
@@ -1598,6 +1669,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             (0, 4, 8),
             (0, 4, 8),
             None,
+            4,
             id="fp8-fixed-decode-g4",
         ),
         pytest.param(
@@ -1608,6 +1680,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             (0, 1, 4),
             (0, 1, 4),
             (0, 1, 4),
+            4,
             id="packed-irregular-decode",
         ),
         pytest.param(
@@ -1618,6 +1691,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             (0, 5, 8),
             None,
             tuple(range(9)),
+            1,
             id="packed-prefill-device-boundaries",
         ),
     ],
@@ -1631,6 +1705,7 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
     query_starts: tuple[int, ...],
     query_start_offsets: tuple[int, ...] | None,
     expected_qo_indptr: tuple[int, ...] | None,
+    expected_route_group_size: int,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
 
@@ -1643,11 +1718,10 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
     route_starts = (
         (0, num_tokens) if has_prefill and query_start_offsets is None else query_starts
     )
-    route_group_size = 1 if has_prefill and query_start_offsets is None else group_size
     num_query_groups = (
         len(expected_qo_indptr) - 1
         if expected_qo_indptr is not None
-        else num_tokens // group_size
+        else num_tokens // expected_route_group_size
     )
     expected_query_shape = (
         (num_tokens, case.num_query_heads, case.head_dim)
@@ -1655,7 +1729,7 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
         else (
             num_query_groups,
             1,
-            group_size,
+            expected_route_group_size,
             case.num_query_heads,
             case.head_dim,
         )
@@ -1821,14 +1895,14 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
     expected_table_width = 2 if expected_qo_indptr is not None else 4
     assert state.block_table.shape[1] == expected_table_width
     assert state.block_indices.shape == (num_tokens, case.block_topk)
-    assert state.group_size == route_group_size
+    assert state.group_size == expected_route_group_size
     assert state.sparse_block_size == 4
     assert state.persistent is (expected_qo_indptr is None)
     if expected_qo_indptr is not None:
         assert captured["packed_route"] == (
             route_starts,
             num_tokens,
-            route_group_size,
+            expected_route_group_size,
         )
         assert tuple(state.qo_indptr.tolist()) == expected_qo_indptr
         assert state.qo_topology == route_starts

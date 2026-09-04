@@ -504,6 +504,14 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             elif layer.qsa_prims_ts_decode_group_size == 1:
                 group_size = 1
                 use_fixed_layout = True
+            elif uniform_decode_query_len == 1:
+                # Standalone MTP recurrence invokes the layer once per draft
+                # position, even when the configured target-verification
+                # width is MTP + 1. Q1 is request-independent and can keep the
+                # fixed layout without pretending those separate invocations
+                # are one wider group.
+                group_size = 1
+                use_fixed_layout = True
             elif uniform_decode_query_len == layer.qsa_prims_ts_decode_group_size:
                 # Uniform target verification contributes MTP + 1 adjacent
                 # rows per live request. Fixed routing is legal only after the

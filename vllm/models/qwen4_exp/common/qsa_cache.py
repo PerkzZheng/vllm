@@ -561,9 +561,10 @@ def _uniform_qsa_decode_query_len(
 
     ``num_query_tokens`` may include CUDA-graph token padding and the request
     offsets may include zero-length padded request rows. Positive request
-    lengths must nevertheless all equal ``max_query_len``. Total divisibility
-    alone is insufficient: request lengths 1 and 3 would otherwise be grouped
-    into one unsafe G=4 route.
+    lengths must all agree. Wider groups must equal ``max_query_len``; Q1 is
+    also legal when a varlen graph advertises a larger runtime upper bound.
+    Total divisibility alone is insufficient: request lengths 1 and 3 would
+    otherwise be grouped into one unsafe G=4 route.
     """
 
     if (
@@ -572,7 +573,6 @@ def _uniform_qsa_decode_query_len(
         or len(query_start_offsets) < 2
         or max_query_len <= 0
         or num_query_tokens <= 0
-        or num_query_tokens % max_query_len
         or query_start_offsets[0] != 0
         or query_start_offsets[-1] > num_query_tokens
     ):
@@ -587,14 +587,21 @@ def _uniform_qsa_decode_query_len(
         )
     )
     positive_lens = tuple(length for length in query_lens if length > 0)
+    uniform_query_len = positive_lens[0] if positive_lens else 0
     if (
         not positive_lens
         or any(length < 0 for length in query_lens)
-        or any(length != max_query_len for length in positive_lens)
-        or query_start_offsets[-1] != max_query_len * len(positive_lens)
+        or any(length != uniform_query_len for length in positive_lens)
+        # Varlen piecewise graphs are profiled with one dummy token per
+        # request while max_query_len remains the runtime upper bound. Q1 is
+        # request-independent and therefore safe in that special case. Wider
+        # fixed groups still require the exact promised runtime width.
+        or (uniform_query_len != 1 and uniform_query_len != max_query_len)
+        or num_query_tokens % uniform_query_len
+        or query_start_offsets[-1] != uniform_query_len * len(positive_lens)
     ):
         return None
-    return max_query_len
+    return uniform_query_len
 
 
 @dataclass
@@ -730,6 +737,7 @@ class QSAMetadataBuilder(AttentionMetadataBuilder[QSAForwardMetadata]):
         uses_fixed_decode = not has_prefill and (
             query_start_offsets is None
             or decode_group_size == 1
+            or uniform_decode_query_len == 1
             or uniform_decode_query_len == decode_group_size
         )
         prepare_cudagraph_plan = uses_fixed_decode and num_tokens in getattr(
