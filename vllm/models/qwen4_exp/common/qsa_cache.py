@@ -774,6 +774,11 @@ class QSAKeyStateCache(_QSAStateCache):
         else:
             self.rope_position_cache = None
 
+    def unbind_kv_cache(self) -> None:
+        self.key_cache = None
+        self.rope_position_cache = None
+        super().unbind_kv_cache()
+
     def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
         # Hold the open group's committed keys plus every row a speculative
         # step stores before acceptance is known, rounded up to whole groups so

@@ -220,6 +220,14 @@ copies it into stable CUDA storage once when preparing each layer plan, and
 retains that storage for eager runs or graph replay. Uniform decode does not
 build, copy, or read Q-offset metadata.
 
+The CPU offsets are the authoritative route description. They are validated
+as Int32, start at zero, cover every flattened query row exactly once, and
+contain only nonempty routes of length at most `G` before the device copy is
+created. Workspace sizing accepts this CPU Int32 tensor because it needs only
+the route count. Metadata and attention execution require a contiguous CUDA
+Int32 copy. Neither plan preparation nor `run()` copies the CUDA offsets back
+to the host.
+
 ## Workspace ownership and sizing
 
 **Current.** `get_prims_ts_qsa_workspace_size(...)` returns one byte count for
@@ -402,6 +410,18 @@ The decode width comes from `VllmConfig.uniform_decode_query_len`, which is
 `MTP+1`. The current compiled set is Q1/Q2/Q4/Q5. Until Q3 is implemented,
 MTP2 safely falls back to Q1 instead of padding or changing visibility.
 
+vLLM retains separate prepared-storage pools by lifecycle:
+
+- proven fixed decode uses persistent entries because CUDA-graph capture and
+  replay must keep every captured workspace and plan alive;
+- packed prefill and irregular decode use one clear-and-replace eager entry,
+  which bounds route-topology-dependent storage; and
+- KV-cache unbind/rebind clears both pools before releasing the cache.
+
+The same generic unbind hook clears the indexer's derived key and optional
+RoPE-position cache views. Replacing only the top-level KV tensor would
+otherwise leave the complete allocation reachable through those views.
+
 ## Split-KV behavior
 
 **Current.** After the caller's fixed group is known, split-KV is selected by
@@ -419,6 +439,15 @@ graph replay. A policy with a separate reducer does not consume the counter.
 `run()` consequently performs no per-request counter memset. Direct plans keep
 small placeholder views solely for the uniform compiled-call ABI; these are
 not usable split-KV storage.
+
+The prepared combined plan freezes a structural descriptor for Q, output,
+compact block IDs, block table, token-to-request mapping, and query positions.
+Each eager replacement must preserve the prepared shape, stride, device, and
+dtype; Q and output must also remain 16-byte aligned. These checks are
+host-only and do not inspect device values. Preparation proves the original
+allocation relationships once. A framework replacing storage is responsible
+for keeping those tensors alive, disjoint, and immutable for the duration of
+the launch or graph replay.
 
 ## CUDA graphs and the current vLLM boundary
 
@@ -464,6 +493,8 @@ Framework authors should treat the following as part of the current contract:
   positive multiple of four;
 - Q grouping limited to 1, 2, 4, or 5; every packed route is nonempty and no
   longer than `G`, and fixed Q/O are contiguous `[B,Nq,G,Hq,D]` tensors;
+- packed route offsets use CPU-validated Int32 values and contiguous CUDA
+  Int32 execution storage;
 - head dimension supported by the underlying path: 64, 128, or 256;
 - valid grouped-query head geometry (`Hq` divisible by `Hkv`, with
   `1 <= Hq/Hkv <= 32`);
@@ -491,7 +522,7 @@ not supported by this QSA owner.
 - the combined plan is allocation-free and host-readback-free on its run path.
 
 The simplified workspace-owned-metadata interface was qualified on SM103 with
-CUTLASS DSL 4.7.1 by all 47 tests in
+CUTLASS DSL 4.7.1 by all 51 tests in
 `tests/attention/test_attention_ts_qsa_metadata.py`, the standalone
 CUDA-graph example in `examples/prims_ts/qsa_page4_attention.py`, and an FP8
 TP2/MTP3 vLLM smoke run with four 4K-context concurrent requests (8/8 measured
@@ -501,11 +532,17 @@ requests completed). The smoke artifact is
 **TODO before treating this as a broadly supported upstream interface:**
 
 - finish public API naming, documentation, examples, and compatibility policy;
+- after the first reviewed push, rename page-four-specific public surface to
+  block-size-neutral names and accept an explicit power-of-two sparse block
+  size, while rejecting every value except the currently qualified default of
+  four;
 - qualify the prepared path across the intended framework graph lifecycles and
   supported SM100/SM103 environments;
 - calibrate split-KV and reduction-mode costs for scattered page-four loads
   and grouped-union metadata;
-- requalify PDL before enabling it in the prepared path; and
+- after the first reviewed push, add FMHA PDL acquire only after shared memory
+  and barriers are initialized and release at kernel exit, then requalify it
+  before enabling metadata-to-attention PDL in the prepared path; and
 - expose any useful policy/workspace diagnostics without making frameworks
   depend on private layout objects.
 

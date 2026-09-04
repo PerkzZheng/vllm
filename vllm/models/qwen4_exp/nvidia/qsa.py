@@ -210,6 +210,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         out_dtype: torch.dtype,
         qo_indptr_cpu: torch.Tensor | None,
         group_size: int,
+        *,
+        persistent: bool = True,
     ) -> torch.Tensor:
         from .ops.qsa import qsa_prims_ts_combined_workspace_size
 
@@ -220,9 +222,10 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         )
         workspace_key = (
             query.device,
-            query.shape[0],
+            tuple(query.shape),
             num_query_groups,
             group_size,
+            qo_indptr_cpu is not None,
             tuple(key_cache.shape),
             key_cache.data_ptr(),
             block_table.shape[1],
@@ -230,10 +233,15 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             query.dtype,
             out_dtype,
         )
-        workspace_pool = getattr(layer, "_qsa_prims_ts_workspace_pool", None)
+        pool_name = (
+            "_qsa_prims_ts_workspace_pool"
+            if persistent
+            else "_qsa_prims_ts_eager_prefill_workspace_pool"
+        )
+        workspace_pool = getattr(layer, pool_name, None)
         if workspace_pool is None:
             workspace_pool = {}
-            layer._qsa_prims_ts_workspace_pool = workspace_pool
+            setattr(layer, pool_name, workspace_pool)
         workspace = workspace_pool.get(workspace_key)
         if workspace is None:
             required_bytes = qsa_prims_ts_combined_workspace_size(
@@ -256,6 +264,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 dtype=torch.uint8,
                 device=query.device,
             )
+            if not persistent:
+                workspace_pool.clear()
             workspace_pool[workspace_key] = workspace
         # Retain the last allocation under the historical attribute for
         # diagnostics and integrations that inspect it.
@@ -278,6 +288,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         bmm2_scale: float,
         qo_indptr_cpu: torch.Tensor | None,
         group_size: int,
+        *,
+        persistent: bool = True,
     ) -> object:
         """Return a validated plan for one graph-stable QSA semantic key."""
 
@@ -286,7 +298,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         qo_topology = (
             None
             if qo_indptr_cpu is None
-            else (qo_indptr_cpu.data_ptr(), qo_indptr_cpu.numel())
+            else tuple(int(offset) for offset in qo_indptr_cpu.tolist())
         )
         plan_key = (
             query.device,
@@ -310,10 +322,15 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             group_size,
             qo_topology,
         )
-        plan_pool = getattr(layer, "_qsa_prims_ts_plan_pool", None)
+        pool_name = (
+            "_qsa_prims_ts_plan_pool"
+            if persistent
+            else "_qsa_prims_ts_eager_prefill_plan_pool"
+        )
+        plan_pool = getattr(layer, pool_name, None)
         if plan_pool is None:
             plan_pool = {}
-            layer._qsa_prims_ts_plan_pool = plan_pool
+            setattr(layer, pool_name, plan_pool)
         plan = plan_pool.get(plan_key)
         if plan is None:
             qo_indptr = (
@@ -336,6 +353,8 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 qo_indptr=qo_indptr,
                 max_seq_len_q=group_size if qo_indptr is not None else None,
             )
+            if not persistent:
+                plan_pool.clear()
             plan_pool[plan_key] = plan
         return plan
 
@@ -427,9 +446,9 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 value_cache.transpose(1, 2)
             )
             _qsa_nvtx_push("qsa_prims_route_setup")
-            # Piecewise prefill executes eagerly at the attention boundary;
-            # route exactly the live rows. Full CUDA graphs already capture a
-            # fixed token extent and do not need a second staging policy here.
+            # Prefill and irregular decode execute eagerly at the attention
+            # boundary, so route exactly their live rows. Fixed decode is the
+            # graph-stable layout that can retain prepared storage.
             prims_output = output[:num_tokens]
             configured_group_size = (
                 layer.qsa_prims_ts_prefill_group_size
@@ -496,6 +515,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 route_output.dtype,
                 route_qo_indptr_cpu,
                 group_size,
+                persistent=use_fixed_decode,
             )
             plan = self._get_qsa_prims_ts_plan(
                 layer,
@@ -512,6 +532,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 bmm2_scale,
                 route_qo_indptr_cpu,
                 group_size,
+                persistent=use_fixed_decode,
             )
             _qsa_nvtx_pop()
 
@@ -551,6 +572,18 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
 
     supports_dcp = False
 
+    def _clear_qsa_prims_ts_prepared_storage(self) -> None:
+        for pool_name in (
+            "_qsa_prims_ts_workspace_pool",
+            "_qsa_prims_ts_plan_pool",
+            "_qsa_prims_ts_eager_prefill_workspace_pool",
+            "_qsa_prims_ts_eager_prefill_plan_pool",
+        ):
+            pool = getattr(self, pool_name, None)
+            if pool is not None:
+                pool.clear()
+        self._qsa_prims_ts_workspace = None
+
     def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
         """Bind one cache generation and discard plans bound to its predecessor.
 
@@ -561,14 +594,13 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         rebinding boundary.
         """
 
-        workspace_pool = getattr(self, "_qsa_prims_ts_workspace_pool", None)
-        if workspace_pool is not None:
-            workspace_pool.clear()
-        plan_pool = getattr(self, "_qsa_prims_ts_plan_pool", None)
-        if plan_pool is not None:
-            plan_pool.clear()
-        self._qsa_prims_ts_workspace = None
+        self._clear_qsa_prims_ts_prepared_storage()
         self.kv_cache = kv_cache
+
+    def unbind_kv_cache(self) -> None:
+        """Release the KV cache and every prepared object that refers to it."""
+        self._clear_qsa_prims_ts_prepared_storage()
+        self.kv_cache = torch.tensor([])
 
     def __init__(
         self,
@@ -755,6 +787,12 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         self._qsa_prims_ts_workspace: torch.Tensor | None = None
         self._qsa_prims_ts_workspace_pool: dict[tuple[object, ...], torch.Tensor] = {}
         self._qsa_prims_ts_plan_pool: dict[tuple[object, ...], object] = {}
+        self._qsa_prims_ts_eager_prefill_workspace_pool: dict[
+            tuple[object, ...], torch.Tensor
+        ] = {}
+        self._qsa_prims_ts_eager_prefill_plan_pool: dict[
+            tuple[object, ...], object
+        ] = {}
 
         static_context = vllm_config.compilation_config.static_forward_context
         if self.layer_name in static_context:

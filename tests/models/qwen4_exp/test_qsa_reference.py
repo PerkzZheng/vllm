@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import gc
 import math
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -356,7 +358,12 @@ def test_qsa_circular_buffer_survives_one_speculative_step(chunk_start: int) -> 
     assert set(slots.tolist()).isdisjoint((committed % capacity).tolist())
 
 
-def _qsa_key_cache(block_size: int, compress_ratio: int) -> qsa_cache.QSAKeyStateCache:
+def _qsa_key_cache(
+    block_size: int,
+    compress_ratio: int,
+    *,
+    cache_rope_positions: bool = False,
+) -> qsa_cache.QSAKeyStateCache:
     return qsa_cache.QSAKeyStateCache(
         head_size=64,
         dtype=torch.bfloat16,
@@ -366,6 +373,7 @@ def _qsa_key_cache(block_size: int, compress_ratio: int) -> qsa_cache.QSAKeyStat
             compilation_config=SimpleNamespace(static_forward_context={})
         ),
         compress_ratio=compress_ratio,
+        cache_rope_positions=cache_rope_positions,
     )
 
 
@@ -391,6 +399,34 @@ def test_qsa_state_caches_adapt_the_unified_logical_layout() -> None:
     assert compressed_cache.kv_cache.shape == (2, 8, 1, 64)
     assert raw_cache.kv_cache.data_ptr() == raw_view.data_ptr()
     assert compressed_cache.kv_cache.data_ptr() == compressed_view.data_ptr()
+
+
+def test_qsa_key_state_cache_teardown_releases_derived_views() -> None:
+    from vllm.v1.worker.utils import clear_layer_kv_caches
+
+    cache = _qsa_key_cache(
+        block_size=32,
+        compress_ratio=4,
+        cache_rope_positions=True,
+    )
+    raw_view = torch.empty(2, 1, 8, cache.head_size, dtype=torch.bfloat16)
+    cache.bind_kv_cache(raw_view)
+    key_cache = cache.key_cache
+    rope_position_cache = cache.rope_position_cache
+    raw_ref = weakref.ref(raw_view)
+    key_ref = weakref.ref(key_cache)
+    rope_ref = weakref.ref(rope_position_cache)
+    del raw_view, key_cache, rope_position_cache
+
+    clear_layer_kv_caches([cache])
+    gc.collect()
+
+    assert cache.kv_cache.numel() == 0
+    assert cache.key_cache is None
+    assert cache.rope_position_cache is None
+    assert raw_ref() is None
+    assert key_ref() is None
+    assert rope_ref() is None
 
 
 @pytest.mark.parametrize(
@@ -1263,8 +1299,16 @@ def test_qsa_attention_owner_preserves_pr53896_cache_layout(
     assert calls["workspace"] is not first_workspace
 
 
-def test_qsa_prims_ts_keeps_nondivisible_grouped_query_flat(
+@pytest.mark.parametrize(
+    "has_prefill",
+    [
+        pytest.param(True, id="prefill"),
+        pytest.param(False, id="irregular-decode"),
+    ],
+)
+def test_qsa_prims_ts_packed_routes_use_eager_cache(
     monkeypatch: pytest.MonkeyPatch,
+    has_prefill: bool,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
 
@@ -1398,11 +1442,16 @@ def test_qsa_prims_ts_keeps_nondivisible_grouped_query_flat(
         token_to_req,
         logical_positions,
         query_start_loc_cpu=query_start_loc_cpu,
+        has_prefill=has_prefill,
     )
 
     assert result is output
     assert result.shape == query.shape
     assert torch.all(result == 7)
+    assert not getattr(layer, "_qsa_prims_ts_workspace_pool", {})
+    assert not getattr(layer, "_qsa_prims_ts_plan_pool", {})
+    assert len(layer._qsa_prims_ts_eager_prefill_workspace_pool) == 1
+    assert len(layer._qsa_prims_ts_eager_prefill_plan_pool) == 1
 
 
 @pytest.mark.parametrize(
@@ -1450,7 +1499,10 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
         max_seq_len_q: int | None,
     ) -> int:
         assert out_dtype == torch.bfloat16
-        assert qo_indptr is not None
+        if qo_indptr is None:
+            assert query.ndim == 5
+            assert max_seq_len_q is None
+            return 512
         assert max_seq_len_q == 1
         return 128 if query.shape[0] <= 3 else 256
 
@@ -1503,6 +1555,34 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
     assert same_key.data_ptr() == second.data_ptr()
     assert torch.all(same_key == 0x5A)
 
+    different_head_count = impl._get_qsa_prims_ts_workspace(
+        layer,
+        torch.empty(3, 8, 256, dtype=torch.bfloat16),
+        key_cache,
+        block_table,
+        512,
+        torch.bfloat16,
+        qo_three,
+        1,
+    )
+    assert different_head_count.data_ptr() != second.data_ptr()
+
+    fixed_layout = impl._get_qsa_prims_ts_workspace(
+        layer,
+        torch.empty(3, 1, 1, 6, 256, dtype=torch.bfloat16),
+        key_cache,
+        block_table,
+        512,
+        torch.bfloat16,
+        None,
+        1,
+    )
+    assert fixed_layout.numel() == 512
+    assert fixed_layout.data_ptr() not in (
+        second.data_ptr(),
+        different_head_count.data_ptr(),
+    )
+
     larger = impl._get_qsa_prims_ts_workspace(
         layer,
         torch.empty(4, 6, 256, dtype=torch.bfloat16),
@@ -1530,15 +1610,146 @@ def test_qsa_prims_ts_workspace_isolated_by_semantic_key(
     assert rebound.data_ptr() != same_key.data_ptr()
 
 
+def test_qsa_prims_ts_plan_keys_packed_routes_by_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
+
+    prepared_routes: list[tuple[int, ...]] = []
+
+    def fake_prepare(*_args, qo_indptr: torch.Tensor, **_kwargs) -> object:
+        prepared_routes.append(tuple(int(offset) for offset in qo_indptr.tolist()))
+        return object()
+
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_prepare_attention", fake_prepare)
+    impl = Qwen4ExpQSAFlashAttentionImpl.__new__(Qwen4ExpQSAFlashAttentionImpl)
+    layer = SimpleNamespace()
+    query = torch.empty(4, 6, 256, dtype=torch.bfloat16)
+    key_cache = torch.empty(1, 1, 16, 256, dtype=torch.bfloat16)
+    value_cache = torch.empty_like(key_cache)
+    block_indices = torch.empty(4, 512, dtype=torch.int32)
+    block_table = torch.empty(1, 4, dtype=torch.int32)
+    token_to_req = torch.zeros(4, dtype=torch.int32)
+    logical_positions = torch.arange(4)
+    workspace = torch.empty(128, dtype=torch.uint8)
+    output = torch.empty_like(query)
+
+    def get_plan(route: torch.Tensor) -> object:
+        return impl._get_qsa_prims_ts_plan(
+            layer,
+            query,
+            key_cache,
+            value_cache,
+            block_indices,
+            block_table,
+            token_to_req,
+            logical_positions,
+            workspace,
+            output,
+            0.125,
+            1.0,
+            route,
+            4,
+        )
+
+    route = torch.tensor([0, 2, 4], dtype=torch.int32)
+    first = get_plan(route)
+    same_values = get_plan(route.clone())
+    route[1] = 1
+    changed_values = get_plan(route)
+
+    assert same_values is first
+    assert changed_values is not first
+    assert prepared_routes == [(0, 2, 4), (0, 1, 4)]
+
+
+def test_qsa_prims_ts_eager_prefill_caches_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionImpl
+
+    monkeypatch.setattr(
+        qsa_ops,
+        "qsa_prims_ts_combined_workspace_size",
+        lambda *_args, **_kwargs: 128,
+    )
+
+    def fake_prepare(*args, **_kwargs) -> object:
+        return SimpleNamespace(workspace=args[7])
+
+    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_prepare_attention", fake_prepare)
+    impl = Qwen4ExpQSAFlashAttentionImpl.__new__(Qwen4ExpQSAFlashAttentionImpl)
+    graph_workspace = torch.empty(1, dtype=torch.uint8)
+    graph_plan = object()
+    layer = SimpleNamespace(
+        _qsa_prims_ts_workspace=None,
+        _qsa_prims_ts_workspace_pool={"graph": graph_workspace},
+        _qsa_prims_ts_plan_pool={"graph": graph_plan},
+    )
+    key_cache = torch.empty(1, 1, 16, 256, dtype=torch.bfloat16)
+    value_cache = torch.empty_like(key_cache)
+    block_table = torch.empty(1, 4, dtype=torch.int32)
+    first_workspace_ref: weakref.ReferenceType[torch.Tensor] | None = None
+
+    for rows in (1, 2):
+        query = torch.empty(rows, 6, 256, dtype=torch.bfloat16)
+        block_indices = torch.empty(rows, 512, dtype=torch.int32)
+        token_to_req = torch.zeros(rows, dtype=torch.int32)
+        logical_positions = torch.arange(rows)
+        output = torch.empty_like(query)
+        route = torch.tensor([0, rows], dtype=torch.int32)
+        workspace = impl._get_qsa_prims_ts_workspace(
+            layer,
+            query,
+            key_cache,
+            block_table,
+            512,
+            torch.bfloat16,
+            route,
+            4,
+            persistent=False,
+        )
+        if first_workspace_ref is None:
+            first_workspace_ref = weakref.ref(workspace)
+        impl._get_qsa_prims_ts_plan(
+            layer,
+            query,
+            key_cache,
+            value_cache,
+            block_indices,
+            block_table,
+            token_to_req,
+            logical_positions,
+            workspace,
+            output,
+            0.125,
+            1.0,
+            route,
+            4,
+            persistent=False,
+        )
+
+    gc.collect()
+
+    assert len(layer._qsa_prims_ts_eager_prefill_workspace_pool) == 1
+    assert len(layer._qsa_prims_ts_eager_prefill_plan_pool) == 1
+    assert layer._qsa_prims_ts_workspace_pool["graph"] is graph_workspace
+    assert layer._qsa_prims_ts_plan_pool["graph"] is graph_plan
+    assert first_workspace_ref is not None
+    assert first_workspace_ref() is None
+
+
 def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAAttention
 
-    layer = SimpleNamespace(
-        _qsa_prims_ts_workspace=torch.empty(1),
-        _qsa_prims_ts_workspace_pool={"profiling": torch.empty(1)},
-        _qsa_prims_ts_plan_pool={"profiling": object()},
-        kv_cache=torch.empty(0),
-    )
+    layer = Qwen4ExpQSAAttention.__new__(Qwen4ExpQSAAttention)
+    torch.nn.Module.__init__(layer)
+    layer._qsa_prims_ts_workspace = torch.empty(1)
+    layer._qsa_prims_ts_workspace_pool = {"profiling": torch.empty(1)}
+    layer._qsa_prims_ts_plan_pool = {"profiling": object()}
+    layer._qsa_prims_ts_eager_prefill_workspace_pool = {"prefill": torch.empty(1)}
+    layer._qsa_prims_ts_eager_prefill_plan_pool = {"prefill": object()}
+    layer.kv_cache = torch.empty(0)
     real_kv_cache = torch.empty(2, 1, 16, 512)
 
     Qwen4ExpQSAAttention.bind_kv_cache(layer, real_kv_cache)
@@ -1547,6 +1758,40 @@ def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
     assert layer._qsa_prims_ts_workspace is None
     assert not layer._qsa_prims_ts_workspace_pool
     assert not layer._qsa_prims_ts_plan_pool
+    assert not layer._qsa_prims_ts_eager_prefill_workspace_pool
+    assert not layer._qsa_prims_ts_eager_prefill_plan_pool
+
+
+def test_qsa_generic_kv_cache_teardown_releases_prepared_storage() -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAAttention
+    from vllm.v1.worker.utils import clear_layer_kv_caches
+
+    layer = Qwen4ExpQSAAttention.__new__(Qwen4ExpQSAAttention)
+    torch.nn.Module.__init__(layer)
+    layer.kv_cache = torch.empty(2, 1, 16, 512)
+    key_cache, value_cache = layer.kv_cache.split(256, dim=-1)
+    workspace = torch.empty(128, dtype=torch.uint8)
+    plan = SimpleNamespace(key_cache=key_cache, value_cache=value_cache)
+    key_ref = weakref.ref(key_cache)
+    value_ref = weakref.ref(value_cache)
+    workspace_ref = weakref.ref(workspace)
+    layer._qsa_prims_ts_workspace = workspace
+    layer._qsa_prims_ts_workspace_pool = {"graph": workspace}
+    layer._qsa_prims_ts_plan_pool = {"graph": plan}
+    layer._qsa_prims_ts_eager_prefill_workspace_pool = {}
+    layer._qsa_prims_ts_eager_prefill_plan_pool = {}
+    del key_cache, value_cache, workspace, plan
+
+    clear_layer_kv_caches([layer])
+    gc.collect()
+
+    assert layer.kv_cache.numel() == 0
+    assert layer._qsa_prims_ts_workspace is None
+    assert not layer._qsa_prims_ts_workspace_pool
+    assert not layer._qsa_prims_ts_plan_pool
+    assert key_ref() is None
+    assert value_ref() is None
+    assert workspace_ref() is None
 
 
 def test_qsa_prims_ts_wrappers_forward_grouped_sq(
