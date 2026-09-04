@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""NVIDIA QSA owner with Triton kernels."""
+"""NVIDIA QSA attention owner."""
 
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import ClassVar, cast
 
 import torch
 from torch import nn
 
 from vllm import _custom_ops as custom_ops
-from vllm.config import VllmConfig
+from vllm import envs
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.config.cache import CacheDType
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.forward_context import get_forward_context
@@ -56,25 +58,63 @@ from vllm.v1.kv_cache_interface import (
     get_kv_quant_mode,
 )
 
-from ..common.qsa_cache import QSAForwardMetadata
-from . import model
+from ..common.qsa_cache import QSA_PRIMS_TS_GROUP_SIZES, QSAForwardMetadata
 from .indexer_qsa import QSAIndexer
 
-_QSA_BACKEND_ENV = "VLLM_QSA_ATTENTION_BACKEND"
-_QSA_DIAGNOSTIC_NVTX = os.environ.get("VLLM_QSA_DIAGNOSTIC_NVTX", "0") == "1"
+_QSA_PREFILL_GROUP_SIZE = 4
+_QSA_PRIMS_TS_HEAD_SIZE = 256
+_QSA_PRIMS_TS_SPARSE_BLOCK_SIZE = 4
+_QSA_PRIMS_TS_TILE_Q = 64
+_QSA_PRIMS_TS_DEVICE_CAPABILITIES = (100, 103)
 
 
-def _qsa_nvtx_push(name: str) -> None:
-    if _QSA_DIAGNOSTIC_NVTX:
-        torch.cuda.nvtx.range_push(name)
+@dataclass(frozen=True)
+class _QSAPrimsTSPreparedState:
+    key: tuple[object, ...]
+    workspace: torch.Tensor
+    plan: object
 
 
-def _qsa_nvtx_pop() -> None:
-    if _QSA_DIAGNOSTIC_NVTX:
-        torch.cuda.nvtx.range_pop()
+def _supports_qsa_prims_ts_geometry(
+    *,
+    num_heads: int,
+    num_kv_heads: int,
+    head_size: int,
+    sparse_block_size: int,
+    max_group_size: int,
+) -> bool:
+    """Return whether every configured QSA route fits the PrimTS kernel."""
+
+    return (
+        head_size == _QSA_PRIMS_TS_HEAD_SIZE
+        and sparse_block_size == _QSA_PRIMS_TS_SPARSE_BLOCK_SIZE
+        and num_kv_heads > 0
+        and num_heads % num_kv_heads == 0
+        and max_group_size in QSA_PRIMS_TS_GROUP_SIZES
+        and max_group_size * (num_heads // num_kv_heads) <= _QSA_PRIMS_TS_TILE_Q
+    )
 
 
-def _resolve_qsa_prims_ts_backend(*, capable: bool, available: bool) -> bool:
+def _supports_qsa_prims_ts_device() -> bool:
+    """Match the exact architectures implemented by the FlashInfer runtime."""
+
+    return any(
+        current_platform.is_device_capability(capability)
+        for capability in _QSA_PRIMS_TS_DEVICE_CAPABILITIES
+    )
+
+
+def _has_qsa_prims_ts_attention() -> bool:
+    """Probe the optional FlashInfer API only when backend resolution needs it."""
+
+    from .ops.qsa import has_qsa_prims_ts_attention
+
+    return has_qsa_prims_ts_attention()
+
+
+def _resolve_qsa_prims_ts_backend(
+    *, capable: bool, availability_probe: Callable[[], bool]
+) -> bool:
     """Resolve the QSA attention implementation selected for this process.
 
     ``auto`` preserves the production default. The explicit modes make
@@ -82,18 +122,17 @@ def _resolve_qsa_prims_ts_backend(*, capable: bool, available: bool) -> bool:
     changing the model or attention-backend interface.
     """
 
-    backend = os.environ.get(_QSA_BACKEND_ENV, "auto").strip().lower()
-    if backend not in ("auto", "triton", "prims_ts"):
-        raise ValueError(
-            f"{_QSA_BACKEND_ENV} must be auto, triton, or prims_ts; got {backend!r}"
-        )
+    backend = envs.VLLM_QSA_ATTENTION_BACKEND
     if backend == "triton":
         return False
+    available = availability_probe() if capable else False
     supported = capable and available
     if backend == "prims_ts" and not supported:
         raise RuntimeError(
-            "VLLM_QSA_ATTENTION_BACKEND=prims_ts requires an SM100-family GPU "
-            "and the FlashInfer page-4 PrimTS API"
+            "VLLM_QSA_ATTENTION_BACKEND=prims_ts requires an SM100 or SM103 GPU, "
+            "the FlashInfer sparse-block PrimTS QSA API, and a supported QSA "
+            "geometry (head size 256, sparse block size 4, and grouped heads "
+            "within TileQ64)"
         )
     return supported
 
@@ -117,7 +156,7 @@ class Qwen4ExpQSAFlashAttentionBackend(FlashAttentionBackend):
 
     @staticmethod
     def get_name() -> str:
-        return "QWEN4_EXP_QSA_TRITON"
+        return "QWEN4_EXP_QSA"
 
     @staticmethod
     def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
@@ -142,7 +181,7 @@ class Qwen4ExpQSAFlashAttentionBackend(FlashAttentionBackend):
 
 
 class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
-    """Run paged sparse GQA with the QSA Triton kernel."""
+    """Run paged sparse GQA with Triton or FlashInfer PrimTS."""
 
     supports_dcp: bool = False
     supports_pcp: bool = False
@@ -160,6 +199,9 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         attn_type: AttentionType = AttentionType.DECODER,
         kv_sharing_target_layer_name: str | None = None,
         sinks: torch.Tensor | None = None,
+        *,
+        qsa_sparse_block_size: int = _QSA_PRIMS_TS_SPARSE_BLOCK_SIZE,
+        qsa_max_group_size: int = _QSA_PREFILL_GROUP_SIZE,
     ) -> None:
         # Reuse FlashAttention's metadata/DCP initialization, but do not apply
         # its dense-kernel FP8 capability gate. QSA never calls the inherited
@@ -193,86 +235,19 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 "Qwen4Exp QSA supports BF16 and FP8-E4M3 KV caches"
             )
         self.supports_quant_query_input = False
-        from .ops.qsa import has_qsa_prims_ts_attention
-
+        geometry_supported = _supports_qsa_prims_ts_geometry(
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            head_size=head_size,
+            sparse_block_size=qsa_sparse_block_size,
+            max_group_size=qsa_max_group_size,
+        )
         self.use_qsa_prims_ts = _resolve_qsa_prims_ts_backend(
-            capable=current_platform.is_device_capability_family(100),
-            available=has_qsa_prims_ts_attention(),
+            capable=_supports_qsa_prims_ts_device() and geometry_supported,
+            availability_probe=_has_qsa_prims_ts_attention,
         )
 
-    def _get_qsa_prims_ts_workspace(
-        self,
-        layer: torch.nn.Module,
-        query: torch.Tensor,
-        key_cache: torch.Tensor,
-        block_table: torch.Tensor,
-        block_topk: int,
-        out_dtype: torch.dtype,
-        qo_indptr_cpu: torch.Tensor | None,
-        group_size: int,
-        *,
-        persistent: bool = True,
-    ) -> torch.Tensor:
-        from .ops.qsa import qsa_prims_ts_combined_workspace_size
-
-        num_query_groups = (
-            qo_indptr_cpu.numel() - 1
-            if qo_indptr_cpu is not None
-            else query.shape[0] * query.shape[1]
-        )
-        workspace_key = (
-            query.device,
-            tuple(query.shape),
-            num_query_groups,
-            group_size,
-            qo_indptr_cpu is not None,
-            tuple(key_cache.shape),
-            key_cache.data_ptr(),
-            block_table.shape[1],
-            block_topk,
-            query.dtype,
-            out_dtype,
-        )
-        pool_name = (
-            "_qsa_prims_ts_workspace_pool"
-            if persistent
-            else "_qsa_prims_ts_eager_prefill_workspace_pool"
-        )
-        workspace_pool = getattr(layer, pool_name, None)
-        if workspace_pool is None:
-            workspace_pool = {}
-            setattr(layer, pool_name, workspace_pool)
-        workspace = workspace_pool.get(workspace_key)
-        if workspace is None:
-            required_bytes = qsa_prims_ts_combined_workspace_size(
-                query,
-                key_cache,
-                block_table,
-                block_topk,
-                out_dtype=out_dtype,
-                qo_indptr=qo_indptr_cpu,
-                max_seq_len_q=group_size if qo_indptr_cpu is not None else None,
-            )
-            # CUDA graphs replay without re-entering this Python owner. Give
-            # every semantic graph key and KV-cache generation its own
-            # allocation so throwaway graph-memory profiling storage cannot
-            # survive into the real capture. Metadata fully initializes its
-            # outputs and bitmap scratch; split-KV counters are initialized
-            # once by the prepared FlashInfer plan.
-            workspace = torch.empty(
-                required_bytes,
-                dtype=torch.uint8,
-                device=query.device,
-            )
-            if not persistent:
-                workspace_pool.clear()
-            workspace_pool[workspace_key] = workspace
-        # Retain the last allocation under the historical attribute for
-        # diagnostics and integrations that inspect it.
-        layer._qsa_prims_ts_workspace = workspace
-        return workspace
-
-    def _get_qsa_prims_ts_plan(
+    def _get_qsa_prims_ts_prepared_state(
         self,
         layer: torch.nn.Module,
         query: torch.Tensor,
@@ -282,25 +257,24 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         block_table: torch.Tensor,
         token_to_req: torch.Tensor,
         logical_positions: torch.Tensor,
-        workspace: torch.Tensor,
         out: torch.Tensor,
         bmm1_scale: float,
         bmm2_scale: float,
         qo_indptr_cpu: torch.Tensor | None,
+        qo_topology: tuple[int, ...] | None,
         group_size: int,
+        sparse_block_size: int,
         *,
-        persistent: bool = True,
-    ) -> object:
-        """Return a validated plan for one graph-stable QSA semantic key."""
+        persistent: bool = False,
+    ) -> _QSAPrimsTSPreparedState:
+        """Return workspace and plan for one graph-stable QSA geometry."""
 
-        from .ops.qsa import qsa_prims_ts_prepare_attention
-
-        qo_topology = (
-            None
-            if qo_indptr_cpu is None
-            else tuple(int(offset) for offset in qo_indptr_cpu.tolist())
+        from .ops.qsa import (
+            qsa_prims_ts_combined_workspace_size,
+            qsa_prims_ts_prepare_attention,
         )
-        plan_key = (
+
+        state_key = (
             query.device,
             tuple(query.shape),
             query.stride(),
@@ -310,53 +284,91 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             out.dtype,
             tuple(key_cache.shape),
             key_cache.stride(),
+            key_cache.dtype,
             key_cache.data_ptr(),
+            tuple(value_cache.shape),
+            value_cache.stride(),
+            value_cache.dtype,
             value_cache.data_ptr(),
             tuple(block_indices.shape),
             block_indices.stride(),
+            block_indices.dtype,
             tuple(block_table.shape),
             block_table.stride(),
-            workspace.data_ptr(),
+            block_table.dtype,
+            tuple(token_to_req.shape),
+            token_to_req.stride(),
+            token_to_req.dtype,
+            tuple(logical_positions.shape),
+            logical_positions.stride(),
+            logical_positions.dtype,
             float(bmm1_scale),
             float(bmm2_scale),
             group_size,
+            sparse_block_size,
             qo_topology,
         )
-        pool_name = (
-            "_qsa_prims_ts_plan_pool"
-            if persistent
-            else "_qsa_prims_ts_eager_prefill_plan_pool"
+        if persistent:
+            state = layer._qsa_prims_ts_graph_states.get(state_key)
+        else:
+            state = layer._qsa_prims_ts_eager_state
+            if state is not None and state.key != state_key:
+                state = None
+        capturing = torch.cuda.is_current_stream_capturing()
+        if capturing and not persistent:
+            raise RuntimeError(
+                "eager QSA PrimTS state cannot be used during CUDA-graph capture"
+            )
+        if state is not None:
+            return state
+        if capturing:
+            raise RuntimeError(
+                "QSA PrimTS plans must be prepared during CUDA-graph warmup"
+            )
+
+        qo_indptr = (
+            None
+            if qo_indptr_cpu is None
+            else qo_indptr_cpu.to(query.device, non_blocking=True)
         )
-        plan_pool = getattr(layer, pool_name, None)
-        if plan_pool is None:
-            plan_pool = {}
-            setattr(layer, pool_name, plan_pool)
-        plan = plan_pool.get(plan_key)
-        if plan is None:
-            qo_indptr = (
-                None
-                if qo_indptr_cpu is None
-                else qo_indptr_cpu.to(query.device, non_blocking=True)
-            )
-            plan = qsa_prims_ts_prepare_attention(
-                query,
-                key_cache,
-                value_cache,
-                block_indices,
-                block_table,
-                token_to_req,
-                logical_positions,
-                workspace,
-                out,
-                bmm1_scale=bmm1_scale,
-                bmm2_scale=bmm2_scale,
-                qo_indptr=qo_indptr,
-                max_seq_len_q=group_size if qo_indptr is not None else None,
-            )
-            if not persistent:
-                plan_pool.clear()
-            plan_pool[plan_key] = plan
-        return plan
+        required_bytes = qsa_prims_ts_combined_workspace_size(
+            query,
+            key_cache,
+            block_table,
+            block_indices.shape[1],
+            out_dtype=out.dtype,
+            qo_indptr=qo_indptr_cpu,
+            max_seq_len_q=group_size if qo_indptr_cpu is not None else None,
+            sparse_block_size=sparse_block_size,
+        )
+        workspace = torch.empty(
+            required_bytes,
+            dtype=torch.uint8,
+            device=query.device,
+        )
+        plan = qsa_prims_ts_prepare_attention(
+            query,
+            key_cache,
+            value_cache,
+            block_indices,
+            block_table,
+            token_to_req,
+            logical_positions,
+            workspace,
+            out,
+            bmm1_scale=bmm1_scale,
+            bmm2_scale=bmm2_scale,
+            qo_indptr=qo_indptr,
+            max_seq_len_q=group_size if qo_indptr is not None else None,
+            sparse_block_size=sparse_block_size,
+        )
+        state = _QSAPrimsTSPreparedState(state_key, workspace, plan)
+        if persistent:
+            layer._qsa_prims_ts_graph_states[state_key] = state
+        else:
+            # Eager and piecewise execution retain only the latest geometry.
+            layer._qsa_prims_ts_eager_state = state
+        return state
 
     def forward_qsa(
         self,
@@ -369,8 +381,10 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         output: torch.Tensor,
         token_to_req: torch.Tensor,
         logical_positions: torch.Tensor,
-        query_start_loc_cpu: torch.Tensor | None = None,
+        query_start_offsets: tuple[int, ...] | None = None,
         has_prefill: bool = True,
+        uniform_decode_query_len: int | None = None,
+        persistent_plan: bool = False,
         output_scale: torch.Tensor | None = None,
         output_block_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -425,15 +439,13 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
 
         if self.use_qsa_prims_ts:
             from .ops.qsa import (
-                qsa_prims_ts_group_size,
                 qsa_prims_ts_qo_indptr,
                 qsa_prims_ts_run_prepared,
-                qsa_prims_ts_use_fixed_decode_layout,
             )
 
             if not indices_are_blocks:
                 raise RuntimeError(
-                    "PrimTS QSA requires the indexer compact page-four block output"
+                    "PrimTS QSA requires compact sparse-block indexer output"
                 )
 
             # PR 53896 stores the combined cache as [P,Hkv,N,2D]. The common
@@ -445,34 +457,46 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             prims_value_cache = canonicalize_singleton_dim_strides(
                 value_cache.transpose(1, 2)
             )
-            _qsa_nvtx_push("qsa_prims_route_setup")
-            # Prefill and irregular decode execute eagerly at the attention
-            # boundary, so route exactly their live rows. Fixed decode is the
-            # graph-stable layout that can retain prepared storage.
             prims_output = output[:num_tokens]
-            configured_group_size = (
-                layer.qsa_prims_ts_prefill_group_size
-                if has_prefill
-                else layer.qsa_prims_ts_decode_group_size
-            )
-            if query_start_loc_cpu is None:
-                # Adaptive verification has device-only request boundaries.
-                # Q1 is request-independent and remains safe in that mode.
-                configured_group_size = 1
-            group_size = qsa_prims_ts_group_size(
-                query_for_attention,
-                prims_key_cache,
-                query_start_loc_cpu,
-                group_size=int(configured_group_size),
-            )
-            use_fixed_decode = qsa_prims_ts_use_fixed_decode_layout(
-                query_start_loc_cpu,
-                num_tokens,
-                group_size,
-                has_prefill=has_prefill,
-            )
-            route_qo_indptr_cpu = None
-            if use_fixed_decode or query_start_loc_cpu is None:
+            route_query_start_offsets = query_start_offsets
+            if has_prefill:
+                # Prefill always uses packed Q. Fast drafting metadata may omit
+                # CPU request boundaries, in which case Q1 is the only
+                # request-independent grouping.
+                if route_query_start_offsets is None:
+                    group_size = 1
+                    route_query_start_offsets = (0, num_tokens)
+                else:
+                    group_size = _QSA_PREFILL_GROUP_SIZE
+                use_fixed_layout = False
+            elif query_start_offsets is None:
+                # Missing CPU boundaries cannot prove multi-token request
+                # ownership. Keep those launches request-independent.
+                group_size = 1
+                use_fixed_layout = True
+            elif layer.qsa_prims_ts_decode_group_size == 1:
+                group_size = 1
+                use_fixed_layout = True
+            elif uniform_decode_query_len == layer.qsa_prims_ts_decode_group_size:
+                # Uniform target verification contributes MTP + 1 adjacent
+                # rows per live request. Fixed routing is legal only after the
+                # shared metadata builder proves those exact CPU boundaries.
+                assert uniform_decode_query_len is not None
+                group_size = uniform_decode_query_len
+                use_fixed_layout = True
+            else:
+                # Irregular decode still groups within each request, never
+                # across a boundary that happens to make total_q divisible.
+                group_size = layer.qsa_prims_ts_decode_group_size
+                use_fixed_layout = False
+
+            route_qo_indptr_cpu: torch.Tensor | None = None
+            if use_fixed_layout:
+                if num_tokens % group_size:
+                    raise RuntimeError(
+                        "fixed QSA decode rows must be divisible by the query "
+                        f"group size ({num_tokens=} {group_size=})"
+                    )
                 num_query_groups = num_tokens // group_size
                 route_query = query_for_attention.view(
                     num_query_groups,
@@ -483,41 +507,31 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 )
                 route_output = prims_output.view_as(route_query)
             else:
+                assert route_query_start_offsets is not None
                 route_qo_indptr_cpu = qsa_prims_ts_qo_indptr(
-                    query_start_loc_cpu,
+                    route_query_start_offsets,
                     num_tokens,
                     group_size,
                 )
                 route_query = query_for_attention
                 route_output = prims_output
-            _qsa_nvtx_pop()
 
-            _qsa_nvtx_push("qsa_prims_plan_lookup")
-            # The grouped union bitmap is indexed by logical page-four ID.
-            # Bound it by the largest live context, not by the model's full
-            # block-table allocation.  For example, an 8K prefill needs only
-            # three 3,136-token storage pages instead of all 45 pages reserved
-            # for a 139K context.  Full CUDA-graph capture remains safe because
-            # its attention metadata deliberately sets max_seq_len to the
-            # model-length upper bound.
-            active_storage_pages = min(
-                attn_metadata.block_table.shape[1],
-                (attn_metadata.max_seq_len + prims_key_cache.shape[2] - 1)
-                // prims_key_cache.shape[2],
-            )
-            metadata_block_table = attn_metadata.block_table[:, :active_storage_pages]
-            workspace = self._get_qsa_prims_ts_workspace(
-                layer,
-                route_query,
-                prims_key_cache,
-                metadata_block_table,
-                logical_indices.shape[1],
-                route_output.dtype,
-                route_qo_indptr_cpu,
-                group_size,
-                persistent=use_fixed_decode,
-            )
-            plan = self._get_qsa_prims_ts_plan(
+            # Eager metadata is bounded by the largest live context. Full
+            # CUDA graphs instead retain the allocated width so warmup,
+            # capture, and replay share one stable prepared-plan geometry.
+            if persistent_plan:
+                metadata_block_table = attn_metadata.block_table
+            else:
+                active_storage_pages = min(
+                    attn_metadata.block_table.shape[1],
+                    (attn_metadata.max_seq_len + prims_key_cache.shape[2] - 1)
+                    // prims_key_cache.shape[2],
+                )
+                metadata_block_table = attn_metadata.block_table[
+                    :, :active_storage_pages
+                ]
+            sparse_block_size = int(layer.indexer.compress_ratio)
+            state = self._get_qsa_prims_ts_prepared_state(
                 layer,
                 route_query,
                 prims_key_cache,
@@ -526,19 +540,18 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 metadata_block_table,
                 token_to_req,
                 logical_positions,
-                workspace,
                 route_output,
                 bmm1_scale,
                 bmm2_scale,
                 route_qo_indptr_cpu,
+                route_query_start_offsets if route_qo_indptr_cpu is not None else None,
                 group_size,
-                persistent=use_fixed_decode,
+                sparse_block_size,
+                persistent=persistent_plan,
             )
-            _qsa_nvtx_pop()
 
-            _qsa_nvtx_push("qsa_prims_metadata_attention_launch")
             qsa_prims_ts_run_prepared(
-                plan,
+                state.plan,
                 route_query,
                 logical_indices,
                 metadata_block_table,
@@ -546,12 +559,10 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 logical_positions,
                 route_output,
             )
-            _qsa_nvtx_pop()
             return output
 
         from .ops.qsa import qsa_sparse_paged_attention
 
-        _qsa_nvtx_push("qsa_triton_attention_launch")
         qsa_sparse_paged_attention(
             query_for_attention,
             key_cache,
@@ -563,7 +574,6 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             bmm1_scale=bmm1_scale,
             bmm2_scale=bmm2_scale,
         )
-        _qsa_nvtx_pop()
         return output
 
 
@@ -571,18 +581,12 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
     """Merged Qwen full-attention owner with a QSA index side branch."""
 
     supports_dcp = False
+    _qsa_prims_ts_graph_states: dict[tuple[object, ...], _QSAPrimsTSPreparedState]
+    _qsa_prims_ts_eager_state: _QSAPrimsTSPreparedState | None
 
     def _clear_qsa_prims_ts_prepared_storage(self) -> None:
-        for pool_name in (
-            "_qsa_prims_ts_workspace_pool",
-            "_qsa_prims_ts_plan_pool",
-            "_qsa_prims_ts_eager_prefill_workspace_pool",
-            "_qsa_prims_ts_eager_prefill_plan_pool",
-        ):
-            pool = getattr(self, pool_name, None)
-            if pool is not None:
-                pool.clear()
-        self._qsa_prims_ts_workspace = None
+        self._qsa_prims_ts_graph_states.clear()
+        self._qsa_prims_ts_eager_state = None
 
     def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
         """Bind one cache generation and discard plans bound to its predecessor.
@@ -674,7 +678,12 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             self.total_num_heads * (1 + self.attn_output_gate),
             self.total_num_kv_heads,
             bias=False,
-            quant_config=model.without_modelopt_fp4(quant_config),
+            quant_config=(
+                None
+                if quant_config is not None
+                and quant_config.get_name() == "modelopt_fp4"
+                else quant_config
+            ),
             prefix=f"{prefix}.qkv_proj",
         )
         self.o_proj = RowParallelLinear(
@@ -729,6 +738,14 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         self.kv_cache = torch.tensor([])
         set_default_quant_scales(self, register_buffer=True)
 
+        decode_group_size = vllm_config.uniform_decode_query_len
+        # TODO: add a Q3 kernel configuration instead of falling back to Q1
+        # when a framework configures MTP=2.
+        if decode_group_size not in QSA_PRIMS_TS_GROUP_SIZES:
+            decode_group_size = 1
+        self.qsa_prims_ts_decode_group_size = int(decode_group_size)
+        sparse_block_size = int(config.indexer_compress_ratio)
+
         self.attn_backend = Qwen4ExpQSAFlashAttentionBackend
         self.impl = Qwen4ExpQSAFlashAttentionImpl(
             self.num_heads,
@@ -741,6 +758,11 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             None,
             AttentionType.DECODER,
             None,
+            qsa_sparse_block_size=sparse_block_size,
+            qsa_max_group_size=max(
+                _QSA_PREFILL_GROUP_SIZE,
+                self.qsa_prims_ts_decode_group_size,
+            ),
         )
         self.indexer = QSAIndexer(
             vllm_config=vllm_config,
@@ -752,13 +774,6 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         )
         max_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         self.qsa_indices_are_blocks = self.impl.use_qsa_prims_ts
-        decode_group_size = vllm_config.uniform_decode_query_len
-        # TODO: add a Q3 kernel configuration instead of falling back to Q1
-        # when a framework configures MTP=2.
-        if decode_group_size not in (1, 2, 4, 5):
-            decode_group_size = 1
-        self.qsa_prims_ts_decode_group_size = int(decode_group_size)
-        self.qsa_prims_ts_prefill_group_size = 4
         selection_width = (
             self.indexer.block_topk
             if self.qsa_indices_are_blocks
@@ -784,15 +799,8 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 ),
                 persistent=False,
             )
-        self._qsa_prims_ts_workspace: torch.Tensor | None = None
-        self._qsa_prims_ts_workspace_pool: dict[tuple[object, ...], torch.Tensor] = {}
-        self._qsa_prims_ts_plan_pool: dict[tuple[object, ...], object] = {}
-        self._qsa_prims_ts_eager_prefill_workspace_pool: dict[
-            tuple[object, ...], torch.Tensor
-        ] = {}
-        self._qsa_prims_ts_eager_prefill_plan_pool: dict[
-            tuple[object, ...], object
-        ] = {}
+        self._qsa_prims_ts_graph_states = {}
+        self._qsa_prims_ts_eager_state = None
 
         static_context = vllm_config.compilation_config.static_forward_context
         if self.layer_name in static_context:
@@ -831,7 +839,8 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         value: torch.Tensor,
         output: torch.Tensor,
     ) -> None:
-        metadata = get_forward_context().attn_metadata
+        forward_context = get_forward_context()
+        metadata = forward_context.attn_metadata
         if isinstance(metadata, list):
             metadata = metadata[0]
         if not isinstance(metadata, dict):
@@ -877,8 +886,13 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
             output,
             token_to_req=side_metadata.token_to_req,
             logical_positions=side_metadata.logical_positions,
-            query_start_loc_cpu=side_metadata.query_start_loc_cpu,
+            query_start_offsets=side_metadata.query_start_offsets,
             has_prefill=side_metadata.has_prefill,
+            uniform_decode_query_len=side_metadata.uniform_decode_query_len,
+            persistent_plan=(
+                forward_context.cudagraph_runtime_mode == CUDAGraphMode.FULL
+                or side_metadata.prepare_cudagraph_plan
+            ),
         )
 
     def forward(

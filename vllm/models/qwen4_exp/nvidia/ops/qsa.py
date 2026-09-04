@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Triton kernels for the Qwen4Exp weight-free QSA path."""
+"""Qwen4Exp weight-free QSA kernels and optional FlashInfer bridge."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Callable
 from functools import lru_cache
-from inspect import signature
+from typing import Protocol, cast
 
 import torch
 
@@ -16,14 +16,25 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 
 _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
-_QSA_SEMANTIC_PAGE_SIZE = 4
-_QSA_PAGE_MEMBERSHIP_BITS = 8
 _QSAPrimsTSAPIs = tuple[
     Callable[..., int],
     Callable[..., int],
     Callable[..., torch.Tensor],
     Callable[..., object],
 ]
+
+
+class _QSAPrimsTSPlan(Protocol):
+    def run(
+        self,
+        q: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_table: torch.Tensor,
+        token_to_req: torch.Tensor,
+        logical_positions: torch.Tensor,
+        *,
+        out: torch.Tensor,
+    ) -> torch.Tensor: ...
 
 
 @triton.jit
@@ -198,371 +209,6 @@ def _expand_qsa_indices_kernel(
         tl.where(valid, token, -1),
         mask=(row < rows) & (columns < OUTPUT_WIDTH),
     )
-
-
-@triton.jit
-def _build_qsa_page4_paged_metadata_kernel(
-    logical_indices_ptr,
-    block_table_ptr,
-    token_to_req_ptr,
-    logical_positions_ptr,
-    paged_kv_indptr_ptr,
-    paged_kv_indices_ptr,
-    seq_lens_ptr,
-    stride_indices_row,
-    stride_indices_column,
-    stride_table_req,
-    stride_table_page,
-    rows,
-    num_requests,
-    TOKEN_TOPK: tl.constexpr,
-    PAGE_TABLE_WIDTH: tl.constexpr,
-    SEMANTIC_PAGE_SIZE: tl.constexpr,
-    STORAGE_PAGE_SIZE: tl.constexpr,
-    PAGE_CAPACITY: tl.constexpr,
-    BLOCK_PAGES: tl.constexpr,
-    INDICES_ARE_BLOCKS: tl.constexpr,
-) -> None:
-    """Convert one compact QSA token row into one fixed-capacity CSR row."""
-
-    row = tl.program_id(0)
-    page_ranks = tl.arange(0, BLOCK_PAGES)
-    request = tl.load(token_to_req_ptr + row)
-    logical_position = tl.load(logical_positions_ptr + row)
-    active = (
-        (row < rows)
-        & (logical_position >= 0)
-        & (request >= 0)
-        & (request < num_requests)
-    )
-    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
-
-    visible_tokens = tl.maximum(logical_position + 1, 0)
-    complete_pages = tl.minimum(
-        visible_tokens // SEMANTIC_PAGE_SIZE,
-        TOKEN_TOPK // SEMANTIC_PAGE_SIZE,
-    )
-    tail_tokens = visible_tokens % SEMANTIC_PAGE_SIZE
-    compact_length = complete_pages * SEMANTIC_PAGE_SIZE + tail_tokens
-    live_pages = complete_pages + (tail_tokens > 0)
-
-    # PrimTS can consume the indexer's compact block IDs directly and avoid
-    # the otherwise separate 512 -> 2,051 token-expansion launch. Retain the
-    # expanded-token mode for the native Triton attention path and diagnostics.
-    page_live = active & (page_ranks < live_pages)
-    if INDICES_ARE_BLOCKS:
-        selected_page = page_ranks < complete_pages
-        selected_block = tl.load(
-            logical_indices_ptr
-            + row * stride_indices_row
-            + page_ranks * stride_indices_column,
-            mask=active & selected_page,
-            other=-1,
-        )
-        is_tail_page = (tail_tokens > 0) & (page_ranks == complete_pages)
-        logical_token = tl.where(
-            is_tail_page,
-            (visible_tokens // SEMANTIC_PAGE_SIZE) * SEMANTIC_PAGE_SIZE,
-            selected_block * SEMANTIC_PAGE_SIZE,
-        )
-    else:
-        # Every four-token group begins at column 4 * page_rank. This includes
-        # the optional causal tail appended after all selected complete groups.
-        logical_token = tl.load(
-            logical_indices_ptr
-            + row * stride_indices_row
-            + page_ranks * SEMANTIC_PAGE_SIZE * stride_indices_column,
-            mask=page_live & (page_ranks < PAGE_CAPACITY),
-            other=-1,
-        )
-    logical_storage_page = tl.maximum(logical_token, 0) // STORAGE_PAGE_SIZE
-    table_entry_live = (
-        page_live & (logical_token >= 0) & (logical_storage_page < PAGE_TABLE_WIDTH)
-    )
-    physical_page = tl.load(
-        block_table_ptr
-        + safe_request * stride_table_req
-        + tl.minimum(logical_storage_page, PAGE_TABLE_WIDTH - 1) * stride_table_page,
-        mask=table_entry_live,
-        other=-1,
-    )
-    subpage = (tl.maximum(logical_token, 0) % STORAGE_PAGE_SIZE) // SEMANTIC_PAGE_SIZE
-    subpages_per_storage_page: tl.constexpr = STORAGE_PAGE_SIZE // SEMANTIC_PAGE_SIZE
-    locator = physical_page * subpages_per_storage_page + subpage
-    locator_live = table_entry_live & (physical_page >= 0)
-
-    # CUDA-graph padding rows have logical_position=-1. Their positive dummy
-    # length preserves the decode scheduler contract while locator -1 selects
-    # PrimTS's TMA out-of-bounds zero page, producing an inert output row.
-    output_locator = tl.where(locator_live, locator, -1)
-    tl.store(
-        paged_kv_indices_ptr + row * PAGE_CAPACITY + page_ranks,
-        output_locator,
-        mask=(row < rows) & (page_ranks < PAGE_CAPACITY),
-    )
-    if row < rows:
-        tl.store(paged_kv_indptr_ptr + row, row * PAGE_CAPACITY)
-        tl.store(seq_lens_ptr + row, tl.maximum(compact_length, 1))
-        if row == rows - 1:
-            tl.store(paged_kv_indptr_ptr + rows, rows * PAGE_CAPACITY)
-
-
-@triton.jit
-def _qsa_popcount_u32(value):
-    """Return a vectorized uint32 population count."""
-
-    return tl.inline_asm_elementwise(
-        asm="popc.b32 $0, $1;",
-        constraints="=r,r",
-        args=[value.to(tl.uint32)],
-        dtype=tl.int32,
-        is_pure=True,
-        pack=1,
-    )
-
-
-@triton.jit
-def _build_qsa_grouped_page_bitsets_kernel(
-    logical_indices_ptr,
-    token_to_req_ptr,
-    logical_positions_ptr,
-    bitsets_ptr,
-    stride_indices_row,
-    stride_indices_column,
-    rows,
-    num_requests,
-    TOKEN_TOPK: tl.constexpr,
-    GROUP_SIZE: tl.constexpr,
-    SEMANTIC_PAGE_SIZE: tl.constexpr,
-    BITSET_WORDS: tl.constexpr,
-    BITSET_BLOCK: tl.constexpr,
-    CLEAR_IN_CTA: tl.constexpr,
-    INDICES_ARE_BLOCKS: tl.constexpr,
-) -> None:
-    """Materialize one logical-page bitmap for each query in a fused group."""
-
-    group = tl.program_id(0)
-    q_index = tl.program_id(1)
-    row = group * GROUP_SIZE + q_index
-    bitset_base = (group * GROUP_SIZE + q_index) * BITSET_WORDS
-    offsets = tl.arange(0, BITSET_BLOCK)
-
-    if CLEAR_IN_CTA:
-        # For a small grouped grid, saving the separate fill launch is worth
-        # the per-CTA clear and barrier. Large grids are cleared once by the
-        # caller so every builder CTA can begin issuing loads immediately.
-        tl.store(
-            bitsets_ptr + bitset_base + offsets,
-            0,
-            mask=offsets < BITSET_WORDS,
-        )
-        tl.debug_barrier()
-
-    request = tl.load(token_to_req_ptr + row, mask=row < rows, other=-1)
-    logical_position = tl.load(
-        logical_positions_ptr + row,
-        mask=row < rows,
-        other=-1,
-    )
-    active = (
-        (row < rows)
-        & (logical_position >= 0)
-        & (request >= 0)
-        & (request < num_requests)
-    )
-    visible_tokens = tl.maximum(logical_position + 1, 0)
-    complete_pages = tl.minimum(
-        visible_tokens // SEMANTIC_PAGE_SIZE,
-        TOKEN_TOPK // SEMANTIC_PAGE_SIZE,
-    )
-    tail_tokens = visible_tokens % SEMANTIC_PAGE_SIZE
-    page_ranks = offsets
-    selected_index = tl.load(
-        logical_indices_ptr
-        + row * stride_indices_row
-        + page_ranks
-        * (1 if INDICES_ARE_BLOCKS else SEMANTIC_PAGE_SIZE)
-        * stride_indices_column,
-        mask=active & (page_ranks < complete_pages),
-        other=-1,
-    )
-    logical_block = (
-        selected_index if INDICES_ARE_BLOCKS else selected_index // SEMANTIC_PAGE_SIZE
-    )
-    word = logical_block // 32
-    bit = logical_block % 32
-    page_live = (
-        active
-        & (page_ranks < complete_pages)
-        & (selected_index >= 0)
-        & (word >= 0)
-        & (word < BITSET_WORDS)
-    )
-    bit_value = (1 << bit).to(tl.int32)
-    # This CTA exclusively owns its query bitmap. CTA-scope atomicity resolves
-    # lane collisions; the following stream-ordered pack kernel provides the
-    # inter-kernel visibility boundary.
-    tl.atomic_or(
-        bitsets_ptr + bitset_base + tl.maximum(word, 0),
-        bit_value,
-        mask=page_live,
-        sem="relaxed",
-        scope="cta",
-    )
-
-    # Keep the optional 1--3-token causal tail out of the vector block. Including
-    # its 513th page would round this kernel from 512 to 1024 lanes even though
-    # every other lane in the upper half is inactive.
-    if INDICES_ARE_BLOCKS:
-        tail_logical_block = visible_tokens // SEMANTIC_PAGE_SIZE
-    else:
-        tail_logical_token = tl.load(
-            logical_indices_ptr
-            + row * stride_indices_row
-            + complete_pages * SEMANTIC_PAGE_SIZE * stride_indices_column,
-            mask=active & (tail_tokens > 0),
-            other=-1,
-        )
-        tail_logical_block = tail_logical_token // SEMANTIC_PAGE_SIZE
-    tail_word = tail_logical_block // 32
-    tail_bit = tail_logical_block % 32
-    tail_live = (
-        active
-        & (tail_tokens > 0)
-        & (tail_logical_block >= 0)
-        & (tail_word >= 0)
-        & (tail_word < BITSET_WORDS)
-    )
-    tl.atomic_or(
-        bitsets_ptr + bitset_base + tl.maximum(tail_word, 0),
-        (1 << tail_bit).to(tl.int32),
-        mask=tail_live,
-        sem="relaxed",
-        scope="cta",
-    )
-
-
-@triton.jit
-def _pack_qsa_grouped_page_union_kernel(
-    bitsets_ptr,
-    block_table_ptr,
-    token_to_req_ptr,
-    logical_positions_ptr,
-    paged_kv_indptr_ptr,
-    paged_kv_indices_ptr,
-    seq_lens_ptr,
-    stride_table_req,
-    stride_table_page,
-    groups,
-    num_requests,
-    GROUP_SIZE: tl.constexpr,
-    BITSET_WORDS: tl.constexpr,
-    BITSET_BLOCK: tl.constexpr,
-    PAGE_TABLE_WIDTH: tl.constexpr,
-    SEMANTIC_PAGE_SIZE: tl.constexpr,
-    PAGE_MEMBERSHIP_BITS: tl.constexpr,
-    STORAGE_PAGE_SIZE: tl.constexpr,
-    PAGE_CAPACITY: tl.constexpr,
-) -> None:
-    """Scan grouped bitsets into sorted packed locator/membership entries."""
-
-    group = tl.program_id(0)
-    words = tl.arange(0, BITSET_BLOCK)
-    word_live = words < BITSET_WORDS
-    bitset_base = group * GROUP_SIZE * BITSET_WORDS
-    q_word_0 = tl.load(
-        bitsets_ptr + bitset_base + words,
-        mask=(group < groups) & word_live,
-        other=0,
-    ).to(tl.uint32)
-    q_word_1 = tl.load(
-        bitsets_ptr + bitset_base + BITSET_WORDS + words,
-        mask=(group < groups) & word_live,
-        other=0,
-    ).to(tl.uint32)
-    q_word_2 = tl.zeros((BITSET_BLOCK,), dtype=tl.uint32)
-    q_word_3 = tl.zeros((BITSET_BLOCK,), dtype=tl.uint32)
-    if GROUP_SIZE == 4:
-        q_word_2 = tl.load(
-            bitsets_ptr + bitset_base + 2 * BITSET_WORDS + words,
-            mask=(group < groups) & word_live,
-            other=0,
-        ).to(tl.uint32)
-        q_word_3 = tl.load(
-            bitsets_ptr + bitset_base + 3 * BITSET_WORDS + words,
-            mask=(group < groups) & word_live,
-            other=0,
-        ).to(tl.uint32)
-    union_word = q_word_0 | q_word_1 | q_word_2 | q_word_3
-    word_counts = _qsa_popcount_u32(union_word)
-    word_offsets = tl.cumsum(word_counts, axis=0) - word_counts
-    union_pages = tl.sum(word_counts, axis=0)
-
-    first_row = group * GROUP_SIZE
-    request = tl.load(token_to_req_ptr + first_row)
-    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
-    group_valid = (group < groups) & (request >= 0) & (request < num_requests)
-    first_position = tl.load(logical_positions_ptr + first_row)
-    last_position = tl.load(logical_positions_ptr + first_row + GROUP_SIZE - 1)
-    group_valid &= last_position == first_position + GROUP_SIZE - 1
-    for q_index in tl.static_range(1, GROUP_SIZE):
-        q_request = tl.load(token_to_req_ptr + first_row + q_index)
-        q_position = tl.load(logical_positions_ptr + first_row + q_index)
-        group_valid &= (q_request == request) & (q_position == first_position + q_index)
-
-    subpages_per_storage_page: tl.constexpr = STORAGE_PAGE_SIZE // SEMANTIC_PAGE_SIZE
-    for bit_index in tl.static_range(0, 32):
-        selected = word_live & ((union_word & (1 << bit_index)) != 0)
-        rank = word_offsets + _qsa_popcount_u32(union_word & ((1 << bit_index) - 1))
-        logical_block = words * 32 + bit_index
-        logical_token = logical_block * SEMANTIC_PAGE_SIZE
-        logical_storage_page = logical_token // STORAGE_PAGE_SIZE
-        table_live = (
-            group_valid
-            & selected
-            & (rank < PAGE_CAPACITY)
-            & (logical_storage_page < PAGE_TABLE_WIDTH)
-        )
-        physical_page = tl.load(
-            block_table_ptr
-            + safe_request * stride_table_req
-            + tl.minimum(logical_storage_page, PAGE_TABLE_WIDTH - 1)
-            * stride_table_page,
-            mask=table_live,
-            other=-1,
-        )
-        subpage = (logical_token % STORAGE_PAGE_SIZE) // SEMANTIC_PAGE_SIZE
-        locator = physical_page * subpages_per_storage_page + subpage
-        membership = (
-            ((q_word_0 >> bit_index) & 1).to(tl.int32)
-            | (((q_word_1 >> bit_index) & 1).to(tl.int32) << 1)
-            | (((q_word_2 >> bit_index) & 1).to(tl.int32) << 2)
-            | (((q_word_3 >> bit_index) & 1).to(tl.int32) << 3)
-        )
-        packed = (locator << PAGE_MEMBERSHIP_BITS) | membership
-        tl.store(
-            paged_kv_indices_ptr + group * PAGE_CAPACITY + rank,
-            packed,
-            mask=table_live & (physical_page >= 0),
-        )
-
-    if group < groups:
-        tail_tokens = (last_position + 1) % SEMANTIC_PAGE_SIZE
-        tail_padding = tl.where(
-            tail_tokens == 0,
-            0,
-            SEMANTIC_PAGE_SIZE - tail_tokens,
-        )
-        seq_len = union_pages * SEMANTIC_PAGE_SIZE - tail_padding
-        tl.store(paged_kv_indptr_ptr + group, group * PAGE_CAPACITY)
-        tl.store(seq_lens_ptr + group, tl.where(group_valid, seq_len, 1))
-        if group == groups - 1:
-            tl.store(paged_kv_indptr_ptr + groups, groups * PAGE_CAPACITY)
-        tl.store(
-            paged_kv_indices_ptr + group * PAGE_CAPACITY,
-            -1,
-            mask=~group_valid,
-        )
 
 
 @triton.jit
@@ -1119,330 +765,26 @@ def expand_qsa_block_indices_cuda(
     return out
 
 
-def qsa_build_page4_paged_metadata(
-    logical_indices: torch.Tensor,
-    block_table: torch.Tensor,
-    token_to_req: torch.Tensor,
-    logical_positions: torch.Tensor,
-    storage_page_size: int,
-    *,
-    indices_are_blocks: bool = False,
-    paged_kv_indptr: torch.Tensor | None = None,
-    paged_kv_indices: torch.Tensor | None = None,
-    seq_lens: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build native page-4 CSR metadata for flattened SQ=1 QSA rows.
-
-    By default, ``logical_indices`` keeps the existing expanded-token indexer
-    interface: each selected four-token group is consecutive and the optional
-    causal tail follows the complete groups. With ``indices_are_blocks=True``,
-    each input entry is one four-token logical block and the kernel derives the
-    tail from ``logical_positions``. This compact mode avoids a separate token
-    expansion while producing the same native PrimTS CSR interface.
-
-    Every query token becomes an independent CSR row with capacity
-    ``token_topk / 4 + 1``. The returned indices tensor is flattened, and the
-    row offsets therefore advance by that fixed capacity. Runtime ``seq_lens``
-    select only the live prefix, including an optional tail page.
-    """
-
-    if not logical_indices.is_cuda or not HAS_TRITON:
-        raise RuntimeError("QSA page-4 metadata requires CUDA and Triton")
-    if logical_indices.ndim != 2 or logical_indices.dtype != torch.int32:
-        raise ValueError("QSA logical indices must be a rank-two int32 tensor")
-    rows, input_width = logical_indices.shape
-    token_topk = (
-        input_width * _QSA_SEMANTIC_PAGE_SIZE
-        if indices_are_blocks
-        else input_width - (_QSA_SEMANTIC_PAGE_SIZE - 1)
-    )
-    if token_topk <= 0 or token_topk % _QSA_SEMANTIC_PAGE_SIZE:
-        raise ValueError(
-            "QSA index width must encode a positive token_topk divisible by four"
-        )
-    if block_table.ndim != 2 or block_table.dtype != torch.int32:
-        raise ValueError("QSA block table must be a rank-two int32 tensor")
-    if not all(block_table.shape):
-        raise ValueError("QSA block table must be nonempty")
-    if token_to_req.shape != (rows,) or token_to_req.dtype != torch.int32:
-        raise ValueError("QSA request mapping must be int32 with one entry per row")
-    if logical_positions.shape != (rows,) or logical_positions.dtype not in (
-        torch.int32,
-        torch.int64,
-    ):
-        raise ValueError("QSA logical positions must be int32/int64 per-row values")
-    if (
-        not isinstance(storage_page_size, int)
-        or isinstance(storage_page_size, bool)
-        or storage_page_size < _QSA_SEMANTIC_PAGE_SIZE
-        or storage_page_size % _QSA_SEMANTIC_PAGE_SIZE
-    ):
-        raise ValueError("QSA storage page size must be a positive multiple of four")
-    tensors = (block_table, token_to_req, logical_positions)
-    if any(tensor.device != logical_indices.device for tensor in tensors):
-        raise ValueError("QSA page-4 metadata inputs must share one CUDA device")
-    if logical_indices.stride(1) != 1 or block_table.stride(1) != 1:
-        raise ValueError("QSA indices and block-table rows must be contiguous")
-    if token_to_req.stride(0) != 1 or logical_positions.stride(0) != 1:
-        raise ValueError("QSA per-row metadata must be contiguous")
-
-    page_capacity = token_topk // _QSA_SEMANTIC_PAGE_SIZE + 1
-    expected_shapes = (
-        (rows + 1,),
-        (rows * page_capacity,),
-        (rows,),
-    )
-    outputs = [paged_kv_indptr, paged_kv_indices, seq_lens]
-    for output_index, (output, shape) in enumerate(zip(outputs, expected_shapes)):
-        if output is None:
-            outputs[output_index] = torch.empty(
-                shape, dtype=torch.int32, device=logical_indices.device
-            )
-        elif (
-            output.shape != shape
-            or output.dtype != torch.int32
-            or output.device != logical_indices.device
-            or not output.is_contiguous()
-        ):
-            raise ValueError(
-                "QSA page-4 output buffers must be contiguous int32 tensors "
-                f"with shapes {expected_shapes}"
-            )
-    paged_kv_indptr, paged_kv_indices, seq_lens = outputs
-    assert paged_kv_indptr is not None
-    assert paged_kv_indices is not None
-    assert seq_lens is not None
-    if not rows:
-        paged_kv_indptr.zero_()
-        return paged_kv_indptr, paged_kv_indices, seq_lens
-
-    _build_qsa_page4_paged_metadata_kernel[(rows,)](
-        logical_indices,
-        block_table,
-        token_to_req,
-        logical_positions,
-        paged_kv_indptr,
-        paged_kv_indices,
-        seq_lens,
-        logical_indices.stride(0),
-        logical_indices.stride(1),
-        block_table.stride(0),
-        block_table.stride(1),
-        rows,
-        block_table.shape[0],
-        TOKEN_TOPK=token_topk,
-        PAGE_TABLE_WIDTH=block_table.shape[1],
-        SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
-        STORAGE_PAGE_SIZE=storage_page_size,
-        PAGE_CAPACITY=page_capacity,
-        BLOCK_PAGES=triton.next_power_of_2(page_capacity),
-        INDICES_ARE_BLOCKS=indices_are_blocks,
-        num_warps=4,
-    )
-    return paged_kv_indptr, paged_kv_indices, seq_lens
-
-
-def qsa_build_page4_grouped_paged_metadata(
-    logical_indices: torch.Tensor,
-    block_table: torch.Tensor,
-    token_to_req: torch.Tensor,
-    logical_positions: torch.Tensor,
-    storage_page_size: int,
-    group_size: int,
-    *,
-    indices_are_blocks: bool = False,
-    bitset_workspace: torch.Tensor | None = None,
-    paged_kv_indptr: torch.Tensor | None = None,
-    paged_kv_indices: torch.Tensor | None = None,
-    seq_lens: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build Q2/Q4 union CSR with packed per-query page membership.
-
-    The model-facing ``logical_indices`` tensor is unchanged. An internal
-    per-query logical-page bitmap forms each consecutive same-request union.
-    Every output CSR word uses ``(locator << 8) | membership``; PrimTS strips
-    the low byte for TMA and applies it to score rows before softmax. The
-    final partial page remains governed by the grouped causal mask.
-    """
-
-    if group_size not in (2, 4):
-        raise ValueError("QSA grouped page metadata supports group size two or four")
-    if not logical_indices.is_cuda or not HAS_TRITON:
-        raise RuntimeError("QSA grouped page metadata requires CUDA and Triton")
-    if logical_indices.ndim != 2 or logical_indices.dtype != torch.int32:
-        raise ValueError("QSA logical indices must be a rank-two int32 tensor")
-    rows, input_width = logical_indices.shape
-    if rows % group_size:
-        raise ValueError("QSA grouped page metadata requires complete query groups")
-    token_topk = (
-        input_width * _QSA_SEMANTIC_PAGE_SIZE
-        if indices_are_blocks
-        else input_width - (_QSA_SEMANTIC_PAGE_SIZE - 1)
-    )
-    if token_topk <= 0 or token_topk % _QSA_SEMANTIC_PAGE_SIZE:
-        raise ValueError(
-            "QSA index width must encode a positive token_topk divisible by four"
-        )
-    if block_table.ndim != 2 or block_table.dtype != torch.int32:
-        raise ValueError("QSA block table must be a rank-two int32 tensor")
-    if not all(block_table.shape):
-        raise ValueError("QSA block table must be nonempty")
-    if token_to_req.shape != (rows,) or token_to_req.dtype != torch.int32:
-        raise ValueError("QSA request mapping must be int32 with one entry per row")
-    if logical_positions.shape != (rows,) or logical_positions.dtype not in (
-        torch.int32,
-        torch.int64,
-    ):
-        raise ValueError("QSA logical positions must be int32/int64 per-row values")
-    if (
-        not isinstance(storage_page_size, int)
-        or isinstance(storage_page_size, bool)
-        or storage_page_size < _QSA_SEMANTIC_PAGE_SIZE
-        or storage_page_size % _QSA_SEMANTIC_PAGE_SIZE
-    ):
-        raise ValueError("QSA storage page size must be a positive multiple of four")
-    tensors = (block_table, token_to_req, logical_positions)
-    if any(tensor.device != logical_indices.device for tensor in tensors):
-        raise ValueError("QSA grouped page metadata inputs must share one CUDA device")
-    if logical_indices.stride(1) != 1 or block_table.stride(1) != 1:
-        raise ValueError("QSA indices and block-table rows must be contiguous")
-
-    groups = rows // group_size
-    page_capacity = token_topk // _QSA_SEMANTIC_PAGE_SIZE + 1
-    union_page_capacity = group_size * page_capacity
-    logical_block_capacity = (
-        block_table.shape[1] * storage_page_size // _QSA_SEMANTIC_PAGE_SIZE
-    )
-    bitset_words = (logical_block_capacity + 31) // 32
-    expected_bitset_shape = (groups * group_size * bitset_words,)
-    expected_output_shapes = (
-        (groups + 1,),
-        (groups * union_page_capacity,),
-        (groups,),
-    )
-    if bitset_workspace is None:
-        bitset_workspace = torch.empty(
-            expected_bitset_shape,
-            dtype=torch.int32,
-            device=logical_indices.device,
-        )
-    elif (
-        bitset_workspace.shape != expected_bitset_shape
-        or bitset_workspace.dtype != torch.int32
-        or bitset_workspace.device != logical_indices.device
-        or not bitset_workspace.is_contiguous()
-    ):
-        raise ValueError(
-            "QSA grouped bitset workspace must be contiguous int32 with shape "
-            f"{expected_bitset_shape}"
-        )
-
-    outputs = [paged_kv_indptr, paged_kv_indices, seq_lens]
-    for output_index, (output, shape) in enumerate(
-        zip(outputs, expected_output_shapes)
-    ):
-        if output is None:
-            outputs[output_index] = torch.empty(
-                shape,
-                dtype=torch.int32,
-                device=logical_indices.device,
-            )
-        elif (
-            output.shape != shape
-            or output.dtype != torch.int32
-            or output.device != logical_indices.device
-            or not output.is_contiguous()
-        ):
-            raise ValueError(
-                "QSA grouped page outputs must be contiguous int32 tensors "
-                f"with shapes {expected_output_shapes}"
-            )
-    paged_kv_indptr, paged_kv_indices, seq_lens = outputs
-    assert paged_kv_indptr is not None
-    assert paged_kv_indices is not None
-    assert seq_lens is not None
-    if not groups:
-        paged_kv_indptr.zero_()
-        return bitset_workspace, paged_kv_indptr, paged_kv_indices, seq_lens
-
-    bitset_block = triton.next_power_of_2(token_topk // _QSA_SEMANTIC_PAGE_SIZE)
-    # A CTA can clear only the bitmap words covered by its selected-page
-    # lanes. Longer-context bitmaps and large grids use one stream-ordered
-    # device fill, which also avoids repeating the clear/barrier per query.
-    clear_in_cta = rows < 4096 and bitset_words <= bitset_block
-    if not clear_in_cta:
-        bitset_workspace.zero_()
-    _build_qsa_grouped_page_bitsets_kernel[(groups, group_size)](
-        logical_indices,
-        token_to_req,
-        logical_positions,
-        bitset_workspace,
-        logical_indices.stride(0),
-        logical_indices.stride(1),
-        rows,
-        block_table.shape[0],
-        TOKEN_TOPK=token_topk,
-        GROUP_SIZE=group_size,
-        SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
-        BITSET_WORDS=bitset_words,
-        BITSET_BLOCK=bitset_block,
-        CLEAR_IN_CTA=clear_in_cta,
-        INDICES_ARE_BLOCKS=indices_are_blocks,
-        num_warps=4,
-    )
-    _pack_qsa_grouped_page_union_kernel[(groups,)](
-        bitset_workspace,
-        block_table,
-        token_to_req,
-        logical_positions,
-        paged_kv_indptr,
-        paged_kv_indices,
-        seq_lens,
-        block_table.stride(0),
-        block_table.stride(1),
-        groups,
-        block_table.shape[0],
-        GROUP_SIZE=group_size,
-        BITSET_WORDS=bitset_words,
-        BITSET_BLOCK=triton.next_power_of_2(bitset_words),
-        PAGE_TABLE_WIDTH=block_table.shape[1],
-        SEMANTIC_PAGE_SIZE=_QSA_SEMANTIC_PAGE_SIZE,
-        PAGE_MEMBERSHIP_BITS=_QSA_PAGE_MEMBERSHIP_BITS,
-        STORAGE_PAGE_SIZE=storage_page_size,
-        PAGE_CAPACITY=union_page_capacity,
-        num_warps=4,
-    )
-    return bitset_workspace, paged_kv_indptr, paged_kv_indices, seq_lens
-
-
 @lru_cache
 def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
-    """Resolve the page-4 capable FlashInfer API without a hard dependency."""
+    """Resolve the FlashInfer sparse-block QSA API without a hard dependency.
+
+    The validator is a compatibility sentinel for the caller-owned grouping
+    contract. Workspace sizing and plan preparation perform the validation,
+    so the bridge deliberately does not add another hot-path call.
+    """
 
     try:
         from flashinfer.decode import (
-            get_prims_ts_qsa_group_size,
             get_prims_ts_qsa_workspace_size,
             make_prims_ts_qsa_qo_indptr,
             prepare_prims_ts_qsa_attention,
+            validate_prims_ts_qsa_group_size,
         )
     except (AttributeError, ImportError):
         return None
-    try:
-        group_parameters = signature(get_prims_ts_qsa_group_size).parameters
-        workspace_parameters = signature(get_prims_ts_qsa_workspace_size).parameters
-        prepare_parameters = signature(prepare_prims_ts_qsa_attention).parameters
-    except (TypeError, ValueError):
-        return None
-    if (
-        "group_size" not in group_parameters
-        or "block_topk" not in workspace_parameters
-        or "qo_indptr" not in workspace_parameters
-        or "qo_indptr" not in prepare_parameters
-    ):
-        return None
     return (
-        get_prims_ts_qsa_group_size,
+        validate_prims_ts_qsa_group_size,
         get_prims_ts_qsa_workspace_size,
         make_prims_ts_qsa_qo_indptr,
         prepare_prims_ts_qsa_attention,
@@ -1450,7 +792,7 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
 
 
 def has_qsa_prims_ts_attention() -> bool:
-    """Return whether FlashInfer exposes encoded page-4 PrimTS decode."""
+    """Return whether FlashInfer exposes sparse-block PrimTS QSA."""
 
     return _qsa_prims_ts_apis() is not None
 
@@ -1464,12 +806,13 @@ def qsa_prims_ts_combined_workspace_size(
     out_dtype: torch.dtype | None = None,
     qo_indptr: torch.Tensor | None = None,
     max_seq_len_q: int | None = None,
+    sparse_block_size: int = 4,
 ) -> int:
     """Return bytes required for a fixed or packed causal QSA launch."""
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
-        raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
+        raise RuntimeError("FlashInfer does not provide sparse-block PrimTS QSA")
     _, get_workspace_size, _, _ = apis
     return int(
         get_workspace_size(
@@ -1480,90 +823,12 @@ def qsa_prims_ts_combined_workspace_size(
             out_dtype=out_dtype,
             qo_indptr=qo_indptr,
             max_seq_len_q=max_seq_len_q,
+            sparse_block_size=sparse_block_size,
         )
     )
 
 
-def qsa_prims_ts_workspace_size(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    max_seq_len: int,
-    *,
-    out_dtype: torch.dtype | None = None,
-) -> int:
-    """Return raw attention workspace bytes for diagnostic callers."""
-
-    from flashinfer.decode import get_prims_ts_batch_decode_workspace_size
-
-    if q.ndim == 3:
-        batch_size, num_qo_heads, head_dim = q.shape
-        seq_len_q = 1
-    elif q.ndim == 4 and q.shape[1] in (2, 4):
-        batch_size, seq_len_q, num_qo_heads, head_dim = q.shape
-    else:
-        raise ValueError("QSA PrimTS expects Q [R,Hq,D] or grouped Q [B,2|4,Hq,D]")
-    if out_dtype is None:
-        out_dtype = q.dtype
-    return int(
-        get_prims_ts_batch_decode_workspace_size(
-            batch_size=batch_size,
-            num_qo_heads=num_qo_heads,
-            num_kv_heads=k_cache.shape[1],
-            head_dim=head_dim,
-            page_size=_QSA_SEMANTIC_PAGE_SIZE,
-            storage_page_size=k_cache.shape[2],
-            max_seq_len=max_seq_len,
-            seq_len_q=seq_len_q,
-            q_dtype=q.dtype,
-            kv_dtype=k_cache.dtype,
-            out_dtype=out_dtype,
-            mask_type="causal",
-            device=q.device,
-        )
-    )
-
-
-def qsa_prims_ts_group_size(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    query_start_loc_cpu: torch.Tensor | None,
-    *,
-    group_size: int,
-) -> int:
-    """Validate the framework-selected fixed QSA query group size."""
-
-    if q.ndim != 3 or k_cache.ndim != 4:
-        raise ValueError(
-            "QSA fixed-group validation expects Q [R,Hq,D] and K [P,Hkv,N,D]"
-        )
-    if not q.is_cuda or q.device != k_cache.device:
-        raise ValueError(
-            "QSA fixed-group validation expects Q and K on one CUDA device"
-        )
-    if q.dtype != k_cache.dtype or q.dtype not in (
-        torch.bfloat16,
-        torch.float8_e4m3fn,
-    ):
-        raise ValueError("QSA fixed-group validation requires matching BF16 or FP8 Q/K")
-    if q.shape[2] != k_cache.shape[3]:
-        raise ValueError("QSA fixed-group validation requires matching head dimensions")
-
-    apis = _qsa_prims_ts_apis()
-    if apis is None:
-        raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
-    get_group_size, _, _, _ = apis
-    return int(
-        get_group_size(
-            query_start_loc_cpu,
-            q.shape[0],
-            q.shape[1],
-            k_cache.shape[1],
-            group_size=group_size,
-        )
-    )
-
-
-@lru_cache
+@lru_cache(maxsize=1)
 def _qsa_prims_ts_qo_indptr_cached(
     query_starts: tuple[int, ...],
     num_query_tokens: int,
@@ -1573,7 +838,7 @@ def _qsa_prims_ts_qo_indptr_cached(
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
-        raise RuntimeError("FlashInfer does not provide packed page-4 QSA")
+        raise RuntimeError("FlashInfer does not provide packed sparse-block QSA")
     _, _, make_qo_indptr, _ = apis
     return make_qo_indptr(
         torch.tensor(query_starts, dtype=torch.int32),
@@ -1584,7 +849,7 @@ def _qsa_prims_ts_qo_indptr_cached(
 
 
 def qsa_prims_ts_qo_indptr(
-    query_start_loc_cpu: torch.Tensor | None,
+    query_start_offsets: tuple[int, ...] | torch.Tensor | None,
     num_query_tokens: int,
     group_size: int,
 ) -> torch.Tensor:
@@ -1595,192 +860,16 @@ def qsa_prims_ts_qo_indptr(
     fixed five-dimensional QSA layout instead.
     """
 
-    if query_start_loc_cpu is None:
+    if query_start_offsets is None:
         raise ValueError("packed QSA requires CPU query boundaries")
-    query_starts = tuple(int(value) for value in query_start_loc_cpu.tolist())
+    if isinstance(query_start_offsets, torch.Tensor):
+        query_starts = tuple(int(value) for value in query_start_offsets.tolist())
+    else:
+        query_starts = query_start_offsets
     return _qsa_prims_ts_qo_indptr_cached(
         query_starts,
         num_query_tokens,
         group_size,
-    )
-
-
-def qsa_prims_ts_use_fixed_decode_layout(
-    query_start_loc_cpu: torch.Tensor | None,
-    num_query_tokens: int,
-    group_size: int,
-    *,
-    has_prefill: bool,
-) -> bool:
-    """Return whether flattened vLLM rows form fixed complete decode groups.
-
-    Fixed QSA storage is valid only for a pure decode call in which every live
-    request contributes exactly ``group_size`` adjacent rows. CUDA-graph
-    padding may add zero-length request entries and an inert token suffix, but
-    that suffix must also contain complete groups. Prefill and irregular
-    decode calls retain the packed-Q representation with explicit boundaries.
-    """
-
-    if has_prefill or query_start_loc_cpu is None:
-        return False
-    if group_size not in (1, 2, 4, 5):
-        return False
-    if num_query_tokens <= 0 or num_query_tokens % group_size:
-        return False
-    if (
-        query_start_loc_cpu.device.type != "cpu"
-        or query_start_loc_cpu.ndim != 1
-        or query_start_loc_cpu.numel() < 2
-        or query_start_loc_cpu.dtype not in (torch.int32, torch.int64)
-    ):
-        return False
-    query_starts = tuple(int(value) for value in query_start_loc_cpu.tolist())
-    if (
-        query_starts[0] != 0
-        or query_starts[-1] < 0
-        or query_starts[-1] > num_query_tokens
-        or (num_query_tokens - query_starts[-1]) % group_size
-    ):
-        return False
-    query_lengths = tuple(
-        end - begin for begin, end in zip(query_starts, query_starts[1:], strict=False)
-    )
-    return all(length in (0, group_size) for length in query_lengths)
-
-
-def qsa_prims_ts_metadata_workspace_size(
-    num_query_tokens: int,
-    block_table: torch.Tensor,
-    storage_page_size: int,
-    group_size: int,
-) -> int:
-    """Return metadata-only workspace bytes for diagnostic callers."""
-
-    from flashinfer.decode import get_prims_ts_qsa_metadata_workspace_size
-
-    return int(
-        get_prims_ts_qsa_metadata_workspace_size(
-            num_query_tokens,
-            block_table.shape[1],
-            storage_page_size,
-            group_size,
-        )
-    )
-
-
-def qsa_prims_ts_build_page4_metadata(
-    block_indices: torch.Tensor,
-    block_table: torch.Tensor,
-    token_to_req: torch.Tensor,
-    logical_positions: torch.Tensor,
-    storage_page_size: int,
-    group_size: int,
-    workspace_buffer: torch.Tensor | None,
-    paged_kv_indptr: torch.Tensor,
-    paged_kv_indices: torch.Tensor,
-    seq_lens: torch.Tensor,
-    enable_pdl: bool | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build metadata separately for diagnostics and component benchmarks."""
-
-    from flashinfer.decode import build_prims_ts_qsa_page4_metadata
-
-    return build_prims_ts_qsa_page4_metadata(
-        block_indices,
-        block_table,
-        token_to_req,
-        logical_positions,
-        workspace_buffer,
-        group_size=group_size,
-        storage_page_size=storage_page_size,
-        out=(paged_kv_indptr, paged_kv_indices, seq_lens),
-        enable_pdl=enable_pdl,
-    )
-
-
-def qsa_prims_ts_paged_attention(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    workspace_buffer: torch.Tensor,
-    paged_kv_indptr: torch.Tensor,
-    paged_kv_indices: torch.Tensor,
-    seq_lens: torch.Tensor,
-    max_seq_len: int,
-    out: torch.Tensor,
-    *,
-    bmm1_scale: float | None = None,
-    bmm2_scale: float = 1.0,
-) -> torch.Tensor:
-    """Run raw PrimTS page-4 attention for component benchmarks."""
-
-    from flashinfer.decode import prims_ts_batch_decode_with_kv_cache
-
-    seq_len_q = 1 if q.ndim == 3 else q.shape[1]
-    return prims_ts_batch_decode_with_kv_cache(
-        q,
-        (k_cache, v_cache),
-        workspace_buffer,
-        paged_kv_indptr,
-        paged_kv_indices,
-        seq_lens,
-        max_seq_len,
-        seq_len_q=seq_len_q,
-        bmm1_scale=q.shape[-1] ** -0.5 if bmm1_scale is None else bmm1_scale,
-        bmm2_scale=bmm2_scale,
-        out=out,
-        out_dtype=out.dtype,
-        mask_type="causal",
-        page_size=_QSA_SEMANTIC_PAGE_SIZE,
-    )
-
-
-def qsa_prims_ts_prepare_paged_attention(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    workspace_buffer: torch.Tensor,
-    paged_kv_indptr: torch.Tensor,
-    paged_kv_indices: torch.Tensor,
-    seq_lens: torch.Tensor,
-    max_seq_len: int,
-    out: torch.Tensor,
-) -> object:
-    """Prepare raw attention for component benchmarks."""
-
-    from flashinfer.decode import prepare_prims_ts_batch_decode_with_kv_cache
-
-    return prepare_prims_ts_batch_decode_with_kv_cache(
-        q,
-        (k_cache, v_cache),
-        workspace_buffer,
-        paged_kv_indptr,
-        paged_kv_indices,
-        seq_lens,
-        max_seq_len,
-        out=out,
-        seq_len_q=1 if q.ndim == 3 else q.shape[1],
-        out_dtype=out.dtype,
-        mask_type="causal",
-        page_size=_QSA_SEMANTIC_PAGE_SIZE,
-    )
-
-
-def qsa_prims_ts_run_prepared_attention(
-    plan: object,
-    q: torch.Tensor,
-    out: torch.Tensor,
-    *,
-    bmm1_scale: float,
-    bmm2_scale: float,
-) -> torch.Tensor:
-    """Run a raw attention-only plan for component benchmarks."""
-
-    return plan.run(
-        q,
-        out=out,
-        bmm1_scale=bmm1_scale,
-        bmm2_scale=bmm2_scale,
     )
 
 
@@ -1799,12 +888,13 @@ def qsa_prims_ts_prepare_attention(
     bmm2_scale: float = 1.0,
     qo_indptr: torch.Tensor | None = None,
     max_seq_len_q: int | None = None,
+    sparse_block_size: int = 4,
 ) -> object:
     """Prepare metadata and attention as one framework-owned QSA plan."""
 
     apis = _qsa_prims_ts_apis()
     if apis is None:
-        raise RuntimeError("FlashInfer does not provide page-4 PrimTS attention")
+        raise RuntimeError("FlashInfer does not provide sparse-block PrimTS QSA")
     _, _, _, prepare_attention = apis
     return prepare_attention(
         q,
@@ -1819,6 +909,7 @@ def qsa_prims_ts_prepare_attention(
         bmm2_scale=bmm2_scale,
         qo_indptr=qo_indptr,
         max_seq_len_q=max_seq_len_q,
+        sparse_block_size=sparse_block_size,
     )
 
 
@@ -1831,9 +922,9 @@ def qsa_prims_ts_run_prepared(
     logical_positions: torch.Tensor,
     out: torch.Tensor,
 ) -> torch.Tensor:
-    """Launch an unchecked framework-owned metadata-plus-attention plan."""
+    """Launch a prepared framework-owned metadata-plus-attention plan."""
 
-    return plan.run(
+    return cast(_QSAPrimsTSPlan, plan).run(
         q,
         block_indices,
         block_table,
@@ -2242,18 +1333,10 @@ __all__ = [
     "expand_qsa_block_indices_cuda",
     "qsa_compress_groups_with_ratio",
     "qsa_mqa_paged",
-    "qsa_prims_ts_build_page4_metadata",
     "qsa_prims_ts_combined_workspace_size",
-    "qsa_prims_ts_group_size",
-    "qsa_prims_ts_metadata_workspace_size",
     "qsa_prims_ts_qo_indptr",
-    "qsa_prims_ts_paged_attention",
     "qsa_prims_ts_prepare_attention",
-    "qsa_prims_ts_prepare_paged_attention",
     "qsa_prims_ts_run_prepared",
-    "qsa_prims_ts_run_prepared_attention",
-    "qsa_prims_ts_use_fixed_decode_layout",
-    "qsa_prims_ts_workspace_size",
     "qsa_select_paged_tokens",
     "qsa_sparse_paged_attention",
     "qsa_store_cache_rows",
