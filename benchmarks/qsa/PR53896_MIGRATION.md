@@ -5,14 +5,15 @@
 - vLLM base: `13c80fb30ab835cbe387c01c4611970b7c3373e1`, the fetched
   `refs/pull/53896/head` on 2026-08-30.
 - Source integration: local branch `qsa-prims-ts-pr53896`. The 2026-09-03
-  dual-layout accuracy gate used runtime revision `a87ccd96f`; later branch
-  commits through `2c837d962` change only benchmark documentation and result
-  summarization. Each production port commit carries its original
+  dual-layout accuracy gate used runtime revision `a87ccd96f`; the stopped
+  post-cleanup checkpoint below uses `1eda953bc`, including the prepared-plan
+  cache-lifecycle cleanup. Each production port commit carries its original
   `Cherry-picked-from` revision.
 - Compact PrimTS metadata integration: vLLM revision `778d2bd87`.
-- FlashInfer kernel branch: `qsa-packed-query` at `7125943a`, with the
-  review-only exact-output-arity check that was subsequently committed as
-  `426a2525` already present in the Python source used by the gate.
+- FlashInfer kernel branch: `qsa-packed-query`. The dual-layout gate used
+  `7125943a` plus the exact-output-arity edit subsequently committed as
+  `426a2525`; the stopped post-cleanup checkpoint uses `6d1594d5`, including
+  the host-readback-free prepared-route contract.
 - Accuracy model: [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/tree/main)
   revision `de4b8e4`, staged locally as `models/Qwen3.8-Flash-Next-de4b8e4`.
   The model config identifies the implementation as `qwen4_exp`, uses 24 Q
@@ -326,6 +327,85 @@ Accuracy is closed for the pre-cleanup tree. GPQA evaluator wall time still
 shows a substantial MTP3 serving-performance gap: the complete PrimTS
 repetitions took roughly 90--105 minutes, versus 31--36 minutes for Triton.
 Treat that as decode-performance follow-up, not as an accuracy failure.
+
+### Post-cleanup stopped checkpoint (2026-09-03)
+
+The prepared-route and cache-lifecycle cleanup was checked with vLLM
+`1eda953bc`, FlashInfer `6d1594d5`, model `de4b8e4`, TP2, and the exact
+sampling policy above. The user stopped the run before the full
+GSM8K/GPQA/AIME matrix completed. Only atomically written full-result JSON
+files are qualified below; HTTP responses from interrupted evaluators are
+retained only as liveness evidence and have no accuracy score.
+
+All four GSM8K configurations completed their full 1,319-example denominator
+with zero request errors, invalid predictions, or truncations:
+
+| KV cache | MTP | paired Triton | prior dual-layout PrimTS | post-cleanup PrimTS |
+|---|---:|---:|---:|---:|
+| BF16 | 0 | 1292/1319 (97.95%) | 1292/1319 (97.95%) | 1295/1319 (98.18%) |
+| BF16 | 3 | 1294/1319 (98.10%) | 1290/1319 (97.80%) | 1291/1319 (97.88%) |
+| FP8-E4M3 | 0 | 1290/1319 (97.80%) | 1286/1319 (97.50%) | 1291/1319 (97.88%) |
+| FP8-E4M3 | 3 | 1290/1319 (97.80%) | 1291/1319 (97.88%) | 1294/1319 (98.10%) |
+
+The paired item audit rescored the historical BF16/MTP0 Triton artifact with
+the current canonical `####` GSM8K parser. Correctness transitions remain
+small and balanced:
+
+| KV cache | MTP | prediction changes | Triton-correct/PrimTS-wrong | Triton-wrong/PrimTS-correct | exact McNemar p |
+|---|---:|---:|---:|---:|---:|
+| BF16 | 0 | 10 | 3 | 6 | 0.508 |
+| BF16 | 3 | 7 | 5 | 2 | 0.453 |
+| FP8-E4M3 | 0 | 12 | 4 | 5 | 1.000 |
+| FP8-E4M3 | 3 | 15 | 5 | 9 | 0.424 |
+
+No row identifies a statistically significant PrimTS accuracy change. The
+post-cleanup values also stay inside the variation already observed across
+sampled PrimTS repetitions.
+
+One GPQA-Diamond repetition completed before the stop. BF16/MTP0 PrimTS scored
+183/198 (92.42%) with zero request errors and invalid parses and one valid
+response at the prescribed 131,072-token cap. The paired Triton repetition
+scored 180/198; its item audit has three regressions, six improvements, and an
+exact McNemar p-value of 0.508. The remaining interrupted work is explicitly
+unqualified:
+
+| KV cache | MTP | interrupted task | HTTP-200 responses before stop | qualification |
+|---|---:|---|---:|---|
+| BF16 | 0 | GPQA-Diamond rep 2 | 112/198 | no result JSON; excluded |
+| BF16 | 3 | GPQA-Diamond rep 1 | 74/198 | no result JSON; excluded |
+| FP8-E4M3 | 0 | GPQA-Diamond rep 1 | 197/198 | no result JSON; excluded |
+| FP8-E4M3 | 3 | GPQA-Diamond rep 1 | 158/198 | no result JSON; excluded |
+
+GPQA rep 2 and both AIME26 repetitions were not started for the latter three
+configurations. AIME was not reached in the BF16/MTP0 lane. Consequently this
+checkpoint is strong positive evidence from all four complete GSM8K rows and
+one complete GPQA row, but it is not a replacement for the earlier full
+dual-layout matrix.
+
+BF16/MTP3 twice exposed the already documented graph-capture interaction when
+capture size 2 invoked the image TRT-LLM BF16 MoE kernel. The identical QSA
+build completed all piecewise, full, prefill, and decode capture phases with
+sizes 4, 8, 16, 24, 32, 40, 48, 56, and 64, then passed its smoke and full
+GSM8K run. This A/B result remains consistent with the localized TRT-LLM MoE
+issue rather than a QSA workspace or grouped-Q4 fault.
+
+Qualified artifacts and SHA-256 digests are:
+
+| Slurm job | artifact | SHA-256 |
+|---:|---|---|
+| 651250 | `prims-bf16-mtp0-job651250/gsm8k.json` | `b7e17ae581af5bdde926e29ba643fd0b6b303775e8b508e0a029c7005f469c70` |
+| 651250 | `prims-bf16-mtp0-job651250/gpqa-diamond-r1.json` | `31cb57731ac213b7a03dc0a80267285bea50cc00f7975027caa38bb204841579` |
+| 651430 | `prims-bf16-mtp3-job651430/gsm8k.json` | `258f8b511bb4681c669253556e49b28cf6d14ff7052a195e5e0ebdaf625345f2` |
+| 651441 | `prims-fp8-mtp0-job651441/gsm8k.json` | `a702943e0ff4b64240e7f0c5ab51b8a6231562c6145e4e952f9d87d5006ce321` |
+| 651433 | `prims-fp8-mtp3-job651433/gsm8k.json` | `840f1a2d6ae0e670e2ee71fb2d236e31ef57b634a356376fa1f9ded2fb6b5af8` |
+
+Paths are relative to `qsa_accuracy/postcleanup/`. Partial evaluator and
+server logs are suffixed `.partial-unqualified`; the earlier accidental
+concurrent BF16/MTP3 zero-byte logs are suffixed `.invalid-concurrent`. Jobs
+651250, 651430, 651433, and 651441 were stopped by terminating their exact
+client/server processes and exiting their direct `srun` shells. Continuation
+jobs 651990 and 651992 reached free nodes but ran no workload. All six jobs
+released normally without `scancel`.
 
 ## Current validation
 
