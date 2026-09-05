@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Triton kernels for the Qwen4Exp weight-free QSA path."""
+"""Qwen4Exp weight-free QSA kernels and optional FlashInfer bridge."""
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from functools import lru_cache
+from typing import Protocol, cast
 
 import torch
 
@@ -13,6 +16,25 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 
 _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
+_QSAPrimsTSAPIs = tuple[
+    Callable[..., int],
+    Callable[..., int],
+    Callable[..., torch.Tensor],
+    Callable[..., object],
+]
+
+
+class _QSAPrimsTSPlan(Protocol):
+    def run(
+        self,
+        q: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_table: torch.Tensor,
+        token_to_req: torch.Tensor,
+        logical_positions: torch.Tensor,
+        *,
+        out: torch.Tensor,
+    ) -> torch.Tensor: ...
 
 
 @triton.jit
@@ -215,6 +237,8 @@ def _qsa_sparse_paged_gqa_splitk_kernel(
     num_rows,
     num_cache_blocks,
     num_requests,
+    bmm1_scale,
+    bmm2_scale,
     TOPK: tl.constexpr,
     PAGE_SIZE: tl.constexpr,
     PAGE_TABLE_WIDTH: tl.constexpr,
@@ -248,7 +272,7 @@ def _qsa_sparse_paged_gqa_splitk_kernel(
     max_value = tl.full((BLOCK_M,), -1.0e20, dtype=tl.float32)
     normalizer = tl.zeros((BLOCK_M,), dtype=tl.float32)
     accumulator = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
-    softmax_scale_log2: tl.constexpr = (HEAD_DIM**-0.5) * 1.4426950408889634
+    softmax_scale_log2 = bmm1_scale * 1.4426950408889634
 
     # Dynamic bounds avoid padded main-loop iterations for uneven splits.
     split_tile_start = split_id * NUM_TILES // NUM_SPLITS
@@ -320,6 +344,7 @@ def _qsa_sparse_paged_gqa_splitk_kernel(
         accumulator / tl.maximum(normalizer[:, None], 1.0e-20),
         0.0,
     )
+    normalized_output *= bmm2_scale
     output_mask = head_offsets[:, None] < GROUP_SIZE
     if NUM_SPLITS == 1:
         tl.store(
@@ -740,6 +765,178 @@ def expand_qsa_block_indices_cuda(
     return out
 
 
+@lru_cache
+def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
+    """Resolve the FlashInfer sparse-block QSA API without a hard dependency.
+
+    The validator is a compatibility sentinel for the caller-owned grouping
+    contract. Workspace sizing and plan preparation perform the validation,
+    so the bridge deliberately does not add another hot-path call.
+    """
+
+    try:
+        from flashinfer.decode import (
+            build_prims_ts_qsa_metadata,
+            get_prims_ts_qsa_workspace_size,
+            make_prims_ts_qsa_qo_indptr,
+            prepare_prims_ts_qsa_attention,
+            validate_prims_ts_qsa_group_size,
+        )
+    except (AttributeError, ImportError):
+        return None
+    if not callable(build_prims_ts_qsa_metadata):
+        return None
+    return (
+        validate_prims_ts_qsa_group_size,
+        get_prims_ts_qsa_workspace_size,
+        make_prims_ts_qsa_qo_indptr,
+        prepare_prims_ts_qsa_attention,
+    )
+
+
+def has_qsa_prims_ts_attention() -> bool:
+    """Return whether FlashInfer exposes sparse-block PrimTS QSA."""
+
+    return _qsa_prims_ts_apis() is not None
+
+
+def qsa_prims_ts_combined_workspace_size(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    block_topk: int,
+    *,
+    out_dtype: torch.dtype | None = None,
+    qo_indptr: torch.Tensor | None = None,
+    max_seq_len_q: int | None = None,
+    sparse_block_size: int = 4,
+) -> int:
+    """Return bytes required for a fixed or packed causal QSA launch."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide sparse-block PrimTS QSA")
+    _, get_workspace_size, _, _ = apis
+    return int(
+        get_workspace_size(
+            q,
+            k_cache,
+            block_table,
+            block_topk=block_topk,
+            out_dtype=out_dtype,
+            qo_indptr=qo_indptr,
+            max_seq_len_q=max_seq_len_q,
+            sparse_block_size=sparse_block_size,
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def _qsa_prims_ts_qo_indptr_cached(
+    query_starts: tuple[int, ...],
+    num_query_tokens: int,
+    group_size: int,
+) -> torch.Tensor:
+    """Build one immutable CPU route tensor shared by all QSA layers."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide packed sparse-block QSA")
+    _, _, make_qo_indptr, _ = apis
+    return make_qo_indptr(
+        torch.tensor(query_starts, dtype=torch.int32),
+        num_query_tokens,
+        group_size=group_size,
+        device="cpu",
+    )
+
+
+def qsa_prims_ts_qo_indptr(
+    query_start_offsets: tuple[int, ...] | torch.Tensor | None,
+    num_query_tokens: int,
+    group_size: int,
+) -> torch.Tensor:
+    """Return CPU packed-route offsets for a fixed maximum group size.
+
+    Prefill and irregular decode use this packed-Q representation so request
+    tails remain explicit. Uniform decode omits ``qo_indptr`` and uses the
+    fixed five-dimensional QSA layout instead.
+    """
+
+    if query_start_offsets is None:
+        raise ValueError("packed QSA requires CPU query boundaries")
+    if isinstance(query_start_offsets, torch.Tensor):
+        query_starts = tuple(int(value) for value in query_start_offsets.tolist())
+    else:
+        query_starts = query_start_offsets
+    return _qsa_prims_ts_qo_indptr_cached(
+        query_starts,
+        num_query_tokens,
+        group_size,
+    )
+
+
+def qsa_prims_ts_prepare_attention(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    block_indices: torch.Tensor,
+    block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    logical_positions: torch.Tensor,
+    workspace_buffer: torch.Tensor,
+    out: torch.Tensor,
+    *,
+    bmm1_scale: float | None = None,
+    bmm2_scale: float = 1.0,
+    qo_indptr: torch.Tensor | None = None,
+    max_seq_len_q: int | None = None,
+    sparse_block_size: int = 4,
+) -> object:
+    """Prepare metadata and attention as one framework-owned QSA plan."""
+
+    apis = _qsa_prims_ts_apis()
+    if apis is None:
+        raise RuntimeError("FlashInfer does not provide sparse-block PrimTS QSA")
+    _, _, _, prepare_attention = apis
+    return prepare_attention(
+        q,
+        (k_cache, v_cache),
+        block_indices,
+        block_table,
+        token_to_req,
+        logical_positions,
+        workspace_buffer,
+        out=out,
+        bmm1_scale=bmm1_scale,
+        bmm2_scale=bmm2_scale,
+        qo_indptr=qo_indptr,
+        max_seq_len_q=max_seq_len_q,
+        sparse_block_size=sparse_block_size,
+    )
+
+
+def qsa_prims_ts_run_prepared(
+    plan: object,
+    q: torch.Tensor,
+    block_indices: torch.Tensor,
+    block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    logical_positions: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    """Launch a prepared framework-owned metadata-plus-attention plan."""
+
+    return cast(_QSAPrimsTSPlan, plan).run(
+        q,
+        block_indices,
+        block_table,
+        token_to_req,
+        logical_positions,
+        out=out,
+    )
+
+
 def qsa_select_paged_tokens(
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -750,11 +947,14 @@ def qsa_select_paged_tokens(
     token_topk: int,
     compress_ratio: int,
     out: torch.Tensor | None = None,
+    *,
+    expand_blocks: bool = True,
 ) -> torch.Tensor:
-    """Score, select, and expand QSA indices without host synchronization."""
+    """Score and select QSA blocks, optionally expanding them to token IDs."""
 
     rows = q.shape[0]
-    output_width = token_topk + compress_ratio - 1
+    block_topk = token_topk // compress_ratio
+    output_width = token_topk + compress_ratio - 1 if expand_blocks else block_topk
     if out is None:
         out = torch.empty((rows, output_width), dtype=torch.int32, device=q.device)
     if out.shape != (rows, output_width):
@@ -763,11 +963,12 @@ def qsa_select_paged_tokens(
         return out
 
     columns = page_table.shape[1] * k_cache.shape[1]
-    block_topk = token_topk // compress_ratio
     rows_per_chunk = max(1, _LOGITS_WORKSPACE_BYTES // max(columns * 4, 1))
     chunk_rows = min(rows, rows_per_chunk)
-    blocks_buffer = torch.empty(
-        (chunk_rows, block_topk), dtype=torch.int32, device=q.device
+    blocks_buffer = (
+        torch.empty((chunk_rows, block_topk), dtype=torch.int32, device=q.device)
+        if expand_blocks
+        else None
     )
     topk_workspace = torch.empty(
         (_TOPK_WORKSPACE_BYTES,), dtype=torch.uint8, device=q.device
@@ -784,7 +985,11 @@ def qsa_select_paged_tokens(
             sequence_lengths,
             compress_ratio,
         )
-        blocks = blocks_buffer[: row_end - row_start]
+        blocks = (
+            blocks_buffer[: row_end - row_start]
+            if blocks_buffer is not None
+            else out[row_slice]
+        )
         use_cooperative_topk = (
             blocks.shape[0] <= 32
             and logits.stride(0) % 4 == 0
@@ -797,15 +1002,16 @@ def qsa_select_paged_tokens(
             else torch.ops._C.persistent_topk
         )
         topk_op(logits, visible_blocks, blocks, topk_workspace, block_topk, columns)
-        expand_qsa_block_indices_cuda(
-            blocks,
-            query_positions[row_slice],
-            sequence_lengths,
-            token_to_req[row_slice],
-            compress_ratio,
-            token_topk,
-            out[row_slice],
-        )
+        if expand_blocks:
+            expand_qsa_block_indices_cuda(
+                blocks,
+                query_positions[row_slice],
+                sequence_lengths,
+                token_to_req[row_slice],
+                compress_ratio,
+                token_topk,
+                out[row_slice],
+            )
     return out
 
 
@@ -817,8 +1023,11 @@ def qsa_sparse_paged_attention(
     block_table: torch.Tensor,
     token_to_req: torch.Tensor,
     out: torch.Tensor | None = None,
+    *,
+    bmm1_scale: float | None = None,
+    bmm2_scale: float = 1.0,
 ) -> torch.Tensor:
-    """Run sparse GQA directly over paged BF16 K/V caches."""
+    """Run sparse GQA directly over paged BF16 or FP8-E4M3 K/V caches."""
 
     if not q.is_cuda or not HAS_TRITON:
         raise RuntimeError("paged QSA sparse attention requires CUDA and Triton")
@@ -836,7 +1045,10 @@ def qsa_sparse_paged_attention(
         raise ValueError("QSA sparse attention requires valid grouped-query heads")
     head_dim = q.shape[2]
     assert head_dim >= 16 and (head_dim & (head_dim - 1)) == 0
-    assert q.dtype == k_cache.dtype == v_cache.dtype == torch.bfloat16
+    if q.dtype != k_cache.dtype or q.dtype != v_cache.dtype:
+        raise ValueError("QSA sparse attention requires matching Q/K/V dtypes")
+    if q.dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+        raise ValueError("QSA sparse attention supports BF16 and FP8-E4M3 Q/K/V")
     assert logical_indices.dtype == block_table.dtype == torch.int32
     assert token_to_req.dtype == torch.int32
     assert q.device == k_cache.device == v_cache.device
@@ -849,10 +1061,19 @@ def qsa_sparse_paged_attention(
         out = torch.empty_like(q)
     if out.shape != q.shape:
         raise ValueError("QSA sparse output must match its query")
-    assert out.dtype == q.dtype and out.device == q.device
+    output_dtype_supported = out.dtype == q.dtype or (
+        q.dtype == torch.float8_e4m3fn and out.dtype in (torch.float16, torch.bfloat16)
+    )
+    if not output_dtype_supported or out.device != q.device:
+        raise ValueError(
+            "QSA sparse output must use the query dtype, or FP16/BF16 for FP8 "
+            "inputs, and reside on the query device"
+        )
     assert out.stride(2) == 1
     if not q.shape[0]:
         return out
+    if bmm1_scale is None:
+        bmm1_scale = head_dim**-0.5
 
     group_size = q.shape[1] // k_cache.shape[2]
     block_m = triton.next_power_of_2(group_size)
@@ -871,6 +1092,10 @@ def qsa_sparse_paged_attention(
         block_n, target_splits, partial_warps = 64, 4, 2
     else:
         block_n, target_splits, partial_warps = 64, 1, 2
+    if q.dtype == torch.float8_e4m3fn:
+        # Triton's FP8 dot requires K >= 32 for the P@V MMA. BF16 retains the
+        # tuned BLOCK_N=16 low-grid profiles above.
+        block_n = max(block_n, 32)
 
     num_tiles = triton.cdiv(logical_indices.shape[1], block_n)
     # Avoid empty splits when the selection width is smaller than the profile.
@@ -919,6 +1144,8 @@ def qsa_sparse_paged_attention(
         q.shape[0],
         k_cache.shape[0],
         block_table.shape[0],
+        bmm1_scale,
+        bmm2_scale,
         TOPK=logical_indices.shape[1],
         PAGE_SIZE=k_cache.shape[1],
         PAGE_TABLE_WIDTH=block_table.shape[1],
@@ -1109,6 +1336,10 @@ __all__ = [
     "expand_qsa_block_indices_cuda",
     "qsa_compress_groups_with_ratio",
     "qsa_mqa_paged",
+    "qsa_prims_ts_combined_workspace_size",
+    "qsa_prims_ts_qo_indptr",
+    "qsa_prims_ts_prepare_attention",
+    "qsa_prims_ts_run_prepared",
     "qsa_select_paged_tokens",
     "qsa_sparse_paged_attention",
     "qsa_store_cache_rows",

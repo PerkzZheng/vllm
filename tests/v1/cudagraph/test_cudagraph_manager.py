@@ -172,10 +172,12 @@ def _create_decode_vllm_config(
     capture_sizes: list[int],
     num_speculative_tokens: int = 0,
     dynamic_spec_schedule: list[tuple[int, int, int]] | None = None,
+    exact_piecewise_sizes: list[int] | None = None,
 ) -> MagicMock:
     compilation_config = CompilationConfig(
         cudagraph_mode="FULL_AND_PIECEWISE",
         cudagraph_capture_sizes=capture_sizes,
+        piecewise_cudagraph_exact_capture_sizes=exact_piecewise_sizes or [],
     )
     compilation_config.max_cudagraph_capture_size = capture_sizes[-1]
     compilation_config.post_init_cudagraph_sizes()
@@ -201,6 +203,7 @@ def _make_spec_decode_manager(
     capture_sizes: list[int] | None = None,
     num_speculative_tokens: int = 0,
     dynamic_spec_schedule: list[tuple[int, int, int]] | None = None,
+    exact_piecewise_sizes: list[int] | None = None,
 ) -> gpu_cudagraph_utils.CudaGraphManager:
     monkeypatch.setattr(
         gpu_cudagraph_utils,
@@ -217,6 +220,7 @@ def _make_spec_decode_manager(
             capture_sizes or [1, 2, 4, 8, 16, 24],
             num_speculative_tokens=num_speculative_tokens,
             dynamic_spec_schedule=dynamic_spec_schedule,
+            exact_piecewise_sizes=exact_piecewise_sizes,
         ),
         device=torch.device("cpu"),
         cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
@@ -276,6 +280,60 @@ def test_mixed_batch_never_selects_a_uniform_decode_graph(monkeypatch):
     assert desc.cg_mode == CUDAGraphMode.PIECEWISE
     assert desc.uniform_token_count is None
     assert desc.num_tokens == 16
+
+
+def test_exact_piecewise_size_does_not_extend_padding_ladder(monkeypatch):
+    manager = _make_spec_decode_manager(
+        monkeypatch,
+        capture_sizes=[1, 8],
+        exact_piecewise_sizes=[5, 8192],
+    )
+
+    piecewise_capture_sizes = {
+        desc.num_tokens for desc in manager._capture_descs[CUDAGraphMode.PIECEWISE]
+    }
+    full_capture_sizes = {
+        desc.num_tokens for desc in manager._capture_descs[CUDAGraphMode.FULL]
+    }
+    assert {5, 8192} <= piecewise_capture_sizes
+    assert 8192 not in full_capture_sizes
+
+    exact_desc = manager.dispatch(
+        num_reqs=1,
+        num_tokens=5,
+        uniform_token_count=None,
+        num_active_loras=0,
+    )
+    assert exact_desc.cg_mode == CUDAGraphMode.PIECEWISE
+    assert exact_desc.num_tokens == 5
+
+    padded_desc = manager.dispatch(
+        num_reqs=1,
+        num_tokens=6,
+        uniform_token_count=None,
+        num_active_loras=0,
+    )
+    assert padded_desc.cg_mode == CUDAGraphMode.PIECEWISE
+    assert padded_desc.num_tokens == 8
+
+    for num_tokens in (9, 8191):
+        eager_desc = manager.dispatch(
+            num_reqs=1,
+            num_tokens=num_tokens,
+            uniform_token_count=None,
+            num_active_loras=0,
+        )
+        assert eager_desc.cg_mode == CUDAGraphMode.NONE
+        assert eager_desc.num_tokens == num_tokens
+
+    large_exact_desc = manager.dispatch(
+        num_reqs=1,
+        num_tokens=8192,
+        uniform_token_count=None,
+        num_active_loras=0,
+    )
+    assert large_exact_desc.cg_mode == CUDAGraphMode.PIECEWISE
+    assert large_exact_desc.num_tokens == 8192
 
 
 def test_mixed_batch_at_decode_only_token_count_still_gets_a_graph(monkeypatch):

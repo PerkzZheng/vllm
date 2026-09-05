@@ -1561,6 +1561,7 @@ class VllmConfig:
                 # override related settings when enforce eager
                 self.compilation_config.max_cudagraph_capture_size = 0
                 self.compilation_config.cudagraph_capture_sizes = []
+                self.compilation_config.piecewise_cudagraph_exact_capture_sizes = []
             else:
                 self.compilation_config.cudagraph_num_of_warmups = 1
 
@@ -1960,6 +1961,9 @@ class VllmConfig:
             padded CUDA graph will be used.
             - If batch size > largest `cudagraph_capture_sizes`, cudagraph will
             not be used.
+            - `piecewise_cudagraph_exact_capture_sizes` adds PIECEWISE graphs
+              that match only the listed token counts. These sizes do not pad
+              nearby batches or extend the normal capture-size ladder.
         """
 
         if (
@@ -2066,6 +2070,28 @@ class VllmConfig:
             max_num_tokens = self.scheduler_config.max_num_batched_tokens
             max_cudagraph_capture_size = min(max_num_tokens, max_cudagraph_capture_size)
 
+            requested_exact_sizes = (
+                self.compilation_config.piecewise_cudagraph_exact_capture_sizes
+            )
+            if any(size <= 0 for size in requested_exact_sizes):
+                # This can only happen when the config was mutated after its own
+                # validation, for example by an embedding application.
+                raise ValueError(
+                    "piecewise_cudagraph_exact_capture_sizes must contain only "
+                    "positive token counts"
+                )
+            piecewise_exact_sizes = sorted(
+                {size for size in requested_exact_sizes if size <= max_num_tokens}
+            )
+            if len(piecewise_exact_sizes) < len(set(requested_exact_sizes)):
+                logger.warning(
+                    "piecewise_cudagraph_exact_capture_sizes %s is limited by "
+                    "max_num_batched_tokens=%d; using %s",
+                    requested_exact_sizes,
+                    max_num_tokens,
+                    piecewise_exact_sizes,
+                )
+
             assert max_cudagraph_capture_size >= 1, (
                 "Maximum cudagraph size should be greater than or equal to 1 "
                 "when using cuda graph."
@@ -2129,6 +2155,18 @@ class VllmConfig:
                 cudagraph_capture_sizes = self.update_sizes_for_sequence_parallelism(
                     cudagraph_capture_sizes
                 )
+                invalid_exact_sizes = [
+                    size
+                    for size in piecewise_exact_sizes
+                    if size % self.parallel_config.tensor_parallel_size
+                ]
+                if invalid_exact_sizes:
+                    raise ValueError(
+                        "piecewise_cudagraph_exact_capture_sizes must be divisible "
+                        "by tensor_parallel_size when sequence parallelism is "
+                        f"enabled; got {invalid_exact_sizes} with "
+                        f"tensor_parallel_size={self.parallel_config.tensor_parallel_size}"
+                    )
 
             # user-specific compilation_config.max_cudagraph_capture_size get
             # truncated to valid_max_size when they are inconsistent.
@@ -2172,11 +2210,15 @@ class VllmConfig:
                 )
             # always write back the final sizes
             self.compilation_config.cudagraph_capture_sizes = cudagraph_capture_sizes
+            self.compilation_config.piecewise_cudagraph_exact_capture_sizes = (
+                piecewise_exact_sizes
+            )
 
         else:
             # no cudagraph in use
             self.compilation_config.max_cudagraph_capture_size = 0
             self.compilation_config.cudagraph_capture_sizes = []
+            self.compilation_config.piecewise_cudagraph_exact_capture_sizes = []
 
         # complete the remaining process.
         self.compilation_config.post_init_cudagraph_sizes()

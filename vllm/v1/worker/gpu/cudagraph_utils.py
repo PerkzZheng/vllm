@@ -188,6 +188,9 @@ class CudaGraphManager:
     def _init_candidates(self) -> None:
         """Build priority-ordered candidate lists for each token count."""
         capture_sizes = self.compilation_config.cudagraph_capture_sizes
+        exact_piecewise_sizes = (
+            self.compilation_config.piecewise_cudagraph_exact_capture_sizes
+        )
         if not (self.cudagraph_mode and capture_sizes):
             return
 
@@ -201,6 +204,7 @@ class CudaGraphManager:
         descs_by_mode: defaultdict[CUDAGraphMode, list[BatchExecutionDescriptor]] = (
             defaultdict(list)
         )
+        exact_piecewise_descs: list[BatchExecutionDescriptor] = []
 
         # When using Dynamic SD, num_speculative_tokens is the max number of
         # draft tokens. The scheduler might use a smaller number so we need
@@ -290,9 +294,32 @@ class CudaGraphManager:
                 )
                 descs_by_mode[mixed_mode].append(desc)
 
+        # Keep exact-only descriptors out of the padded candidate ranges below.
+        # A sparse high capture point (for example an 8K prefill chunk) must not
+        # make every token count above the normal ladder pad to that size.
+        if mixed_mode == CUDAGraphMode.PIECEWISE:
+            for num_tokens, num_active_loras in product(
+                exact_piecewise_sizes, self.lora_capture_cases
+            ):
+                desc = BatchExecutionDescriptor(
+                    cg_mode=CUDAGraphMode.PIECEWISE,
+                    num_tokens=num_tokens,
+                    num_reqs=None,
+                    num_active_loras=num_active_loras,
+                )
+                if desc not in descs_by_mode[CUDAGraphMode.PIECEWISE]:
+                    exact_piecewise_descs.append(desc)
+
         for mode, descs in descs_by_mode.items():
+            # Candidate range construction below reverses these descriptors
+            # back into ascending size order, so retain the existing
+            # largest-first invariant on the base list.
             descs.sort(key=lambda d: d.num_tokens, reverse=True)
-            self._capture_descs[mode] = descs
+            capture_descs = list(descs) + (
+                exact_piecewise_descs if mode == CUDAGraphMode.PIECEWISE else []
+            )
+            capture_descs.sort(key=lambda d: d.num_tokens, reverse=True)
+            self._capture_descs[mode] = capture_descs
 
         for mode in (CUDAGraphMode.FULL, CUDAGraphMode.PIECEWISE):
             mode_descs = tuple(reversed(descs_by_mode.get(mode, [])))
@@ -309,6 +336,22 @@ class CudaGraphManager:
                         key = (i, num_active_loras)
                         self._candidates.setdefault(key, []).extend(matching)
                     current_range_start = num_tokens + 1
+
+        for desc in exact_piecewise_descs:
+            key = (desc.num_tokens, desc.num_active_loras)
+            candidates = self._candidates.setdefault(key, [])
+            # FULL decode remains the first choice for a compatible uniform
+            # batch. For mixed/prefill batches, prefer the exact graph over a
+            # larger padded PIECEWISE descriptor.
+            first_piecewise = next(
+                (
+                    i
+                    for i, candidate in enumerate(candidates)
+                    if candidate.cg_mode == CUDAGraphMode.PIECEWISE
+                ),
+                len(candidates),
+            )
+            candidates.insert(first_piecewise, desc)
 
     def needs_capture(self) -> bool:
         return len(self._capture_descs) > 0

@@ -202,6 +202,25 @@ class CudagraphDispatcher:
                     batch_desc = replace(batch_desc, num_reqs=None, uniform=False)
                 self.add_cudagraph_key(cudagraph_mode.mixed_mode(), batch_desc)
 
+        exact_piecewise_sizes = (
+            self.compilation_config.piecewise_cudagraph_exact_capture_sizes
+        )
+        if (
+            exact_piecewise_sizes
+            and cudagraph_mode.mixed_mode() == CUDAGraphMode.PIECEWISE
+        ):
+            for bs, num_active_loras in product(exact_piecewise_sizes, lora_cases):
+                self.add_cudagraph_key(
+                    CUDAGraphMode.PIECEWISE,
+                    BatchDescriptor(
+                        num_tokens=bs,
+                        num_reqs=None,
+                        uniform=False,
+                        has_lora=num_active_loras > 0,
+                        num_active_loras=num_active_loras,
+                    ),
+                )
+
         # if decode cudagraph mode is FULL, and we don't already have mixed
         # mode full cudagraphs then add them here.
         if (
@@ -269,13 +288,9 @@ class CudagraphDispatcher:
             f"No allowed cudagraph modes: valid_modes={valid_modes}, "
             f"invalid_modes={invalid_modes}"
         )
-        max_size = self.compilation_config.max_cudagraph_capture_size
-
         if (
             not self.keys_initialized
             or self.cudagraph_mode == CUDAGraphMode.NONE
-            or max_size is None
-            or num_tokens > max_size
             or allowed_modes <= {CUDAGraphMode.NONE}
         ):
             return CUDAGraphMode.NONE, BatchDescriptor(num_tokens)
@@ -299,18 +314,42 @@ class CudagraphDispatcher:
                 )
                 effective_num_active_loras = self.vllm_config.lora_config.max_loras + 1
 
-        normalized_uniform = uniform_decode and self.cudagraph_mode.separate_routine()
-        batch_desc = self._create_padded_batch_descriptor(
-            num_tokens, normalized_uniform, has_lora, effective_num_active_loras
+        exact_piecewise_desc = BatchDescriptor(
+            num_tokens=num_tokens,
+            num_reqs=None,
+            uniform=False,
+            has_lora=has_lora,
+            num_active_loras=effective_num_active_loras,
+        )
+        exact_piecewise_match = (
+            num_tokens
+            in self.compilation_config.piecewise_cudagraph_exact_capture_sizes
+            and exact_piecewise_desc in self.cudagraph_keys[CUDAGraphMode.PIECEWISE]
         )
 
-        if CUDAGraphMode.FULL in allowed_modes:
-            # check if key exists for full cudagraph
-            batch_desc_to_check = batch_desc
-            if batch_desc_to_check in self.cudagraph_keys[CUDAGraphMode.FULL]:
-                return CUDAGraphMode.FULL, batch_desc_to_check
+        max_size = self.compilation_config.max_cudagraph_capture_size
+        batch_desc = None
+        if max_size is not None and num_tokens <= max_size:
+            normalized_uniform = (
+                uniform_decode and self.cudagraph_mode.separate_routine()
+            )
+            batch_desc = self._create_padded_batch_descriptor(
+                num_tokens,
+                normalized_uniform,
+                has_lora,
+                effective_num_active_loras,
+            )
 
-        if CUDAGraphMode.PIECEWISE in allowed_modes:
+            if CUDAGraphMode.FULL in allowed_modes:
+                # check if key exists for full cudagraph
+                batch_desc_to_check = batch_desc
+                if batch_desc_to_check in self.cudagraph_keys[CUDAGraphMode.FULL]:
+                    return CUDAGraphMode.FULL, batch_desc_to_check
+
+        if CUDAGraphMode.PIECEWISE in allowed_modes and exact_piecewise_match:
+            return CUDAGraphMode.PIECEWISE, exact_piecewise_desc
+
+        if batch_desc is not None and CUDAGraphMode.PIECEWISE in allowed_modes:
             # also check if the relaxed key exists for more "general"
             # piecewise cudagraph
             batch_desc_to_check = replace(batch_desc, num_reqs=None, uniform=False)

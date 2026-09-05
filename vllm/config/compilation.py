@@ -417,6 +417,8 @@ class CompilationConfig:
         - [`cudagraph_mode`][vllm.config.CompilationConfig.cudagraph_mode]
         - [`cudagraph_capture_sizes`]
         [vllm.config.CompilationConfig.cudagraph_capture_sizes]
+        - [`piecewise_cudagraph_exact_capture_sizes`]
+        [vllm.config.CompilationConfig.piecewise_cudagraph_exact_capture_sizes]
         - [`max_cudagraph_capture_size`]
         [vllm.config.CompilationConfig.max_cudagraph_capture_size]
         - [`cudagraph_num_of_warmups`]
@@ -649,6 +651,16 @@ class CompilationConfig:
     """Sizes to capture cudagraph.
     - None (default): capture sizes are inferred from vllm config.
     - list[int]: capture sizes are specified as given."""
+    piecewise_cudagraph_exact_capture_sizes: list[int] = field(default_factory=list)
+    """Additional PIECEWISE CUDA graph sizes that require an exact token-count
+    match.
+
+    Unlike ``cudagraph_capture_sizes``, these sizes never pad a smaller batch.
+    This is useful for large, predictable prefill chunks where adding a sparse
+    high endpoint to the normal padded capture ladder would make intermediate
+    batches perform excessive padded work. They are independent of
+    ``cudagraph_capture_sizes`` and do not affect FULL decode graphs or
+    ``max_cudagraph_capture_size``."""
     cudagraph_copy_inputs: bool = False
     """Whether to copy input tensors for
     cudagraph. If the caller can guarantee that the same input buffers
@@ -875,6 +887,18 @@ class CompilationConfig:
         if isinstance(value, str):
             return CUDAGraphMode[value.upper()]
         return value
+
+    @field_validator("piecewise_cudagraph_exact_capture_sizes")
+    @classmethod
+    def validate_piecewise_cudagraph_exact_capture_sizes(
+        cls, value: list[int]
+    ) -> list[int]:
+        if any(size <= 0 for size in value):
+            raise ValueError(
+                "piecewise_cudagraph_exact_capture_sizes must contain only "
+                "positive token counts"
+            )
+        return sorted(set(value))
 
     @field_validator("pass_config", mode="before")
     @classmethod
@@ -1135,6 +1159,9 @@ class CompilationConfig:
 
         # make sure the sizes are in ascending order
         self.cudagraph_capture_sizes.sort()
+        self.piecewise_cudagraph_exact_capture_sizes = sorted(
+            set(self.piecewise_cudagraph_exact_capture_sizes)
+        )
         if self.cudagraph_capture_sizes:
             assert self.cudagraph_capture_sizes[-1] == self.max_cudagraph_capture_size
 
@@ -1477,6 +1504,15 @@ class CompilationConfig:
                 f"support:{min_cg_support}) "
                 "; please try cudagraph_mode=PIECEWISE, "
                 "and make sure compilation mode is VLLM_COMPILE"
+            )
+
+        if (
+            self.piecewise_cudagraph_exact_capture_sizes
+            and cudagraph_mode.mixed_mode() != CUDAGraphMode.PIECEWISE
+        ):
+            raise ValueError(
+                "piecewise_cudagraph_exact_capture_sizes requires a CUDA graph "
+                "mode with PIECEWISE mixed-batch execution"
             )
 
         # MRV1 adjusts cudagraph sizes to be a multiple of uniform_decode_query_len
