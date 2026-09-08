@@ -9,15 +9,18 @@ kernel-specific top-k argument.
 The current implementation supersedes the older occupancy-based grouping
 history retained later in this document:
 
-- prefill and mixed batches always use packed `[R,Hq,D]` Q/O with Q4 routes;
+- pure prefill and mixed batches with exact CPU request boundaries use packed
+  `[R,Hq,D]` Q/O with Q4 routes;
 - uniform decode uses fixed `[B,Nq,G,Hq,D]` Q/O, where `G=MTP+1`;
   current vLLM decode calls have `Nq=1`;
 - fixed decode omits `qo_indptr`; FlashInfer flattens `[B,Nq]` into its internal
   route axis as a zero-copy view;
 - fixed decode is selected only after proving every live request has exactly
   `G` rows and any graph-padding suffix is group aligned; and
-- irregular decode retains packed storage, while adaptive verification without
-  authoritative CPU boundaries uses fixed Q1.
+- decode shapes that cannot prove the configured complete group use fixed Q1;
+  decode never switches to packed storage; and
+- fast drafting metadata without authoritative CPU request boundaries uses
+  request-independent fixed Q1.
 
 The compiled groups are Q1/Q2/Q4/Q5. MTP2 therefore falls back to Q1 until a
 Q3 configuration is implemented. Group size is not selected from batch size,
@@ -36,19 +39,22 @@ subpages_per_storage_page = storage_page_size / 4
 locator = physical_page * subpages_per_storage_page + token_offset / 4
 ```
 
-Q1 builds one CSR row per query. Q2/Q4/Q5 build per-query bitmaps, pack one
-sorted union per route, and put the exact query-membership mask in the low byte
-of each encoded locator. The optional causal tail is inserted into the same
-union. Pages with zero membership are omitted.
+Q1 maps one dense route row per query directly. Q2/Q4/Q5 form at most
+`G * (block_topk + 1)` tagged candidates per route, radix-sort them in one CUDA
+C++ CTA, and unique equal logical IDs while OR-reducing query-membership bits.
+Locators and query membership are separate:
+`qsa_page_indices` contains plain encoded physical subpage locators, while
+`qsa_page_memberships` packs four consecutive 8-bit membership masks into each
+Int32 word. The optional causal tail is inserted into the same union. Pages
+with zero membership are omitted.
 
 The public prepared plan owns the following views inside one caller-provided
 byte workspace:
 
 ```text
-qsa_page_indptr: [num_routes + 1]
-qsa_page_indices: [num_routes * G * (block_topk + 1)]
+qsa_page_indices: [num_routes, G * (block_topk + 1)]
+qsa_page_memberships: [num_routes, ceil(G * (block_topk + 1) / 4)]
 seq_lens: [num_routes]
-metadata scratch
 attention and optional split-KV scratch
 ```
 
@@ -67,32 +73,58 @@ second masking launch.
 
 On SM100-family GPUs, the QSA owner selects PrimTS when the installed
 FlashInfer exposes encoded page-4 support. PR 53896 exposes the combined vLLM
-cache as `[physical_page, storage_page_size, Hkv, 2D]`. The owner creates a
+cache as `[physical_page, Hkv, storage_page_size, 2D]`. The owner creates a
 zero-copy transposed view, splits K/V on the final dimension, and
 canonicalizes the resulting `[physical_page, Hkv, storage_page_size, D]`
-strides. It allocates one combined workspace per semantic launch key, prepares
-the metadata and attention plan outside the hot path, and then calls:
+strides. It prepares the metadata and attention plan for each semantic launch
+key outside the hot path, and then calls:
 
 ```text
 plan.run(query, block_indices, block_table,
          token_to_request, query_positions, out=output)
 ```
 
-Workspace is allocated lazily at the exact public size and pooled by query
-shape, cache geometry, and dtype. Each pool entry keeps stable addresses for
-CUDA-graph capture and replay. Metadata outputs are fully overwritten on every
-run. Prefill does not allocate split-KV scratch. Decode split counters occupy a
-disjoint workspace section, are initialized during plan preparation, and are
-restored by the qualified reducer after each launch. The previous Triton
-sparse-attention path remains the fallback on unsupported architectures or
-when the complete FlashInfer page-four API is absent.
+Workspace is allocated lazily at the exact public size. Every PrimTS plan uses
+`model_config.max_model_len` as its per-request logical K/V bound. That value
+is independent of the number of physical pages allocated across all requests;
+the dense block-table row width is used only to prove that each request can
+address the model-length bound. Using one static bound makes graph warmup,
+capture, replay, piecewise, and eager plan keys agree as live sequence lengths
+change. Only the finite set of full-CUDA-graph decode geometries is retained
+until cache rebind. Eager and piecewise execution retain the four most recently
+used query geometries per QSA layer. KV-cache rebind and teardown clear both
+prepared-state collections.
+
+The four eager plans share one grow-only workspace arena per QSA layer.
+Preparing a geometry that exceeds the arena first invalidates all plans bound
+to its old storage, releases it, and allocates one larger arena. Subsequent
+smaller geometries bind different typed views into that same allocation. This
+is legal because Qwen4Exp rejects dual-batch overlap and microbatching, so QSA
+launches are sequential on the current stream; callers must not reuse an arena
+for concurrent launches. Persistent CUDA-graph plans retain their own stable
+workspaces instead of sharing this eager arena.
+
+For 8K packed Q4 with block-top-k 512, the persistent metadata outputs use
+roughly 16 MiB for locators and 4 MiB for packed memberships. Radix-sort and
+union temporary state is CTA-local shared memory, so the allocation is
+independent of a 128K model bound and has no context-sized bitmap suffix. The
+shared arena therefore retains about 20 MiB plus attention scratch per QSA
+layer rather than the sum of four eager workspaces. Metadata outputs are fully
+overwritten on every run. Prefill does not allocate split-KV scratch.
+Decode split counters occupy a disjoint workspace section, are initialized
+during plan preparation, and are restored by the qualified reducer after each
+launch. The previous Triton sparse-attention path remains the fallback on
+unsupported architectures or when the complete FlashInfer sparse-block API is
+absent.
 
 CPU request boundaries prove whether a decode batch is uniform. Every live
 request must contribute exactly `G` adjacent rows and any inert graph-padding
 suffix must be group aligned. `fast_build` drafting metadata omits CPU
 boundaries because only its total is authoritative, so it deliberately uses
 request-independent fixed Q1. This is a correctness fallback, not an occupancy
-policy.
+policy. The compact immutable CPU boundary tuple is built once in shared QSA
+metadata and reused as the packed-route cache key by every layer; no layer
+converts the expanded `qo_indptr` back to Python values.
 
 ## Historical validation and performance log
 
@@ -319,7 +351,7 @@ that observation no longer causes an automatic fallback to Q1.
 
 The framework supplies a phase-owned group size: prefill and mixed batches use
 packed Q4, while uniform decode uses `G=MTP+1`. FlashInfer's
-`get_prims_ts_qsa_group_size` interface validates that exact choice against
+`validate_prims_ts_qsa_group_size` validates that exact choice against
 CPU request boundaries and head geometry; it does not infer a different group
 from batch size or SM count. The currently compiled decode widths are
 Q1/Q2/Q4/Q5. Until Q3 is implemented, MTP2 safely uses fixed Q1. Invalid

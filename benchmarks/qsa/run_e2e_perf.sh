@@ -6,7 +6,7 @@ qsa_repo=${QSA_REPO:-${qsa_workspace}/vllm-pr53896-qsa}
 qsa_flashinfer=${QSA_FLASHINFER_SOURCE:-${qsa_workspace}/flashinfer}
 qsa_model=${QSA_MODEL:-${qsa_workspace}/models/Qwen3.8-Flash-Next-de4b8e4}
 qsa_runtime_overlay=${QSA_RUNTIME_OVERLAY:-${qsa_repo}/benchmarks/qsa/runtime_overlay}
-qsa_cutlass_packages=${qsa_workspace}/.runtime/cutlass-dsl-4.7.1/nvidia_cutlass_dsl/dsl_packages
+qsa_cutlass_packages=${QSA_CUTLASS_DSL_PACKAGES:-${qsa_workspace}/.runtime/cutlass-dsl-4.7.1/nvidia_cutlass_dsl/dsl_packages}
 qsa_python=${QSA_PYTHON:-python3}
 qsa_port=${QSA_PORT:-8000}
 qsa_seed=${QSA_SEED:-42}
@@ -17,6 +17,7 @@ qsa_gpu_memory_utilization=${QSA_GPU_MEMORY_UTILIZATION:-0.91}
 qsa_max_num_batched_tokens=${QSA_MAX_NUM_BATCHED_TOKENS:-8192}
 qsa_max_num_seqs=${QSA_MAX_NUM_SEQS:-64}
 qsa_cudagraph_capture_sizes=${QSA_CUDAGRAPH_CAPTURE_SIZES:-2 4 8 16 24 32 40 48 56 64}
+qsa_piecewise_exact_capture_sizes=${QSA_PIECEWISE_EXACT_CAPTURE_SIZES:-}
 qsa_enable_cutedsl_warmup=${QSA_ENABLE_CUTEDSL_WARMUP:-true}
 qsa_kv_cache_dtype=${QSA_KV_CACHE_DTYPE:-fp8_e4m3}
 qsa_mtp_tokens=${QSA_MTP_TOKENS:-3}
@@ -61,13 +62,15 @@ usage:
 
 Environment overrides:
   QSA_PORT, QSA_OUTPUT_ROOT, QSA_CACHE_TAG, QSA_PYTHON,
-  QSA_RUNTIME_OVERLAY,
+  QSA_RUNTIME_OVERLAY, QSA_FLASHINFER_SOURCE,
+  QSA_CUTLASS_DSL_PACKAGES,
   QSA_CACHE_ROOT,
   QSA_PREFILL_PROMPTS, QSA_PREFILL_WARMUP_PROMPTS,
   QSA_DECODE_OUTPUT_LEN, QSA_TP_SIZE,
   QSA_DECODE_WARMUP_PROMPTS,
   QSA_GPU_MEMORY_UTILIZATION, QSA_MAX_NUM_BATCHED_TOKENS,
   QSA_MAX_NUM_SEQS, QSA_CUDAGRAPH_CAPTURE_SIZES,
+  QSA_PIECEWISE_EXACT_CAPTURE_SIZES,
   QSA_KV_CACHE_DTYPE (auto or fp8_e4m3), QSA_MTP_TOKENS,
   QSA_MAX_MODEL_LEN, QSA_PROFILE (default: false),
   QSA_READY_CHECK_TIMEOUT_SEC (default: 1800),
@@ -104,6 +107,8 @@ export XDG_CACHE_HOME=${qsa_cache_root}/xdg
 export HF_HOME=${qsa_cache_root}/huggingface
 export TORCH_HOME=${qsa_cache_root}/torch
 export CUDA_CACHE_PATH=${qsa_cache_root}/cuda
+export VLLM_CONFIG_ROOT=${qsa_cache_root}/vllm-config
+export VLLM_NO_USAGE_STATS=1
 # FlashInfer does not use XDG_CACHE_HOME.  It appends .cache/flashinfer to
 # FLASHINFER_WORKSPACE_BASE, so pin the base separately to avoid the host-home
 # bind that Pyxis exposes as /root.
@@ -113,6 +118,7 @@ mkdir -p \
   "${HF_HOME}" \
   "${TORCH_HOME}" \
   "${CUDA_CACHE_PATH}" \
+  "${VLLM_CONFIG_ROOT}" \
   "${FLASHINFER_WORKSPACE_BASE}"
 
 common_bench_args=(
@@ -175,6 +181,18 @@ case "${action}" in
       --host 0.0.0.0
       --port "${qsa_port}"
     )
+    if [[ -n ${qsa_piecewise_exact_capture_sizes//[[:space:]]/} ]]; then
+      read -r -a piecewise_exact_capture_sizes \
+        <<<"${qsa_piecewise_exact_capture_sizes}"
+      piecewise_exact_capture_sizes_json=$(
+        IFS=,
+        printf '%s' "${piecewise_exact_capture_sizes[*]}"
+      )
+      server_args+=(
+        --compilation-config
+        "{\"piecewise_cudagraph_exact_capture_sizes\":[${piecewise_exact_capture_sizes_json}]}"
+      )
+    fi
     if [[ ${qsa_enable_prefix_caching} == true ]]; then
       server_args+=(--enable-prefix-caching)
     else

@@ -53,8 +53,10 @@ def _prefer_image_dsl_stack() -> None:
         tvm_ffi = importlib.import_module("tvm_ffi")
     finally:
         sys.path[:] = original_path
-    if not Path(tvm_ffi.__file__).resolve().is_relative_to(
-        _IMAGE_SITE_PACKAGES.resolve()
+    if (
+        not Path(tvm_ffi.__file__)
+        .resolve()
+        .is_relative_to(_IMAGE_SITE_PACKAGES.resolve())
     ):
         raise ImportError(
             "QSA_USE_IMAGE_DSL_STACK must be set before TVM-FFI is imported"
@@ -65,9 +67,7 @@ def _overlay_cutlass_dsl(packages: Path) -> None:
     """Prefer one wheel's DSL package without shadowing its other dependencies."""
 
     if not (packages / "cutlass" / "experimental").is_dir():
-        raise ImportError(
-            "QSA_CUTLASS_DSL_PACKAGES must contain cutlass/experimental"
-        )
+        raise ImportError("QSA_CUTLASS_DSL_PACKAGES must contain cutlass/experimental")
     packages_path = str(packages)
     wheel_root = str(packages.parent.parent)
     if wheel_root in sys.path:
@@ -117,21 +117,39 @@ def _load_replacement(name: str, path: Path) -> ModuleType:
 def _overlay_qsa_flashinfer(source_root: Path) -> None:
     package_root = source_root / "flashinfer"
     attention_root = package_root / "attention"
+    jit_qsa_metadata = package_root / "jit" / "qsa_metadata.py"
+    trace_template = package_root / "trace" / "template.py"
     trace_attention = package_root / "trace" / "templates" / "attention.py"
-    if not attention_root.is_dir() or not trace_attention.is_file():
+    if (
+        not attention_root.is_dir()
+        or not jit_qsa_metadata.is_file()
+        or not trace_template.is_file()
+        or not trace_attention.is_file()
+    ):
         raise ImportError(
             "QSA_FLASHINFER_SOURCE must name a FlashInfer checkout containing "
-            "flashinfer/attention and flashinfer/trace/templates/attention.py"
+            "the PrimTS attention, JIT metadata, and trace schema sources"
         )
 
     # Import the image package first.  In particular, keep its root package,
     # JIT/cubin loader, GDN, and fused-MoE modules intact.
     import flashinfer.attention as attention_package
     import flashinfer.decode as public_decode
+    import flashinfer.jit as jit_package
 
-    _load_replacement(
-        "flashinfer.trace.templates.attention",
-        trace_attention,
+    # The local attention schema uses newer TraceTemplate axis features (for
+    # example fixed-value Const axes), so its template implementation and the
+    # schema must be overlaid as one compatible pair.
+    _load_replacement("flashinfer.trace.template", trace_template)
+    _load_replacement("flashinfer.trace.templates.attention", trace_attention)
+
+    # Keep the image's ABI-matched JIT runtime, but load the QSA-specific spec
+    # from the same checkout as the attention code. The spec resolves its CUDA
+    # and header inputs relative to its own file, so it does not depend on the
+    # image wheel already containing this new kernel.
+    qsa_jit = _load_replacement("flashinfer.jit.qsa_metadata", jit_qsa_metadata)
+    jit_package.gen_prims_ts_qsa_metadata_module = (  # type: ignore[attr-defined]
+        qsa_jit.gen_prims_ts_qsa_metadata_module
     )
 
     local_attention_path = str(attention_root)
@@ -141,22 +159,21 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
     prims_decode = importlib.import_module("flashinfer.attention.prims_ts.decode")
     for name in (
         "get_prims_ts_batch_decode_workspace_size",
-        "get_prims_ts_qsa_group_size",
+        "validate_prims_ts_qsa_group_size",
         "make_prims_ts_qsa_qo_indptr",
         "prepare_prims_ts_batch_decode_with_kv_cache",
         "prims_ts_batch_decode_with_kv_cache",
     ):
         setattr(public_decode, name, getattr(prims_decode, name))
 
-    qsa_metadata = importlib.import_module(
-        "flashinfer.attention.prims_ts.qsa_metadata"
-    )
+    qsa_metadata = importlib.import_module("flashinfer.attention.prims_ts.qsa_metadata")
     for name in (
         "PrimsTSQSAPlan",
-        "build_prims_ts_qsa_page4_metadata",
-        "get_prims_ts_qsa_metadata_workspace_size",
+        "build_prims_ts_qsa_metadata",
+        "get_prims_ts_qsa_metadata_output_shapes",
         "get_prims_ts_qsa_workspace_size",
         "prepare_prims_ts_qsa_attention",
+        "prims_ts_qsa_attention",
     ):
         setattr(public_decode, name, getattr(qsa_metadata, name))
 

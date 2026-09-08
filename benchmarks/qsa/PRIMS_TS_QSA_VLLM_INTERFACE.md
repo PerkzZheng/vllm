@@ -34,7 +34,7 @@ physical storage pages, and `N` the storage page size.
 
 | Value | Shape and dtype | Meaning |
 | --- | --- | --- |
-| packed `query` | `[R, Hq, D]` | Prefill or irregular request-safe routes |
+| packed `query` | `[R, Hq, D]` | Prefill request-safe routes |
 | fixed `query` | `[B, Nq, G, Hq, D]` | Complete uniform decode groups |
 | `qo_indptr` | `[num_routes + 1]`, Int32 | Packed route boundaries; omitted for fixed Q |
 | `k_cache`, `v_cache` | `[P, Hkv, N, D]` | Logical HND K/V cache views |
@@ -72,8 +72,8 @@ The vLLM policy is:
   `[B, Nq, G, Hq, D]` zero-copy view is used only after vLLM proves from exact
   CPU boundaries that every live request contributes exactly `G` adjacent
   rows. Zero-length graph-padding requests are allowed.
-- If decode request lengths are irregular, vLLM retains packed Q and builds
-  request-safe routes with the configured group size.
+- Decode always uses fixed Q. If the runtime shape cannot prove one complete
+  configured group per live request, vLLM uses request-independent fixed Q1.
 - Fast drafting metadata without authoritative CPU request boundaries uses
   request-independent Q1. Unsupported groups such as Q3 also fall back to
   fixed Q1 for decode.
@@ -112,6 +112,7 @@ import torch
 # query_positions:       [R] int32/int64
 # query_start_loc_cpu:   CPU cumulative request boundaries
 
+max_seq_len_kv = model_config.max_model_len
 group_size = validate_prims_ts_qsa_group_size(
     query_start_loc_cpu,
     q.shape[0],
@@ -133,6 +134,7 @@ workspace_bytes = get_prims_ts_qsa_workspace_size(
     k_cache,
     block_table,
     block_topk=block_indices.shape[1],
+    max_seq_len_kv=max_seq_len_kv,
     out_dtype=out.dtype,
     qo_indptr=qo_indptr_cpu,
     max_seq_len_q=group_size,
@@ -149,6 +151,7 @@ plan = prepare_prims_ts_qsa_attention(
     query_positions,
     workspace,
     out=out,
+    max_seq_len_kv=max_seq_len_kv,
     bmm1_scale=q.shape[-1] ** -0.5,
     bmm2_scale=1.0,
     qo_indptr=qo_indptr,
@@ -186,6 +189,7 @@ workspace_bytes = get_prims_ts_qsa_workspace_size(
     k_cache,
     block_table,
     block_topk=block_indices.shape[1],
+    max_seq_len_kv=model_config.max_model_len,
     out_dtype=decode_out.dtype,
     sparse_block_size=4,
 )
@@ -203,6 +207,7 @@ plan = prepare_prims_ts_qsa_attention(
     query_positions,
     workspace,
     out=decode_out,
+    max_seq_len_kv=model_config.max_model_len,
     sparse_block_size=4,
 )
 ```
@@ -233,30 +238,32 @@ validation. vLLM owns the phase policy described above.
 ```text
 combined QSA workspace
 ├── dense QSA route table [num_routes, G * (K + 1)]
+├── packed membership bytes [num_routes, ceil(G * (K + 1) / 4)] int32
 ├── compact route sequence lengths [num_routes]
-├── metadata scratch
-│   ├── Q1: empty
-│   └── Q2/Q4/Q5: per-query logical-page bitmaps
 └── attention scratch (disjoint from metadata)
     ├── direct policy: small ABI placeholder storage
     └── split-KV policy: partial output, statistics, and counters
 ```
 
-The workspace-owned route table is the `qsa_page_indices` concept represented
-as a dense page table; there is no separately allocated page-index tensor or
-CSR indptr. The metadata and split-KV regions never alias. In particular,
-vLLM does not reuse metadata storage for split-KV counters.
+The workspace-owned route table is `qsa_page_indices`; the companion
+`qsa_page_memberships` tensor packs four rank-ordered membership bytes in each
+Int32 word. There is no separately allocated page-index tensor, membership
+tensor, or CSR indptr. The metadata and split-KV regions never alias. In
+particular, vLLM does not reuse metadata storage for split-KV counters.
 
 The allocation must be a contiguous CUDA `torch.int8` or `torch.uint8` tensor
 with the required alignment and must be exclusive to one in-flight plan or
 captured graph. Call the sizing API rather than reproducing its formula: the
 attention suffix depends on the resolved direct/split-KV policy.
 
-For grouped Q2/Q4/Q5, metadata first builds a membership bitmap for each
-original query and then packs the union into the dense route table. Pages with
-zero membership are omitted. The low membership bits preserve per-query
+Q1 maps selected logical blocks and the causal tail directly with one CUDA C++
+CTA per route. Grouped Q2/Q4/Q5 use one CTA per route to CUB radix-sort at most
+`G * (K + 1)` tagged selected/tail candidates, unique equal logical IDs while
+OR-reducing query-membership bits, and map the compact union through the dense
+block table. Temporary sort/scan state is CTA-local shared memory, not caller
+workspace. The separate persistent membership bytes preserve per-query
 visibility, and attention applies membership plus the causal tail mask before
-softmax. Q1 uses a single metadata kernel and no bitmap scratch.
+softmax.
 
 ## Prepared-plan and CUDA-graph lifetime
 
@@ -275,9 +282,9 @@ For CUDA graphs:
 
 vLLM maintains a finite dictionary of per-layer prepared states for FULL
 decode graph buckets and a four-entry least-recently-used cache for eager
-packed prefill, piecewise execution, and irregular decode. The eager cache is
-needed because chunked prefill alternates active block-table widths: retaining
-the 8K and 16K geometries prevents every request from rebuilding both plans.
+packed prefill, piecewise execution, and fixed Q1 decode fallbacks. Prepared identity
+includes `model_config.max_model_len`; all paths retain the full dense block
+table rather than slicing it to a live request width.
 Every eager lookup checks CUDA capture state before consulting the cache, so an
 eager workspace cannot be captured and later evicted. Graph warmup metadata
 explicitly marks capture bucket shapes so persistent plans are prepared before
@@ -287,25 +294,24 @@ persistent cache hit remains valid during capture; a missing persistent state
 discovered while the CUDA stream is capturing is an error, because capture is
 never allowed to allocate or prepare a new plan.
 
-FULL graph states use the full stable block-table width. Eager execution slices
-the dense block table to the active context width, which avoids bitmap scratch
-sized for unused model context. Up to four eager geometry plans share one
-growable arena per layer. If a larger geometry needs more storage, vLLM clears
-the plans before replacing the arena; otherwise plans reuse it sequentially on
-the current stream. Thus the retained eager storage is the largest arena, not
-the sum of four arenas: about 24 MiB per layer, or 288 MiB across twelve layers,
-for the 8K Q4/top-k-512 and 32K-KV example. This is a bounded tradeoff until
-top-k-bounded metadata removes the context-sized bitmap. Concurrent QSA
+Up to four eager geometry plans share one growable arena per layer. If a larger
+geometry needs more storage, vLLM clears the plans before replacing the arena;
+otherwise plans reuse it sequentially on the current stream. Thus retained
+eager storage is the largest arena, not the sum of four arenas. Metadata output
+capacity depends on route count, group size, and top-k width; it is independent
+of physical KV-cache capacity and unused model-context suffixes. Concurrent QSA
 streams or microbatches would require separate workspace ownership; this model
-currently rejects both. KV-cache unbind/rebind clears the graph-state
-dictionary, eager LRU, and shared arena, preventing plans from retaining stale
-K/V views or profiling allocations.
+currently rejects both.
+KV-cache unbind/rebind clears the graph-state dictionary, eager LRU, and shared
+arena, preventing plans from retaining stale K/V views or profiling
+allocations.
 
 Piecewise prefill currently executes QSA metadata and attention eagerly at the
 opaque attention boundary. Full decode graphs capture the prepared metadata
-and attention launches. Grouped bitmap-to-pack dependencies may use PDL on
-supported devices; metadata-to-attention ordering remains ordinary same-stream
-ordering and requires no framework-managed event.
+and attention launches. The metadata-to-attention handoff and optional
+attention-to-reducer handoff may use PDL on supported devices. Older devices
+retain ordinary same-stream ordering; neither path requires a
+framework-managed event.
 
 Large predictable prefill chunks can opt into an exact-only piecewise graph
 without adding a high-padding endpoint to the ordinary capture ladder:

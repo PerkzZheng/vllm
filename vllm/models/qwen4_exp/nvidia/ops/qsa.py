@@ -803,6 +803,7 @@ def qsa_prims_ts_combined_workspace_size(
     block_table: torch.Tensor,
     block_topk: int,
     *,
+    max_seq_len_kv: int,
     out_dtype: torch.dtype | None = None,
     qo_indptr: torch.Tensor | None = None,
     max_seq_len_q: int | None = None,
@@ -820,6 +821,7 @@ def qsa_prims_ts_combined_workspace_size(
             k_cache,
             block_table,
             block_topk=block_topk,
+            max_seq_len_kv=max_seq_len_kv,
             out_dtype=out_dtype,
             qo_indptr=qo_indptr,
             max_seq_len_q=max_seq_len_q,
@@ -855,9 +857,10 @@ def qsa_prims_ts_qo_indptr(
 ) -> torch.Tensor:
     """Return CPU packed-route offsets for a fixed maximum group size.
 
-    Prefill and irregular decode use this packed-Q representation so request
-    tails remain explicit. Uniform decode omits ``qo_indptr`` and uses the
-    fixed five-dimensional QSA layout instead.
+    Prefill uses this packed-Q representation so request tails remain
+    explicit. Decode omits ``qo_indptr`` and uses the fixed five-dimensional
+    QSA layout; a runtime shape that cannot prove the configured complete MTP
+    group falls back to request-independent fixed Q1.
     """
 
     if query_start_offsets is None:
@@ -884,6 +887,7 @@ def qsa_prims_ts_prepare_attention(
     workspace_buffer: torch.Tensor,
     out: torch.Tensor,
     *,
+    max_seq_len_kv: int,
     bmm1_scale: float | None = None,
     bmm2_scale: float = 1.0,
     qo_indptr: torch.Tensor | None = None,
@@ -905,6 +909,7 @@ def qsa_prims_ts_prepare_attention(
         logical_positions,
         workspace_buffer,
         out=out,
+        max_seq_len_kv=max_seq_len_kv,
         bmm1_scale=bmm1_scale,
         bmm2_scale=bmm2_scale,
         qo_indptr=qo_indptr,

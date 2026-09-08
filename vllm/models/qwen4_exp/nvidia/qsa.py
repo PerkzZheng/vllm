@@ -266,6 +266,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
         qo_topology: tuple[int, ...] | None,
         group_size: int,
         sparse_block_size: int,
+        max_seq_len_kv: int,
         *,
         persistent: bool = False,
     ) -> _QSAPrimsTSPreparedState:
@@ -308,6 +309,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             float(bmm2_scale),
             group_size,
             sparse_block_size,
+            max_seq_len_kv,
             qo_topology,
         )
         if persistent:
@@ -338,6 +340,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             key_cache,
             block_table,
             block_indices.shape[1],
+            max_seq_len_kv=max_seq_len_kv,
             out_dtype=out.dtype,
             qo_indptr=qo_indptr_cpu,
             max_seq_len_q=group_size if qo_indptr_cpu is not None else None,
@@ -380,6 +383,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             logical_positions,
             workspace,
             out,
+            max_seq_len_kv=max_seq_len_kv,
             bmm1_scale=bmm1_scale,
             bmm2_scale=bmm2_scale,
             qo_indptr=qo_indptr,
@@ -520,10 +524,12 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 group_size = uniform_decode_query_len
                 use_fixed_layout = True
             else:
-                # Irregular decode still groups within each request, never
-                # across a boundary that happens to make total_q divisible.
-                group_size = layer.qsa_prims_ts_decode_group_size
-                use_fixed_layout = False
+                # Decode always uses the fixed layout. A runtime query width
+                # that does not prove the configured MTP+1 group falls back
+                # to request-independent Q1 instead of introducing a packed
+                # decode route and a second graph-facing layout.
+                group_size = 1
+                use_fixed_layout = True
 
             route_qo_indptr_cpu: torch.Tensor | None = None
             if use_fixed_layout:
@@ -551,21 +557,21 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 route_query = query_for_attention
                 route_output = prims_output
 
-            # Eager metadata is bounded by the largest live context. Full
-            # CUDA graphs instead retain the allocated width so warmup,
-            # capture, and replay share one stable prepared-plan geometry.
-            if persistent_plan:
-                metadata_block_table = attn_metadata.block_table
-            else:
-                active_storage_pages = min(
-                    attn_metadata.block_table.shape[1],
-                    (attn_metadata.max_seq_len + prims_key_cache.shape[2] - 1)
-                    // prims_key_cache.shape[2],
-                )
-                metadata_block_table = attn_metadata.block_table[
-                    :, :active_storage_pages
-                ]
+            # max_seq_len_kv is the model's per-request logical context bound,
+            # not the number of physical pages allocated across all requests.
+            # The dense table only proves that each request row can address
+            # that model-length bound.
+            metadata_block_table = attn_metadata.block_table
             sparse_block_size = int(layer.indexer.compress_ratio)
+            dense_row_capacity = (
+                metadata_block_table.shape[1] * prims_key_cache.shape[2]
+            )
+            max_seq_len_kv = int(layer.qsa_prims_ts_max_seq_len_kv)
+            if max_seq_len_kv > dense_row_capacity:
+                raise RuntimeError(
+                    "QSA model length exceeds the per-request dense block-table "
+                    f"capacity ({max_seq_len_kv=} {dense_row_capacity=})"
+                )
             state = self._get_qsa_prims_ts_prepared_state(
                 layer,
                 route_query,
@@ -582,6 +588,7 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
                 route_query_start_offsets if route_qo_indptr_cpu is not None else None,
                 group_size,
                 sparse_block_size,
+                max_seq_len_kv,
                 persistent=persistent_plan,
             )
 
@@ -621,6 +628,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         tuple[object, ...], _QSAPrimsTSPreparedState
     ]
     _qsa_prims_ts_eager_workspace: torch.Tensor | None
+    qsa_prims_ts_max_seq_len_kv: int
 
     def _clear_qsa_prims_ts_prepared_storage(self) -> None:
         self._qsa_prims_ts_graph_states.clear()
@@ -783,6 +791,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         if decode_group_size not in QSA_PRIMS_TS_GROUP_SIZES:
             decode_group_size = 1
         self.qsa_prims_ts_decode_group_size = int(decode_group_size)
+        self.qsa_prims_ts_max_seq_len_kv = int(model_config.max_model_len)
         sparse_block_size = int(config.indexer_compress_ratio)
 
         self.attn_backend = Qwen4ExpQSAFlashAttentionBackend

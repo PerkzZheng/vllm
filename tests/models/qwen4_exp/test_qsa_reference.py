@@ -1332,6 +1332,7 @@ def _make_qsa_prims_ts_owner_case(
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
         qsa_prims_ts_decode_group_size=group_size,
+        qsa_prims_ts_max_seq_len_kv=4 * storage_page_size,
         indexer=SimpleNamespace(compress_ratio=4),
         topk_indices_buffer=torch.zeros(
             num_tokens,
@@ -1481,6 +1482,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
         qsa_prims_ts_decode_group_size=group_size,
+        qsa_prims_ts_max_seq_len_kv=pages_per_request * storage_page_size,
         indexer=SimpleNamespace(compress_ratio=sparse_block_size),
         topk_indices_buffer=compact_blocks,
         _qsa_fp8_query_buffer=(
@@ -1646,9 +1648,9 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             4,
             (0, 2, 4),
             (0, 2, 4),
-            (0, 2, 4),
-            4,
-            id="packed-decode-runtime-g2-with-configured-g4",
+            None,
+            1,
+            id="fixed-q1-decode-runtime-g2-with-configured-g4",
         ),
         pytest.param(
             "bfloat16",
@@ -1679,9 +1681,9 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
             4,
             (0, 1, 4),
             (0, 1, 4),
-            (0, 1, 4),
-            4,
-            id="packed-irregular-decode",
+            None,
+            1,
+            id="fixed-q1-irregular-decode",
         ),
         pytest.param(
             "bfloat16",
@@ -1777,6 +1779,7 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
         qo_topology: tuple[int, ...] | None,
         route_group_size: int,
         sparse_block_size: int,
+        max_seq_len_kv: int,
         *,
         persistent: bool,
     ) -> SimpleNamespace:
@@ -1795,6 +1798,7 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
             qo_topology=qo_topology,
             group_size=route_group_size,
             sparse_block_size=sparse_block_size,
+            max_seq_len_kv=max_seq_len_kv,
             persistent=persistent,
             plan=prepared_plan,
         )
@@ -1892,8 +1896,10 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
             case.head_dim,
         )
     )
-    expected_table_width = 2 if expected_qo_indptr is not None else 4
-    assert state.block_table.shape[1] == expected_table_width
+    assert state.block_table.shape[1] == 4
+    # The prepared plan uses the model-length bound, independent of this
+    # batch's shorter live context and of global physical-cache allocation.
+    assert state.max_seq_len_kv == 4 * case.storage_page_size
     assert state.block_indices.shape == (num_tokens, case.block_topk)
     assert state.group_size == expected_route_group_size
     assert state.sparse_block_size == 4
@@ -1954,6 +1960,7 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
     ) -> int:
         assert options["sparse_block_size"] == 4
         assert options["max_seq_len_q"] == 2
+        assert options["max_seq_len_kv"] == 2048
         calls.add("workspace")
         return 64
 
@@ -1987,6 +1994,7 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
         assert q.shape[0] == block_indices.shape[0]
         assert workspace.numel() == 64
         assert options["max_seq_len_q"] == 2
+        assert options["max_seq_len_kv"] == 2048
         assert options["sparse_block_size"] == 4
         calls.add("prepare")
         return FakePlan()
@@ -2017,6 +2025,7 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
         cache,
         block_table,
         512,
+        max_seq_len_kv=2048,
         qo_indptr=qo_indptr,
         max_seq_len_q=2,
         sparse_block_size=4,
@@ -2031,6 +2040,7 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
         positions,
         workspace,
         output,
+        max_seq_len_kv=2048,
         qo_indptr=qo_indptr,
         max_seq_len_q=2,
         sparse_block_size=4,
@@ -2054,7 +2064,7 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
 def _qsa_prims_ts_prepared_state_harness(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    workspace_size_for_width: Callable[[int], int] | None = None,
+    workspace_size_for_max_seq_len: Callable[[int], int] | None = None,
 ) -> tuple[
     SimpleNamespace,
     Callable[..., object],
@@ -2063,8 +2073,8 @@ def _qsa_prims_ts_prepared_state_harness(
     from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
 
     prepared: list[tuple[int, torch.Tensor]] = []
-    if workspace_size_for_width is None:
-        workspace_size_for_width = lambda _width: 64
+    if workspace_size_for_max_seq_len is None:
+        workspace_size_for_max_seq_len = lambda _max_seq_len_kv: 64
     full_block_table = torch.empty(1, 8, dtype=torch.int32)
     query = torch.empty(8, 12, 256, dtype=torch.bfloat16)
     cache = torch.empty(8, 1, 16, 256, dtype=torch.bfloat16)
@@ -2093,10 +2103,11 @@ def _qsa_prims_ts_prepared_state_harness(
         _key_cache: torch.Tensor,
         block_table: torch.Tensor,
         *_args: object,
-        **_kwargs: object,
+        **kwargs: object,
     ) -> int:
-        assert workspace_size_for_width is not None
-        return workspace_size_for_width(block_table.shape[1])
+        assert block_table is full_block_table
+        assert workspace_size_for_max_seq_len is not None
+        return workspace_size_for_max_seq_len(cast(int, kwargs["max_seq_len_kv"]))
 
     monkeypatch.setattr(qsa_ops, "qsa_prims_ts_combined_workspace_size", workspace_size)
 
@@ -2110,21 +2121,22 @@ def _qsa_prims_ts_prepared_state_harness(
         _logical_positions: torch.Tensor,
         workspace: torch.Tensor,
         _out: torch.Tensor,
-        **_kwargs: object,
+        **kwargs: object,
     ) -> object:
-        prepared.append((block_table.shape[1], workspace))
+        assert block_table is full_block_table
+        prepared.append((cast(int, kwargs["max_seq_len_kv"]), workspace))
         return object()
 
     monkeypatch.setattr(qsa_ops, "qsa_prims_ts_prepare_attention", prepare)
 
-    def get_state(width: int, *, persistent: bool = False) -> object:
+    def get_state(max_seq_len_kv: int, *, persistent: bool = False) -> object:
         return impl._get_qsa_prims_ts_prepared_state(
             layer,
             query,
             cache,
             cache,
             block_indices,
-            full_block_table[:, :width],
+            full_block_table,
             token_to_req,
             logical_positions,
             out,
@@ -2134,6 +2146,7 @@ def _qsa_prims_ts_prepared_state_harness(
             (0, 8),
             4,
             4,
+            max_seq_len_kv,
             persistent=persistent,
         )
 
@@ -2150,7 +2163,7 @@ def test_qsa_prims_ts_eager_plan_cache_reuses_alternating_geometries(
 
     assert get_state(2) is state_a
     assert get_state(4) is state_b
-    assert [width for width, _ in prepared] == [2, 4]
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 4]
     assert prepared[0][1] is prepared[1][1]
     assert prepared[0][1] is layer._qsa_prims_ts_eager_workspace
     cached_states = tuple(layer._qsa_prims_ts_eager_states.values())
@@ -2167,7 +2180,10 @@ def test_qsa_prims_ts_eager_plan_cache_is_bounded_lru(
     layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(monkeypatch)
     capacity = qsa_model._QSA_PRIMS_TS_EAGER_PLAN_CACHE_CAPACITY
     assert capacity == 4
-    states = {width: get_state(width) for width in range(1, capacity + 1)}
+    states = {
+        max_seq_len_kv: get_state(max_seq_len_kv)
+        for max_seq_len_kv in range(1, capacity + 1)
+    }
 
     assert get_state(1) is states[1]
     state_after_eviction = get_state(capacity + 1)
@@ -2180,7 +2196,7 @@ def test_qsa_prims_ts_eager_plan_cache_is_bounded_lru(
     rebuilt_state = get_state(2)
     assert rebuilt_state is not states[2]
     assert len(layer._qsa_prims_ts_eager_states) == capacity
-    assert [width for width, _ in prepared] == [1, 2, 3, 4, 5, 2]
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [1, 2, 3, 4, 5, 2]
 
 
 def test_qsa_prims_ts_eager_workspace_growth_clears_plans_then_reuses_arena(
@@ -2188,7 +2204,7 @@ def test_qsa_prims_ts_eager_workspace_growth_clears_plans_then_reuses_arena(
 ) -> None:
     layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(
         monkeypatch,
-        workspace_size_for_width=lambda width: width * 64,
+        workspace_size_for_max_seq_len=lambda max_seq_len_kv: max_seq_len_kv * 64,
     )
 
     old_small_state = get_state(2)
@@ -2208,7 +2224,7 @@ def test_qsa_prims_ts_eager_workspace_growth_clears_plans_then_reuses_arena(
     assert prepared[-1][1] is grown_workspace
     assert get_state(4) is large_state
     assert get_state(2) is rebuilt_small_state
-    assert [width for width, _ in prepared] == [2, 4, 2]
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 4, 2]
     assert len(layer._qsa_prims_ts_eager_states) == 2
 
 
@@ -2240,7 +2256,7 @@ def test_qsa_prims_ts_eager_cache_rechecks_capture_and_persistent_hit_skips_it(
     with pytest.raises(RuntimeError, match="must be prepared during CUDA-graph warmup"):
         get_state(4, persistent=True)
     assert capture_checks == 3
-    assert [width for width, _ in prepared] == [2, 3]
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 3]
     assert len(layer._qsa_prims_ts_eager_states) == 1
     assert len(layer._qsa_prims_ts_graph_states) == 1
 

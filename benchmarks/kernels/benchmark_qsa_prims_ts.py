@@ -51,11 +51,6 @@ import torch
 from vllm.models.qwen4_exp.nvidia.ops.qsa import (
     expand_qsa_block_indices_cuda,
     has_qsa_prims_ts_attention,
-    qsa_build_page4_paged_metadata,
-    qsa_prims_ts_build_page4_metadata,
-    qsa_prims_ts_metadata_workspace_size,
-    qsa_prims_ts_paged_attention,
-    qsa_prims_ts_workspace_size,
     qsa_sparse_paged_attention,
 )
 
@@ -337,7 +332,7 @@ class BenchmarkResult:
     selected_kv_tokens: int
     kv_bytes_per_token: int
     metadata_us: float
-    legacy_metadata_us: float
+    triton_expand_us: float
     qsa_attention_us: float
     qsa_end_to_end_us: float
     triton_sparse_us: float
@@ -1071,10 +1066,43 @@ def _run_union_upper_bound(
 ) -> UnionUpperBoundResult:
     """Time a full-mask control or a semantically masked shared union."""
 
-    from flashinfer.decode import (
-        get_prims_ts_batch_decode_workspace_size,
-        prims_ts_batch_decode_with_kv_cache,
+    from flashinfer.attention.prims_ts import (
+        build_prims_ts_qsa_metadata,
+        get_prims_ts_qsa_metadata_output_shapes,
+        get_prims_ts_qsa_workspace_size,
+        prepare_prims_ts_batch_decode_with_kv_cache,
+        prepare_prims_ts_qsa_attention,
     )
+
+    if membership_mode != "masked":
+        raise ValueError(
+            "the dense prepared-QSA port currently supports the canonical "
+            "masked union mode only"
+        )
+
+    # The optional override models a larger static serving configuration while
+    # the trace remains a shorter live request. Metadata work itself follows
+    # only the selected/tail candidates, not this unused model-length suffix.
+    metadata_max_seq_len_kv = (
+        trace.context_length if static_max_seq_len is None else static_max_seq_len
+    )
+    if metadata_max_seq_len_kv < trace.context_length:
+        raise ValueError(
+            "the static QSA model-length bound must cover the trace context: "
+            f"expected at least {trace.context_length}, got {metadata_max_seq_len_kv}"
+        )
+    required_metadata_pages = math.ceil(
+        metadata_max_seq_len_kv / trace.storage_page_size
+    )
+    metadata_block_table = inputs.block_table
+    if metadata_block_table.shape[1] < required_metadata_pages:
+        # The suffix is outside every live route in this trace. Repeat a page
+        # already owned by the request solely to satisfy the static model-bound
+        # addressability contract; attention never consumes the padding.
+        padding = metadata_block_table[:, :1].expand(
+            -1, required_metadata_pages - metadata_block_table.shape[1]
+        )
+        metadata_block_table = torch.cat((metadata_block_table, padding), dim=1)
 
     num_query_heads, num_kv_heads = _tp_heads(tp_size)
     (
@@ -1103,54 +1131,62 @@ def _run_union_upper_bound(
         0, row_indices
     ).contiguous()
     flat_rows = flat_q.shape[0]
-    page_capacity = _BLOCK_TOPK + 1
-    flat_indptr = torch.empty(flat_rows + 1, dtype=torch.int32, device="cuda")
-    flat_indices = torch.empty(
-        flat_rows * page_capacity,
-        dtype=torch.int32,
-        device="cuda",
-    )
-    flat_seq_lens = torch.empty(flat_rows, dtype=torch.int32, device="cuda")
     flat_expanded_indices = torch.empty_like(flat_logical_indices)
-    qsa_prims_ts_build_page4_metadata(
-        flat_block_indices,
-        inputs.block_table,
-        flat_token_to_req,
-        flat_positions,
-        trace.storage_page_size,
+    fixed_flat_q = flat_q.view(
+        flat_rows,
         1,
-        None,
-        flat_indptr,
-        flat_indices,
-        flat_seq_lens,
+        1,
+        num_query_heads,
+        _HEAD_DIM,
     )
+    fixed_flat_output = _empty_output_like(fixed_flat_q)
+    flat_output = fixed_flat_output.view_as(flat_q)
     flat_workspace = torch.zeros(
-        qsa_prims_ts_workspace_size(
-            flat_q,
+        get_prims_ts_qsa_workspace_size(
+            fixed_flat_q,
             inputs.k_cache,
-            _QSA_MAX_SEQ_LEN,
+            metadata_block_table,
+            block_topk=_BLOCK_TOPK,
+            max_seq_len_kv=metadata_max_seq_len_kv,
             out_dtype=_output_dtype(),
+            sparse_block_size=_COMPRESS_RATIO,
         ),
         dtype=torch.uint8,
         device="cuda",
     )
-    flat_output = _empty_output_like(flat_q)
+    flat_plan = prepare_prims_ts_qsa_attention(
+        fixed_flat_q,
+        (inputs.k_cache, inputs.v_cache),
+        flat_block_indices,
+        metadata_block_table,
+        flat_token_to_req,
+        flat_positions,
+        flat_workspace,
+        out=fixed_flat_output,
+        max_seq_len_kv=metadata_max_seq_len_kv,
+        sparse_block_size=_COMPRESS_RATIO,
+    )
+    # Populate the plan-owned dense route before the attention-only control.
+    flat_plan.run(
+        fixed_flat_q,
+        flat_block_indices,
+        metadata_block_table,
+        flat_token_to_req,
+        flat_positions,
+        out=fixed_flat_output,
+    )
     triton_output = _empty_output_like(flat_q)
     triton_k_cache = inputs.k_cache.permute(0, 2, 1, 3)
     triton_v_cache = inputs.v_cache.permute(0, 2, 1, 3)
 
     def flattened_attention() -> None:
         with torch.cuda.nvtx.range("flattened_qsa_attention"):
-            qsa_prims_ts_paged_attention(
+            # Benchmark-only component isolation: the public QSA plan prepared
+            # and populated this attention plan's dense metadata above.
+            flat_plan._attention_plan.run(
                 flat_q,
-                inputs.k_cache,
-                inputs.v_cache,
-                flat_workspace,
-                flat_indptr,
-                flat_indices,
-                flat_seq_lens,
-                _QSA_MAX_SEQ_LEN,
-                flat_output,
+                out=flat_output,
+                bmm1_scale=_HEAD_DIM**-0.5,
             )
 
     def triton_sparse_attention() -> None:
@@ -1195,15 +1231,11 @@ def _run_union_upper_bound(
         _HEAD_DIM,
     )
     observed_union_max_seq_len = int(union_seq_lens_cpu.max().item())
-    union_max_seq_len = (
-        observed_union_max_seq_len if static_max_seq_len is None else static_max_seq_len
-    )
+    union_page_capacity = group_size * (_BLOCK_TOPK + 1)
+    union_max_seq_len = union_page_capacity * _COMPRESS_RATIO
     if union_max_seq_len < observed_union_max_seq_len:
-        raise ValueError(
-            "static union max sequence length must cover the observed union: "
-            f"{union_max_seq_len} < {observed_union_max_seq_len}"
-        )
-    union_mask_type = "causal" if membership_mode == "masked" else "dense"
+        raise AssertionError("observed union exceeds the dense QSA route capacity")
+    union_mask_type = "causal"
     from flashinfer.attention.prims_ts.decode import _resolve_decode_launch_spec
 
     qkv_dtype_key = _qkv_dtype_key()
@@ -1224,122 +1256,129 @@ def _run_union_upper_bound(
         False,
         -1,
         trace.storage_page_size,
+        True,
     )
     actual_splits_kv = (
         int(union_spec.config.splits_kv) if union_spec.config.use_split_kv else 1
     )
-    union_metadata: Callable[[], object] | None = None
-    if membership_mode == "masked":
-        union_page_capacity = group_size * (_BLOCK_TOPK + 1)
-        union_indptr = torch.empty(num_groups + 1, dtype=torch.int32, device="cuda")
-        union_indices = torch.empty(
-            num_groups * union_page_capacity,
-            dtype=torch.int32,
-            device="cuda",
-        )
-        union_seq_lens = torch.empty(num_groups, dtype=torch.int32, device="cuda")
-        union_metadata_workspace = torch.empty(
-            qsa_prims_ts_metadata_workspace_size(
-                flat_rows,
-                inputs.block_table,
-                trace.storage_page_size,
-                group_size,
-            ),
-            dtype=torch.uint8,
-            device="cuda",
-        )
-        qsa_prims_ts_build_page4_metadata(
-            flat_block_indices,
-            inputs.block_table,
-            flat_token_to_req,
-            flat_positions,
-            trace.storage_page_size,
-            group_size,
-            union_metadata_workspace,
-            union_indptr,
-            union_indices,
-            union_seq_lens,
-        )
-        def union_metadata() -> object:
-            with torch.cuda.nvtx.range("union_metadata"):
-                return qsa_prims_ts_build_page4_metadata(
-                    flat_block_indices,
-                    inputs.block_table,
-                    flat_token_to_req,
-                    flat_positions,
-                    trace.storage_page_size,
-                    group_size,
-                    union_metadata_workspace,
-                    union_indptr,
-                    union_indices,
-                    union_seq_lens,
-                )
+    metadata_shapes = get_prims_ts_qsa_metadata_output_shapes(
+        flat_rows,
+        _BLOCK_TOPK,
+        group_size,
+        sparse_block_size=_COMPRESS_RATIO,
+    )
+    union_block_table = torch.empty(
+        metadata_shapes[0],
+        dtype=torch.int32,
+        device="cuda",
+    )
+    union_page_memberships = torch.empty(
+        metadata_shapes[1],
+        dtype=torch.int32,
+        device="cuda",
+    )
+    union_seq_lens = torch.empty(
+        metadata_shapes[2],
+        dtype=torch.int32,
+        device="cuda",
+    )
+    build_prims_ts_qsa_metadata(
+        flat_block_indices,
+        metadata_block_table,
+        flat_token_to_req,
+        flat_positions,
+        group_size=group_size,
+        storage_page_size=trace.storage_page_size,
+        max_seq_len_kv=metadata_max_seq_len_kv,
+        sparse_block_size=_COMPRESS_RATIO,
+        out=(union_block_table, union_page_memberships, union_seq_lens),
+    )
 
-        gpu_indptr = union_indptr.cpu()
-        gpu_indices = union_indices.cpu()
-        gpu_seq_lens = union_seq_lens.cpu()
-        if not torch.equal(gpu_seq_lens, union_seq_lens_cpu):
-            raise AssertionError("grouped GPU metadata sequence lengths mismatch")
-        for group_index in range(num_groups):
-            live_pages = int(union_indptr_cpu[group_index + 1].item()) - int(
-                union_indptr_cpu[group_index].item()
+    def union_metadata() -> object:
+        with torch.cuda.nvtx.range("union_metadata"):
+            return build_prims_ts_qsa_metadata(
+                flat_block_indices,
+                metadata_block_table,
+                flat_token_to_req,
+                flat_positions,
+                group_size=group_size,
+                storage_page_size=trace.storage_page_size,
+                max_seq_len_kv=metadata_max_seq_len_kv,
+                sparse_block_size=_COMPRESS_RATIO,
+                out=(union_block_table, union_page_memberships, union_seq_lens),
             )
-            cpu_begin = int(union_indptr_cpu[group_index].item())
-            gpu_begin = int(gpu_indptr[group_index].item())
-            if gpu_begin != group_index * union_page_capacity:
-                raise AssertionError("grouped GPU metadata indptr mismatch")
-            if not torch.equal(
-                gpu_indices[gpu_begin : gpu_begin + live_pages],
-                union_indices_cpu[cpu_begin : cpu_begin + live_pages],
-            ):
-                raise AssertionError("grouped GPU metadata locator mismatch")
-    else:
-        union_indptr = union_indptr_cpu.to(device="cuda")
-        union_indices = union_indices_cpu.to(device="cuda")
-        union_seq_lens = union_seq_lens_cpu.to(device="cuda")
+
+    gpu_block_table = union_block_table.cpu()
+    gpu_page_memberships = union_page_memberships.view(torch.uint8).cpu()
+    gpu_seq_lens = union_seq_lens.cpu()
+    if not torch.equal(gpu_seq_lens, union_seq_lens_cpu):
+        raise AssertionError("grouped GPU metadata sequence lengths mismatch")
+    for group_index in range(num_groups):
+        cpu_begin = int(union_indptr_cpu[group_index].item())
+        cpu_end = int(union_indptr_cpu[group_index + 1].item())
+        live_pages = cpu_end - cpu_begin
+        expected_locators = union_indices_cpu[cpu_begin:cpu_end] >> 8
+        expected_memberships = (union_indices_cpu[cpu_begin:cpu_end] & 0xFF).to(
+            torch.uint8
+        )
+        if not torch.equal(
+            gpu_block_table[group_index, :live_pages], expected_locators
+        ):
+            raise AssertionError("grouped GPU metadata locator mismatch")
+        if not torch.equal(
+            gpu_page_memberships[group_index, :live_pages], expected_memberships
+        ):
+            raise AssertionError("grouped GPU metadata membership mismatch")
+
+    fixed_union_q = union_q.unsqueeze(1)
     union_workspace = torch.zeros(
-        get_prims_ts_batch_decode_workspace_size(
-            num_groups,
-            num_query_heads,
-            num_kv_heads,
-            _HEAD_DIM,
-            _COMPRESS_RATIO,
-            union_max_seq_len,
-            seq_len_q=group_size,
-            q_dtype=union_q.dtype,
-            kv_dtype=inputs.k_cache.dtype,
+        get_prims_ts_qsa_workspace_size(
+            fixed_union_q,
+            inputs.k_cache,
+            metadata_block_table,
+            block_topk=_BLOCK_TOPK,
+            max_seq_len_kv=metadata_max_seq_len_kv,
             out_dtype=_output_dtype(),
-            mask_type=union_mask_type,
-            storage_page_size=trace.storage_page_size,
-            device="cuda",
+            sparse_block_size=_COMPRESS_RATIO,
         ),
         dtype=torch.uint8,
         device="cuda",
     )
+    fixed_union_output = _empty_output_like(fixed_union_q)
     union_output = _empty_output_like(union_q)
+    union_plan = prepare_prims_ts_qsa_attention(
+        fixed_union_q,
+        (inputs.k_cache, inputs.v_cache),
+        flat_block_indices,
+        metadata_block_table,
+        flat_token_to_req,
+        flat_positions,
+        union_workspace,
+        out=fixed_union_output,
+        max_seq_len_kv=metadata_max_seq_len_kv,
+        sparse_block_size=_COMPRESS_RATIO,
+    )
 
     def union_attention() -> None:
         with torch.cuda.nvtx.range("union_attention"):
-            prims_ts_batch_decode_with_kv_cache(
+            # The outer public plan owns this prebuilt dense route. Calling its
+            # prepared attention component excludes metadata from this control.
+            union_plan._attention_plan.run(
                 union_q,
-                (inputs.k_cache, inputs.v_cache),
-                union_workspace,
-                union_indptr,
-                union_indices,
-                union_seq_lens,
-                union_max_seq_len,
-                seq_len_q=group_size,
-                bmm1_scale=_HEAD_DIM**-0.5,
                 out=union_output,
-                out_dtype=union_output.dtype,
-                mask_type=union_mask_type,
-                page_size=_COMPRESS_RATIO,
+                bmm1_scale=_HEAD_DIM**-0.5,
             )
 
     def union_end_to_end() -> None:
-        if union_metadata is not None:
-            union_metadata()
-        union_attention()
+        with torch.cuda.nvtx.range("union_qsa_metadata_attention"):
+            union_plan.run(
+                fixed_union_q,
+                flat_block_indices,
+                metadata_block_table,
+                flat_token_to_req,
+                flat_positions,
+                out=fixed_union_output,
+            )
 
     subset_inputs = QSAInputs(
         q=flat_q,
@@ -1357,8 +1396,7 @@ def _run_union_upper_bound(
     (
         baseline_k,
         baseline_v,
-        baseline_indptr,
-        baseline_indices,
+        baseline_block_table,
         baseline_seq_lens,
         baseline_workspace,
         grouped_swa_kv_tokens,
@@ -1374,24 +1412,26 @@ def _run_union_upper_bound(
         dtype=_grouped_swa_output_dtype(),
         device=union_q.device,
     )
+    baseline_plan = prepare_prims_ts_batch_decode_with_kv_cache(
+        union_q,
+        (baseline_k, baseline_v),
+        baseline_workspace,
+        baseline_block_table,
+        baseline_seq_lens,
+        trace.context_length,
+        out=baseline_output,
+        seq_len_q=group_size,
+        mask_type="causal",
+        window_left=_BASELINE_WINDOW_LEFT,
+        page_size=_BASELINE_PAGE_SIZE,
+    )
 
     def grouped_swa_attention() -> None:
         with torch.cuda.nvtx.range("union_grouped_swa_attention"):
-            prims_ts_batch_decode_with_kv_cache(
+            baseline_plan.run(
                 union_q,
-                (baseline_k, baseline_v),
-                baseline_workspace,
-                baseline_indptr,
-                baseline_indices,
-                baseline_seq_lens,
-                trace.context_length,
-                bmm1_scale=_HEAD_DIM**-0.5,
                 out=baseline_output,
-                out_dtype=baseline_output.dtype,
-                seq_len_q=group_size,
-                mask_type="causal",
-                window_left=_BASELINE_WINDOW_LEFT,
-                page_size=_BASELINE_PAGE_SIZE,
+                bmm1_scale=_HEAD_DIM**-0.5,
             )
 
     # Poison the output before the untimed correctness launch. This makes a
@@ -1402,8 +1442,8 @@ def _run_union_upper_bound(
     if benchmark_flattened:
         flattened_attention()
     triton_sparse_attention()
-    if union_metadata is not None:
-        union_metadata()
+    union_metadata()
+    union_end_to_end()
     union_attention()
     grouped_swa_attention()
     torch.cuda.synchronize()
@@ -1423,6 +1463,17 @@ def _run_union_upper_bound(
             f"nonfinite_by_q_head={nonfinite_by_q_head}"
         )
     comparison_atol = _comparison_atol()
+    combined_output = fixed_union_output.squeeze(1)
+    combined_abs_diff = (combined_output.float() - union_output.float()).abs()
+    combined_max_abs_diff = float(combined_abs_diff.max().item())
+    if (
+        not math.isfinite(combined_max_abs_diff)
+        or combined_max_abs_diff > comparison_atol
+    ):
+        raise AssertionError(
+            "combined public QSA plan disagrees with its prebuilt attention: "
+            f"max diff {combined_max_abs_diff:.5f}"
+        )
     triton_max_abs_diff = math.nan
     if benchmark_flattened:
         triton_abs_diff = (triton_output.float() - flat_output.float()).abs()
@@ -1501,8 +1552,7 @@ def _run_union_upper_bound(
     }
     if benchmark_flattened:
         profile_functions["flattened"] = flattened_attention
-    if union_metadata is not None:
-        profile_functions["metadata"] = union_metadata
+    profile_functions["metadata"] = union_metadata
     if profile_component is not None:
         profile_function = profile_functions.get(profile_component)
         if profile_function is None:
@@ -1532,11 +1582,10 @@ def _run_union_upper_bound(
     }
     if benchmark_flattened:
         timing_functions["flattened"] = flattened_attention
-    if union_metadata is not None:
-        timing_functions = {
-            "metadata": union_metadata,
-            **timing_functions,
-        }
+    timing_functions = {
+        "metadata": union_metadata,
+        **timing_functions,
+    }
     timings = _time_cuda_interleaved(timing_functions, **timing_args)
     return UnionUpperBoundResult(
         tp_size=tp_size,
@@ -1742,9 +1791,10 @@ def _make_contiguous_baseline(
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
-    torch.Tensor,
 ]:
-    from flashinfer.decode import get_prims_ts_batch_decode_workspace_size
+    from flashinfer.attention.prims_ts import (
+        get_prims_ts_batch_decode_workspace_size,
+    )
 
     if physical_seq_len <= 0:
         raise ValueError("physical contiguous sequence length must be positive")
@@ -1778,16 +1828,7 @@ def _make_contiguous_baseline(
         device="cuda",
     )
     row_page_bases = row_cache_owners[:, None] * max_pages_per_request
-    row_pages = row_page_bases + local_pages.unsqueeze(0)
-    paged_kv_indices = row_pages.reshape(-1).contiguous()
-    paged_kv_indptr = (
-        torch.arange(
-            inputs.q.shape[0] + 1,
-            dtype=torch.int32,
-            device="cuda",
-        )
-        * max_pages_per_request
-    )
+    block_table = (row_page_bases + local_pages.unsqueeze(0)).contiguous()
     seq_lens = torch.full(
         (inputs.q.shape[0],),
         physical_seq_len,
@@ -1812,8 +1853,7 @@ def _make_contiguous_baseline(
     return (
         k_cache,
         v_cache,
-        paged_kv_indptr,
-        paged_kv_indices,
+        block_table,
         seq_lens,
         workspace,
     )
@@ -1826,7 +1866,6 @@ def _make_grouped_contiguous_baseline(
     num_kv_heads: int,
     physical_seq_len: int,
 ) -> tuple[
-    torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -1869,11 +1908,7 @@ def _make_grouped_contiguous_baseline(
         device="cuda",
     )
     request_page_bases = grouped_requests[:, :1] * max_pages_per_request
-    paged_kv_indices = (request_page_bases + local_pages).reshape(-1).contiguous()
-    paged_kv_indptr = (
-        torch.arange(groups + 1, dtype=torch.int32, device="cuda")
-        * max_pages_per_request
-    )
+    block_table = (request_page_bases + local_pages).contiguous()
     seq_lens = (grouped_positions[:, -1] + 1).to(torch.int32)
     if int(seq_lens.max().item()) > physical_seq_len:
         raise ValueError("grouped contiguous sequence exceeds the physical cache")
@@ -1907,8 +1942,7 @@ def _make_grouped_contiguous_baseline(
     return (
         k_cache,
         v_cache,
-        paged_kv_indptr,
-        paged_kv_indices,
+        block_table,
         seq_lens,
         workspace,
         grouped_swa_kv_tokens,
@@ -1928,7 +1962,13 @@ def _run_case(
     cold_l2: bool,
     prepared_inputs: QSAInputs | None = None,
 ) -> BenchmarkResult:
-    from flashinfer.decode import prims_ts_batch_decode_with_kv_cache
+    from flashinfer.attention.prims_ts import (
+        build_prims_ts_qsa_metadata,
+        get_prims_ts_qsa_metadata_output_shapes,
+        get_prims_ts_qsa_workspace_size,
+        prepare_prims_ts_batch_decode_with_kv_cache,
+        prepare_prims_ts_qsa_attention,
+    )
 
     num_query_heads, num_kv_heads = _tp_heads(tp_size)
     inputs = prepared_inputs
@@ -1941,38 +1981,47 @@ def _run_case(
             route_order,
             topk_pattern,
         )
-    page_capacity = _BLOCK_TOPK + 1
-    paged_kv_indptr = torch.empty(
-        workload.rows + 1,
+    max_seq_len_kv = workload.context_length
+    metadata_shapes = get_prims_ts_qsa_metadata_output_shapes(
+        workload.rows,
+        _BLOCK_TOPK,
+        1,
+        sparse_block_size=_COMPRESS_RATIO,
+    )
+    qsa_page_indices = torch.empty(
+        metadata_shapes[0],
         dtype=torch.int32,
         device="cuda",
     )
-    paged_kv_indices = torch.empty(
-        workload.rows * page_capacity,
+    qsa_page_memberships = torch.empty(
+        metadata_shapes[1],
         dtype=torch.int32,
         device="cuda",
     )
-    seq_lens = torch.empty(workload.rows, dtype=torch.int32, device="cuda")
+    qsa_seq_lens = torch.empty(
+        metadata_shapes[2],
+        dtype=torch.int32,
+        device="cuda",
+    )
     expanded_indices = torch.empty_like(inputs.logical_indices)
 
-    def build_metadata() -> None:
+    def build_metadata() -> object:
         with torch.cuda.nvtx.range("qsa_metadata"):
-            qsa_prims_ts_build_page4_metadata(
+            return build_prims_ts_qsa_metadata(
                 inputs.block_indices,
                 inputs.block_table,
                 inputs.token_to_req,
                 inputs.logical_positions,
-                storage_page_size,
-                1,
-                None,
-                paged_kv_indptr,
-                paged_kv_indices,
-                seq_lens,
+                group_size=1,
+                storage_page_size=storage_page_size,
+                max_seq_len_kv=max_seq_len_kv,
+                sparse_block_size=_COMPRESS_RATIO,
+                out=(qsa_page_indices, qsa_page_memberships, qsa_seq_lens),
             )
 
-    def build_legacy_metadata() -> None:
-        with torch.cuda.nvtx.range("qsa_legacy_metadata"):
-            expand_qsa_block_indices_cuda(
+    def build_triton_metadata() -> object:
+        with torch.cuda.nvtx.range("triton_expand_indices"):
+            return expand_qsa_block_indices_cuda(
                 inputs.block_indices,
                 inputs.logical_positions,
                 inputs.sequence_lengths,
@@ -1981,50 +2030,76 @@ def _run_case(
                 _TOKEN_TOPK,
                 expanded_indices,
             )
-            qsa_build_page4_paged_metadata(
-                expanded_indices,
-                inputs.block_table,
-                inputs.token_to_req,
-                inputs.logical_positions,
-                storage_page_size,
-                paged_kv_indptr=paged_kv_indptr,
-                paged_kv_indices=paged_kv_indices,
-                seq_lens=seq_lens,
-            )
 
     build_metadata()
+    fixed_qsa_query = inputs.q.view(
+        workload.rows,
+        1,
+        1,
+        num_query_heads,
+        _HEAD_DIM,
+    )
+    fixed_qsa_output = _empty_output_like(fixed_qsa_query)
+    qsa_output = fixed_qsa_output.view_as(inputs.q)
     qsa_workspace = torch.zeros(
-        qsa_prims_ts_workspace_size(
-            inputs.q,
+        get_prims_ts_qsa_workspace_size(
+            fixed_qsa_query,
             inputs.k_cache,
-            _QSA_MAX_SEQ_LEN,
+            inputs.block_table,
+            block_topk=_BLOCK_TOPK,
+            max_seq_len_kv=max_seq_len_kv,
             out_dtype=_output_dtype(),
+            sparse_block_size=_COMPRESS_RATIO,
         ),
         dtype=torch.uint8,
         device="cuda",
     )
-    qsa_output = _empty_output_like(inputs.q)
+    qsa_plan = prepare_prims_ts_qsa_attention(
+        fixed_qsa_query,
+        (inputs.k_cache, inputs.v_cache),
+        inputs.block_indices,
+        inputs.block_table,
+        inputs.token_to_req,
+        inputs.logical_positions,
+        qsa_workspace,
+        out=fixed_qsa_output,
+        max_seq_len_kv=max_seq_len_kv,
+        sparse_block_size=_COMPRESS_RATIO,
+    )
+    # Compile the complete public path and populate its plan-owned metadata
+    # before timing the attention-only component.
+    qsa_plan.run(
+        fixed_qsa_query,
+        inputs.block_indices,
+        inputs.block_table,
+        inputs.token_to_req,
+        inputs.logical_positions,
+        out=fixed_qsa_output,
+    )
     triton_output = _empty_output_like(inputs.q)
     triton_k_cache = inputs.k_cache.permute(0, 2, 1, 3)
     triton_v_cache = inputs.v_cache.permute(0, 2, 1, 3)
 
-    def qsa_attention() -> None:
+    def qsa_attention() -> object:
         with torch.cuda.nvtx.range("qsa_attention"):
-            qsa_prims_ts_paged_attention(
+            # Benchmark-only component isolation: the public plan above owns
+            # and initialized the dense Q1 route consumed here.
+            return qsa_plan._attention_plan.run(
                 inputs.q,
-                inputs.k_cache,
-                inputs.v_cache,
-                qsa_workspace,
-                paged_kv_indptr,
-                paged_kv_indices,
-                seq_lens,
-                _QSA_MAX_SEQ_LEN,
-                qsa_output,
+                out=qsa_output,
+                bmm1_scale=_HEAD_DIM**-0.5,
             )
 
-    def qsa_end_to_end() -> None:
-        build_metadata()
-        qsa_attention()
+    def qsa_end_to_end() -> object:
+        with torch.cuda.nvtx.range("qsa_metadata_attention"):
+            return qsa_plan.run(
+                fixed_qsa_query,
+                inputs.block_indices,
+                inputs.block_table,
+                inputs.token_to_req,
+                inputs.logical_positions,
+                out=fixed_qsa_output,
+            )
 
     def triton_sparse_attention() -> None:
         with torch.cuda.nvtx.range("triton_sparse_attention"):
@@ -2039,15 +2114,7 @@ def _run_case(
             )
 
     def triton_end_to_end() -> None:
-        expand_qsa_block_indices_cuda(
-            inputs.block_indices,
-            inputs.logical_positions,
-            inputs.sequence_lengths,
-            inputs.token_to_req,
-            _COMPRESS_RATIO,
-            _TOKEN_TOPK,
-            expanded_indices,
-        )
+        build_triton_metadata()
         with torch.cuda.nvtx.range("triton_sparse_attention"):
             qsa_sparse_paged_attention(
                 inputs.q,
@@ -2062,8 +2129,7 @@ def _run_case(
     (
         baseline_k,
         baseline_v,
-        baseline_indptr,
-        baseline_indices,
+        baseline_block_table,
         baseline_seq_lens,
         baseline_workspace,
     ) = _make_contiguous_baseline(
@@ -2075,23 +2141,26 @@ def _run_case(
         workload.context_length,
     )
     baseline_output = _empty_output_like(inputs.q)
+    baseline_plan = prepare_prims_ts_batch_decode_with_kv_cache(
+        inputs.q,
+        (baseline_k, baseline_v),
+        baseline_workspace,
+        baseline_block_table,
+        baseline_seq_lens,
+        workload.context_length,
+        out=baseline_output,
+        seq_len_q=1,
+        mask_type="causal",
+        window_left=_BASELINE_WINDOW_LEFT,
+        page_size=_BASELINE_PAGE_SIZE,
+    )
 
-    def contiguous_attention() -> None:
+    def contiguous_attention() -> object:
         with torch.cuda.nvtx.range("contiguous_attention"):
-            prims_ts_batch_decode_with_kv_cache(
+            return baseline_plan.run(
                 inputs.q,
-                (baseline_k, baseline_v),
-                baseline_workspace,
-                baseline_indptr,
-                baseline_indices,
-                baseline_seq_lens,
-                workload.context_length,
-                bmm1_scale=_HEAD_DIM**-0.5,
                 out=baseline_output,
-                out_dtype=baseline_output.dtype,
-                mask_type="causal",
-                window_left=_BASELINE_WINDOW_LEFT,
-                page_size=_BASELINE_PAGE_SIZE,
+                bmm1_scale=_HEAD_DIM**-0.5,
             )
 
     qsa_attention()
@@ -2163,7 +2232,7 @@ def _run_case(
     timings = _time_cuda_interleaved(
         {
             "metadata": build_metadata,
-            "legacy_metadata": build_legacy_metadata,
+            "triton_expand": build_triton_metadata,
             "qsa": qsa_attention,
             "qsa_end_to_end": qsa_end_to_end,
             "triton": triton_sparse_attention,
@@ -2187,7 +2256,7 @@ def _run_case(
             2 * num_kv_heads * _HEAD_DIM * inputs.k_cache.element_size()
         ),
         metadata_us=timings["metadata"],
-        legacy_metadata_us=timings["legacy_metadata"],
+        triton_expand_us=timings["triton_expand"],
         qsa_attention_us=timings["qsa"],
         qsa_end_to_end_us=timings["qsa_end_to_end"],
         triton_sparse_us=timings["triton"],
@@ -2200,7 +2269,7 @@ def _run_case(
 def _print_header() -> None:
     header = (
         " phase    TP    route     topk  contig overlap tail   BS    SQ   rows "
-        "compact_KV metadata_us legacy_meta_us qsa_us qsa_e2e_us "
+        "compact_KV metadata_us triton_expand_us qsa_us qsa_e2e_us "
         "triton_us triton_e2e_us contig_us "
         "selected_KV nominal_KV_GB qsa_KV_TBps contig_KV_TBps "
         "qsa/contig qsa_e2e/contig triton/contig triton_e2e/contig "
@@ -2227,7 +2296,7 @@ def _print_result(result: BenchmarkResult) -> None:
         f"{end_tail:>4} "
         f"{workload.batch_size:>4} {workload.seq_len_q:>5} "
         f"{workload.rows:>6} {compact_range:>10} "
-        f"{result.metadata_us:>11.2f} {result.legacy_metadata_us:>14.2f} "
+        f"{result.metadata_us:>11.2f} {result.triton_expand_us:>16.2f} "
         f"{result.qsa_attention_us:>6.2f} "
         f"{result.qsa_end_to_end_us:>10.2f} "
         f"{result.triton_sparse_us:>9.2f} "
@@ -2464,8 +2533,8 @@ def main() -> None:
         "--topk-dump-union-static-max-seq-len",
         type=int,
         help=(
-            "Resolve and launch grouped attention with a graph-stable KV upper "
-            "bound instead of the observed union maximum."
+            "Size grouped metadata for this graph-stable per-request model-length "
+            "bound instead of the trace's live context length."
         ),
     )
     parser.add_argument(
@@ -2836,7 +2905,7 @@ def main() -> None:
                         None,
                         0,
                         None,
-                        group_size * (_QSA_MAX_SEQ_LEN + 1),
+                        None,
                     )
                     _print_union_result(union_result)
 
