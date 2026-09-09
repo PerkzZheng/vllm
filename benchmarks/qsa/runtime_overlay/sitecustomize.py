@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Overlay local QToken-KvBlock-Sparse-Attention onto the Qwen runtime image.
 
 The dedicated Qwen image supplies ABI-matched vLLM extensions and FlashInfer

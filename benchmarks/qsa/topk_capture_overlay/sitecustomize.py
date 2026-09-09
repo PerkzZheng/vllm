@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """One-shot real QSA top-k capture layered over the normal runtime overlay.
 
 Use only for benchmark-data collection. Set ``QSA_TOPK_CAPTURE_PATH`` and put
@@ -13,8 +16,8 @@ import importlib.abc
 import importlib.machinery
 import os
 import runpy
+import sys
 from pathlib import Path
-
 
 _REPO = Path(os.environ.get("QSA_REPO", "/workspace/vllm-pr53896-qsa"))
 runpy.run_path(
@@ -22,8 +25,9 @@ runpy.run_path(
     run_name="_qsa_runtime_overlay",
 )
 
-import torch
-import torch.distributed as dist
+# The runtime overlay must configure imports before Torch is initialized.
+import torch  # noqa: E402
+import torch.distributed as dist  # noqa: E402
 
 _CAPTURED = False
 _TARGET_MODULE = "vllm.models.qwen4_exp.nvidia.qsa"
@@ -132,7 +136,5 @@ class _CaptureFinder(importlib.abc.MetaPathFinder):
         spec.loader = _CaptureLoader(spec.loader)
         return spec
 
-
-import sys
 
 sys.meta_path.insert(0, _CaptureFinder())

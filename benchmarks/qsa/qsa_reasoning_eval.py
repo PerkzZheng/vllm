@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Reproducible reasoning accuracy checks for QSA backend A/B runs."""
 
 from __future__ import annotations
@@ -9,16 +12,17 @@ import hashlib
 import json
 import math
 import random
-import re
 import statistics
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 import aiohttp
+import regex as re
 
 GSM8K_ROOT = (
     "https://raw.githubusercontent.com/openai/grade-school-math/"
@@ -124,20 +128,14 @@ def _extract_aime(text: str) -> str | None:
             value = float(number)
         except (OverflowError, ValueError):
             return None
-        if (
-            not math.isfinite(value)
-            or not value.is_integer()
-            or not 0 <= value <= 999
-        ):
+        if not math.isfinite(value) or not value.is_integer() or not 0 <= value <= 999:
             return None
         return str(int(value))
 
     boxed = re.findall(r"\\boxed\s*\{\s*(-?\d+)\s*\}", text)
     if boxed:
         return normalize(boxed[-1])
-    answers = re.findall(
-        r"(?i)(?:final\s+)?answer\s*(?:is|:)\s*(-?\d+)", text
-    )
+    answers = re.findall(r"(?i)(?:final\s+)?answer\s*(?:is|:)\s*(-?\d+)", text)
     if answers:
         return normalize(answers[-1])
     number = _extract_number(text)
@@ -259,18 +257,14 @@ def _read_longbench_v2(path: Path) -> list[dict[str, Any]] | Iterator[dict[str, 
         try:
             import pyarrow.parquet as pq
         except ImportError as error:
-            raise RuntimeError(
-                "LongBench v2 parquet input requires pyarrow"
-            ) from error
+            raise RuntimeError("LongBench v2 parquet input requires pyarrow") from error
         return pq.read_table(path).to_pylist()
 
     return _read_json_array(path)
 
 
 def _within_word_scan_limit(text: str, limit: int) -> bool:
-    words = 0
-    for _ in re.finditer(r"\S+", text):
-        words += 1
+    for words, _ in enumerate(re.finditer(r"\S+", text), start=1):
         if words > limit:
             return False
     return True
@@ -368,14 +362,10 @@ def _load_longbench_v2(
     if requested_ids:
         requested_id_set = set(requested_ids)
         row_by_id = {
-            str(row["_id"]): row
-            for row in rows
-            if str(row["_id"]) in requested_id_set
+            str(row["_id"]): row for row in rows if str(row["_id"]) in requested_id_set
         }
         missing = [
-            example_id
-            for example_id in requested_ids
-            if example_id not in row_by_id
+            example_id for example_id in requested_ids if example_id not in row_by_id
         ]
         if missing:
             raise ValueError(f"unknown LongBench v2 IDs: {missing}")
@@ -389,21 +379,17 @@ def _load_longbench_v2(
     for row in rows:
         if not requested_ids:
             max_candidate_tokens = int(
-                max(args.longbench_target_tokens)
-                * (1 + args.longbench_tolerance)
+                max(args.longbench_target_tokens) * (1 + args.longbench_tolerance)
             )
             if row["length"] == "long" or not _within_word_scan_limit(
                 row["context"], int(max_candidate_tokens * 1.25)
             ):
                 continue
         prompt = _render_longbench_v2(row)
-        input_tokens = _chat_input_tokens(
-            tokenizer, prompt, args.reasoning_effort
-        )
+        input_tokens = _chat_input_tokens(tokenizer, prompt, args.reasoning_effort)
         if not requested_ids:
             keep = any(
-                abs(input_tokens - target)
-                <= target * args.longbench_tolerance
+                abs(input_tokens - target) <= target * args.longbench_tolerance
                 for target in args.longbench_target_tokens
             )
             if not keep:
@@ -472,9 +458,7 @@ def _selection_records(examples: list[Example]) -> list[dict[str, Any]]:
 
 def _input_token_stats(examples: list[Example]) -> dict[str, float] | None:
     values = [
-        example.input_tokens
-        for example in examples
-        if example.input_tokens is not None
+        example.input_tokens for example in examples if example.input_tokens is not None
     ]
     if not values:
         return None
@@ -567,14 +551,13 @@ async def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 payload["stop"] = ["Question", "Assistant:", "<|separator|>"]
             for attempt in range(args.retries + 1):
                 try:
-                    async with semaphore, session.post(
-                        args.url, json=payload
-                    ) as response:
+                    async with (
+                        semaphore,
+                        session.post(args.url, json=payload) as response,
+                    ):
                         body = await response.text()
                         if response.status >= 400:
-                            raise RuntimeError(
-                                f"HTTP {response.status}: {body[:2000]}"
-                            )
+                            raise RuntimeError(f"HTTP {response.status}: {body[:2000]}")
                         response.raise_for_status()
                     result = json.loads(body)
                     choice = result["choices"][0]
@@ -630,9 +613,7 @@ async def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 "correct": prediction == example.label,
                 "output": output,
                 "output_sha256": hashlib.sha256(output.encode()).hexdigest(),
-                "prompt_sha256": hashlib.sha256(
-                    example.prompt.encode()
-                ).hexdigest(),
+                "prompt_sha256": hashlib.sha256(example.prompt.encode()).hexdigest(),
                 "input_tokens": example.input_tokens,
                 "api_prompt_tokens": input_tokens,
                 "target_input_tokens": example.target_input_tokens,
@@ -754,8 +735,7 @@ def main() -> None:
             args.num_questions = len(args.longbench_ids)
         else:
             args.num_questions = (
-                len(args.longbench_target_tokens)
-                * args.longbench_samples_per_target
+                len(args.longbench_target_tokens) * args.longbench_samples_per_target
             )
     if args.max_tokens is None:
         args.max_tokens = default_tokens
@@ -771,9 +751,7 @@ def main() -> None:
         parser.error("--longbench-tolerance must be in [0, 1]")
 
     result = (
-        _prepare_selection(args)
-        if args.prepare_only
-        else asyncio.run(_evaluate(args))
+        _prepare_selection(args) if args.prepare_only else asyncio.run(_evaluate(args))
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Summarize request-sized CUDA bursts in an Nsight Systems SQLite export."""
 
 from __future__ import annotations
 
 import argparse
-import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+
+import regex as re
 
 
 @dataclass
@@ -87,9 +91,7 @@ def load_kernels(path: Path) -> dict[int, list[Kernel]]:
     by_device: dict[int, list[Kernel]] = defaultdict(list)
     with sqlite3.connect(path) as connection:
         for device, global_pid, start, end, name in connection.execute(query):
-            by_device[device].append(
-                Kernel(device, global_pid, start, end, name)
-            )
+            by_device[device].append(Kernel(device, global_pid, start, end, name))
     return by_device
 
 
@@ -197,9 +199,7 @@ def summarize_nvtx_ranges(
 
         if aggregate:
             selected_kernels = [
-                kernel
-                for _, kernels in selected_ranges
-                for kernel in kernels
+                kernel for _, kernels in selected_ranges for kernel in kernels
             ]
             nonempty = [
                 (nvtx_range, kernels)
@@ -219,8 +219,7 @@ def summarize_nvtx_ranges(
                     kernel.end for _, kernels in nonempty for kernel in kernels
                 )
                 cpu_spans = [
-                    nvtx_range.end - nvtx_range.start
-                    for nvtx_range, _ in nonempty
+                    nvtx_range.end - nvtx_range.start for nvtx_range, _ in nonempty
                 ]
                 print(
                     f"  aggregate: ranges={len(nonempty)} "

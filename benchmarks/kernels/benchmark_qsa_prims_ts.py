@@ -509,7 +509,7 @@ def _l2_cache_size_bytes(device_index: int) -> int:
 def _l2_flush_buffer() -> torch.Tensor:
     """Return a persistent buffer large enough to evict the device L2."""
 
-    device_index = torch.cuda.current_device()
+    device_index = torch.accelerator.current_device_index()
     buffer = _L2_FLUSH_BUFFERS.get(device_index)
     if buffer is None:
         flush_bytes = max(
@@ -566,7 +566,7 @@ def _time_cuda_interleaved(
             if cold_l2:
                 _evict_l2()
             functions[name]()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     measured = dict(functions)
     graphs: dict[str, torch.cuda.CUDAGraph] = {}
@@ -583,7 +583,7 @@ def _time_cuda_interleaved(
             # Warm the pointwise implementation before capture so graph setup
             # cannot allocate or compile on the measured path.
             _evict_l2()
-            torch.cuda.synchronize()
+            torch.accelerator.synchronize()
             flush_graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(flush_graph):
                 _evict_l2()
@@ -593,7 +593,7 @@ def _time_cuda_interleaved(
                 if flush_measured is not None:
                     flush_measured()
                 measured[name]()
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
 
     event_pairs = {
         name: [
@@ -613,7 +613,7 @@ def _time_cuda_interleaved(
             start.record()
             measured[name]()
             end.record()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     return {
         name: sum(start.elapsed_time(end) for start, end in event_pairs[name])
         * (1000 / iterations)
@@ -1240,7 +1240,7 @@ def _run_union_upper_bound(
 
     qkv_dtype_key = _qkv_dtype_key()
     union_spec = _resolve_decode_launch_spec(
-        torch.cuda.current_device(),
+        torch.accelerator.current_device_index(),
         num_groups,
         num_query_heads,
         num_kv_heads,
@@ -1446,7 +1446,7 @@ def _run_union_upper_bound(
     union_end_to_end()
     union_attention()
     grouped_swa_attention()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     # PyTorch does not implement isfinite for float8 tensors.  Convert only for
     # validation; the measured kernel still writes the requested output dtype.
     finite_output = torch.isfinite(union_output.float())
@@ -1562,10 +1562,10 @@ def _run_union_upper_bound(
             )
         if cold_l2:
             _evict_l2()
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         torch.cuda.cudart().cudaProfilerStart()
         profile_function()
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         torch.cuda.cudart().cudaProfilerStop()
     timing_args = {
         "warmup_iterations": warmup_iterations,
@@ -2165,7 +2165,7 @@ def _run_case(
 
     qsa_attention()
     triton_sparse_attention()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     output_diff = (qsa_output.float() - triton_output.float()).abs()
     triton_max_abs_diff = float(output_diff.max().item())
     comparison_atol = _comparison_atol()

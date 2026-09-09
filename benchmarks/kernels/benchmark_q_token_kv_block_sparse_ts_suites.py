@@ -866,7 +866,7 @@ def _l2_cache_size_bytes(device_index: int) -> int:
 
 
 def _l2_flush_buffer() -> torch.Tensor:
-    device_index = torch.cuda.current_device()
+    device_index = torch.accelerator.current_device_index()
     buffer = _L2_FLUSH_BUFFERS.get(device_index)
     if buffer is None:
         flush_bytes = max(
@@ -928,7 +928,7 @@ def _time_cuda_graphs(
         for name in _balanced_order(names, round_index):
             _evict_l2()
             functions[name]()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     graphs: dict[str, torch.cuda.CUDAGraph] = {}
     for name, function in functions.items():
@@ -937,7 +937,7 @@ def _time_cuda_graphs(
             function()
         graphs[name] = graph
     _evict_l2()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     flush_graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(flush_graph):
         _evict_l2()
@@ -945,7 +945,7 @@ def _time_cuda_graphs(
         for name in _balanced_order(names, round_index):
             flush_graph.replay()
             graphs[name].replay()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     events = {
         name: [
@@ -964,7 +964,7 @@ def _time_cuda_graphs(
             begin.record()
             graphs[name].replay()
             end.record()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     return {
         name: _distribution(
             [begin.elapsed_time(end) * 1000 for begin, end in events[name]]
@@ -1040,7 +1040,7 @@ def _resolve_qsa_config(case: SuiteCase, tensors: CaseTensors) -> Any:
         else case.group_size * (BLOCK_TOPK + 1) * SPARSE_BLOCK_SIZE
     )
     return _resolve_decode_launch_spec(
-        torch.cuda.current_device(),
+        torch.accelerator.current_device_index(),
         routes,
         num_q_heads,
         num_kv_heads,
@@ -1309,7 +1309,7 @@ def _run_case(
         tensors.attention_plan._prepared_plan._metadata_plan.seq_lens,
     )
     triton_attention()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     tolerance = 0.02 if tensors.query.dtype == torch.bfloat16 else 0.05
     _assert_backend_outputs(
@@ -1476,11 +1476,18 @@ def _new_result_document(
 ) -> dict[str, Any]:
     import flashinfer
     import triton
+    from flashinfer.attention.prims_ts import q_token_kv_block_sparse_metadata
 
     runner_path = Path(__file__).resolve()
     vllm_root = runner_path.parents[2]
-    flashinfer_root = Path(flashinfer.__file__).resolve().parent.parent
-    properties = torch.cuda.get_device_properties(torch.cuda.current_device())
+    # Framework overlays may keep the image package while loading attention
+    # from another checkout. Record the implementation actually benchmarked.
+    flashinfer_root = (
+        Path(q_token_kv_block_sparse_metadata.__file__).resolve().parents[3]
+    )
+    properties = torch.cuda.get_device_properties(
+        torch.accelerator.current_device_index()
+    )
     manifest_sha256 = _sha256(manifest_path)
     runner_sha256 = _sha256(runner_path)
     flashinfer_state = _git_state(flashinfer_root)
@@ -1501,7 +1508,10 @@ def _new_result_document(
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         "triton": triton.__version__,
-        "device_index": torch.cuda.current_device(),
+        "flashinfer_package_root": str(
+            Path(flashinfer.__file__).resolve().parent.parent
+        ),
+        "device_index": torch.accelerator.current_device_index(),
     }
     timing_contract = {
         "cuda_graph": True,
@@ -1641,7 +1651,7 @@ def main() -> int:
     if args.auto_group_size:
         if not torch.cuda.is_available():
             raise RuntimeError("automatic QSA grouping requires CUDA")
-        torch.cuda.set_device(args.device)
+        torch.accelerator.set_device_index(args.device)
         multi_processor_count = torch.cuda.get_device_properties(
             args.device
         ).multi_processor_count
@@ -1671,7 +1681,7 @@ def main() -> int:
 
     if not torch.cuda.is_available():
         raise RuntimeError("canonical QSA suites require CUDA")
-    torch.cuda.set_device(args.device)
+    torch.accelerator.set_device_index(args.device)
     output_path = args.output_json.resolve()
     if output_path.exists() and not (args.resume or args.overwrite):
         raise FileExistsError(
@@ -1756,7 +1766,7 @@ def main() -> int:
             raise
         finally:
             gc.collect()
-            torch.cuda.empty_cache()
+            torch.accelerator.empty_cache()
 
     selected_ids = set(document["selected_case_ids"])
     complete_ids = {case["case_id"] for case in document.get("cases", [])}

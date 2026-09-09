@@ -20,11 +20,13 @@ _QTokenKvBlockSparseTSAPIs = tuple[
     Callable[..., int],
     Callable[..., int],
     Callable[..., torch.Tensor],
-    Callable[..., object],
+    Callable[..., "_QTokenKvBlockSparseTSPlan"],
 ]
 
 
 class _QTokenKvBlockSparseTSPlan(Protocol):
+    def plan(self, *args: object, **kwargs: object) -> None: ...
+
     def run(
         self,
         q: torch.Tensor,
@@ -905,7 +907,7 @@ def q_token_kv_block_sparse_ts_prepare_attention(
         )
     _, _, _, wrapper_type = apis
     use_packed_q = qo_indptr is not None
-    if use_packed_q:
+    if qo_indptr is not None:
         if seq_len_q is None:
             raise ValueError("packed QToken attention requires seq_len_q")
         batch_size = int(qo_indptr.numel()) - 1

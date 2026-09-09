@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Summarize QSA reasoning artifacts and audit item-level backend changes."""
 
 from __future__ import annotations
@@ -83,9 +86,7 @@ def _records_by_id(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return records
 
 
-def _audit_pair(
-    reference: dict[str, Any], candidate: dict[str, Any]
-) -> dict[str, int]:
+def _audit_pair(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, int]:
     reference_records = _records_by_id(reference)
     candidate_records = _records_by_id(candidate)
     compared_ids = reference_records.keys() & candidate_records.keys()
@@ -108,13 +109,10 @@ def _audit_pair(
             reference_record["prediction"] != candidate_record["prediction"]
         )
         output_hash_changes += (
-            reference_record["output_sha256"]
-            != candidate_record["output_sha256"]
+            reference_record["output_sha256"] != candidate_record["output_sha256"]
         )
         regressions += reference_record["correct"] and not candidate_record["correct"]
-        improvements += (
-            not reference_record["correct"] and candidate_record["correct"]
-        )
+        improvements += not reference_record["correct"] and candidate_record["correct"]
     return {
         "items": len(compared_ids),
         "prediction_changes": prediction_changes,
@@ -221,10 +219,7 @@ def _print_lengths(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                     int(record.get("api_prompt_tokens") or record.get("input_tokens"))
                     + int(record["completion_tokens"])
                     for record in records
-                    if (
-                        record.get("api_prompt_tokens")
-                        or record.get("input_tokens")
-                    )
+                    if (record.get("api_prompt_tokens") or record.get("input_tokens"))
                     and record.get("error") is None
                     and record.get("completion_tokens") is not None
                 ]

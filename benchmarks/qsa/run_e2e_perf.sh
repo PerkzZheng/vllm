@@ -131,8 +131,8 @@ common_bench_args=(
   --temperature 0
   --ignore-eos
   --ready-check-timeout-sec "${qsa_ready_check_timeout_sec}"
-  --percentile-metrics ttft,tpot,itl,e2el
-  --metric-percentiles 50,90,99
+  --percentile-metrics 'ttft,tpot,itl,e2el'
+  --metric-percentiles '50,90,99'
 )
 profile_args=()
 if [[ ${qsa_profile} == true ]]; then
