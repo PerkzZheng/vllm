@@ -101,24 +101,33 @@ until cache rebind. Eager and piecewise execution retain the four most recently
 used query geometries per QSA layer. KV-cache rebind and teardown clear both
 prepared-state collections.
 
-The four eager plans share one grow-only workspace arena per QSA layer.
-Preparing a geometry that exceeds the arena first invalidates all plans bound
-to its old storage, releases it, and allocates one larger arena. Subsequent
-smaller geometries bind different typed views into that same allocation. This
-is legal because Qwen4Exp rejects dual-batch overlap and microbatching, so QSA
-launches are sequential on the current stream; callers must not reuse an arena
-for concurrent launches. Persistent CUDA-graph plans each own separate stable
-storage. Capturing fewer query tokens can increase scratch requirements when
-split-KV changes, so descending token order does not guarantee descending
-workspace sizes. Preparing another graph must not change a captured address.
+The target and MTP sparse layers share a weak workspace pool scoped to their
+static forward context. Plans and K/V tensor maps remain layer-specific.
+Matching graph workspace geometries reuse the same allocation across layers;
+different graph geometries keep disjoint storage, including their split-KV
+counters. The key includes query capacity, route count/grouping, head geometry,
+storage-page size, dtypes, top-k capacity and logical context bound, but not
+layer-specific K/V pointers or query strides. Capturing fewer query tokens can
+increase split-KV scratch requirements: one graph's storage must never be
+resized or repurposed when preparing another graph.
+
+The four eager plans per layer still share a grow-only arena, but matching
+allocation sizes are now reused across layers too. Growing a layer's arena
+invalidates its old eager plans and obtains a larger shared allocation; other
+layers retain valid views until they also grow or release their plans. Weak
+pool entries do not keep a superseded allocation or profiling graph pool
+alive after its last owner clears its storage. Eager arenas are separate from
+graph arenas. PrimTS explicitly rejects DBO/microbatching, and all shared
+workspace uses must be ordered; this does not support concurrent graph replay.
 
 For 8K packed Q4 with block-top-k 512, the persistent metadata outputs use
 roughly 16 MiB for locators and 4 MiB for packed memberships. Radix-sort and
 union temporary state is CTA-local shared memory, so the allocation is
 independent of a 128K model bound and has no context-sized bitmap suffix. The
-shared arena therefore retains about 20 MiB plus attention scratch per QSA
-layer rather than the sum of four eager workspaces. Metadata outputs are fully
-overwritten on every run. Prefill does not allocate split-KV scratch.
+shared arena therefore retains about 20 MiB plus attention scratch for matching
+layers together, rather than allocating that amount separately in each layer.
+Metadata outputs are fully overwritten on every run. Prefill does not allocate
+split-KV scratch.
 Decode split counters occupy a disjoint workspace section and are initialized
 during plan preparation. Current QSA splits use a separate reducer and do not
 read those counters; shared eager storage relies on this policy as well as
@@ -126,6 +135,14 @@ ordered launches. A fused-counter policy would require dedicated counter
 storage before it could share eager arenas. The Triton path remains the fallback on
 unsupported architectures or when the complete FlashInfer sparse-block API is
 absent.
+
+Measured on GB300, TP2, MTP3, max batch 32, 8K batched-token capacity, and a
+32K model bound: the 12 main sparse layers plus one MTP layer retain 182 plans.
+Sharing reduces 143 unique allocations (249.323 MiB per rank) to 11
+(19.179 MiB per rank), saving 230.145 MiB. BF16 and FP8 real-model graph
+capture and short generation checks report the same shared size; this is not
+a full benchmark-accuracy result. Cross-layer reference tests alternate
+different K/V caches and selected blocks, including repeated graph replay.
 
 CPU request boundaries prove whether a decode batch is uniform. Every live
 request must contribute exactly `G` adjacent rows and any inert graph-padding

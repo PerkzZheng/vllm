@@ -8,6 +8,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar, cast
+from weakref import WeakValueDictionary
 
 import torch
 from torch import nn
@@ -79,6 +80,31 @@ class _QTokenKvBlockSparseTSPreparedState:
     workspace: torch.Tensor
     plan: object
     qo_indptr: torch.Tensor | None
+
+
+class _QTokenKvBlockSparseTSWorkspaces:
+    """Share scratch across ordered layers without owning captured storage.
+
+    One instance belongs to a model's static forward context, including MTP.
+    The PrimTS owner rejects DBO and microbatching. Graph geometries stay
+    disjoint so their split-KV counter layouts cannot overwrite each other.
+    Weak entries release storage after its last layer drops its plans.
+    """
+
+    def __init__(self) -> None:
+        self._buffers: WeakValueDictionary[tuple[object, ...], torch.Tensor] = (
+            WeakValueDictionary()
+        )
+
+    def get(
+        self, key: tuple[object, ...], num_bytes: int, device: torch.device
+    ) -> torch.Tensor:
+        key = (device, num_bytes, *key)
+        workspace = self._buffers.get(key)
+        if workspace is None:
+            workspace = torch.empty(num_bytes, dtype=torch.uint8, device=device)
+            self._buffers[key] = workspace
+        return workspace
 
 
 def _supports_q_token_kv_block_sparse_ts_geometry(
@@ -353,12 +379,23 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             kv_block_size=sparse_block_size,
         )
         if persistent:
-            # Split-KV scratch need not shrink with the captured query shape.
-            # Each graph owns stable storage independently of capture order.
-            workspace = torch.empty(
-                required_bytes,
-                dtype=torch.uint8,
-                device=query.device,
+            # Share only equal workspace layouts, not layer-specific K/V maps.
+            # Query strides and cache pointers do not affect scratch sizing.
+            workspace_key = (
+                "graph",
+                tuple(query.shape),
+                query.dtype,
+                out.dtype,
+                tuple(key_cache.shape[1:]),
+                key_cache.dtype,
+                block_indices.shape[1],
+                group_size,
+                sparse_block_size,
+                max_seq_len_kv,
+                None if qo_indptr_cpu is None else qo_indptr_cpu.numel() - 1,
+            )
+            workspace = layer._q_token_kv_block_sparse_ts_workspaces.get(
+                workspace_key, required_bytes, query.device
             )
         else:
             eager_workspace = layer._q_token_kv_block_sparse_ts_eager_workspace
@@ -369,15 +406,13 @@ class Qwen4ExpQSAFlashAttentionImpl(FlashAttentionImpl):
             ):
                 # Every eager plan binds typed views into this arena. Drop those
                 # plans and the old arena before growing so none retain stale
-                # workspace storage. Qwen4Exp rejects DBO/microbatching, and
+                # workspace storage. PrimTS rejects DBO/microbatching, and
                 # ordinary eager launches are sequential on the current stream.
                 layer._q_token_kv_block_sparse_ts_eager_states.clear()
                 layer._q_token_kv_block_sparse_ts_eager_workspace = None
                 del eager_workspace
-                eager_workspace = torch.empty(
-                    required_bytes,
-                    dtype=torch.uint8,
-                    device=query.device,
+                eager_workspace = layer._q_token_kv_block_sparse_ts_workspaces.get(
+                    ("eager",), required_bytes, query.device
                 )
                 layer._q_token_kv_block_sparse_ts_eager_workspace = eager_workspace
             workspace = eager_workspace
@@ -643,6 +678,7 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         tuple[object, ...], _QTokenKvBlockSparseTSPreparedState
     ]
     _q_token_kv_block_sparse_ts_eager_workspace: torch.Tensor | None
+    _q_token_kv_block_sparse_ts_workspaces: _QTokenKvBlockSparseTSWorkspaces
     q_token_kv_block_sparse_ts_max_seq_len_kv: int
 
     def _clear_q_token_kv_block_sparse_ts_prepared_storage(self) -> None:
@@ -827,6 +863,11 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
                 self.q_token_kv_block_sparse_ts_decode_group_size,
             ),
         )
+        if self.impl.use_q_token_kv_block_sparse_ts and parallel_config.use_ubatching:
+            raise NotImplementedError(
+                "PrimTS QToken-KvBlock-Sparse-Attention workspace sharing "
+                "does not support DBO or microbatching"
+            )
         self.indexer = QSAIndexer(
             vllm_config=vllm_config,
             config=config,
@@ -869,6 +910,14 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
         static_context = vllm_config.compilation_config.static_forward_context
         if self.layer_name in static_context:
             raise ValueError(f"Duplicate layer name: {self.layer_name}")
+        self._q_token_kv_block_sparse_ts_workspaces = next(
+            (
+                layer._q_token_kv_block_sparse_ts_workspaces
+                for layer in static_context.values()
+                if isinstance(layer, Qwen4ExpQSAAttention)
+            ),
+            _QTokenKvBlockSparseTSWorkspaces(),
+        )
         static_context[self.layer_name] = self
 
     def get_attn_backend(self) -> type[AttentionBackend]:

@@ -6,6 +6,7 @@ import math
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable
+from copy import copy
 from types import SimpleNamespace
 from typing import cast
 
@@ -19,6 +20,7 @@ from vllm.models.qwen4_exp.nvidia import (
     model as _qwen4_exp_model,  # noqa: F401
 )
 from vllm.models.qwen4_exp.nvidia.ops import qsa as qsa_ops
+from vllm.models.qwen4_exp.nvidia.qsa import _QTokenKvBlockSparseTSWorkspaces
 from vllm.platforms import current_platform
 from vllm.triton_utils import HAS_TRITON
 
@@ -1347,6 +1349,7 @@ def _make_q_token_kv_block_sparse_ts_owner_case(
         _q_token_kv_block_sparse_ts_graph_states={},
         _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
         _q_token_kv_block_sparse_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_workspaces=_QTokenKvBlockSparseTSWorkspaces(),
     )
     metadata = SimpleNamespace(
         num_actual_tokens=num_tokens,
@@ -1397,8 +1400,10 @@ def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
     block_topk = 512
     sparse_block_size = 4
     storage_page_size = 16
-    first_query_position = block_topk * sparse_block_size - 1
-    pages_per_request = 129
+    first_query_position = 2 * block_topk * sparse_block_size - 1
+    pages_per_request = (
+        first_query_position + max(query_lengths) + storage_page_size - 1
+    ) // storage_page_size
     num_requests = len(query_lengths)
     num_tokens = sum(query_lengths)
     generator = torch.Generator(device=device).manual_seed(
@@ -1497,6 +1502,7 @@ def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
         _q_token_kv_block_sparse_ts_graph_states={},
         _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
         _q_token_kv_block_sparse_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_workspaces=_QTokenKvBlockSparseTSWorkspaces(),
     )
     metadata = SimpleNamespace(
         num_actual_tokens=num_tokens,
@@ -1514,15 +1520,19 @@ def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
     impl.sliding_window = (-1, -1)
     impl.use_q_token_kv_block_sparse_ts = True
 
-    def run() -> torch.Tensor:
+    def run(
+        owner: SimpleNamespace = layer,
+        cache: torch.Tensor = kv_cache,
+        out: torch.Tensor = output,
+    ) -> torch.Tensor:
         return impl.forward_qsa(
-            layer,
+            owner,
             query,
             query,
             query,
-            kv_cache,
+            cache,
             metadata,
-            output,
+            out,
             token_to_req,
             logical_positions,
             query_start_offsets=query_start_offsets,
@@ -1565,6 +1575,65 @@ def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
         actual.float(), reference, rtol=tolerance, atol=tolerance
     )
 
+    # A second layer has different K/V and selections, but the same scratch
+    # layout. Alternating them must overwrite metadata and split partials.
+    second_layer = copy(layer)
+    second_layer._q_token_kv_block_sparse_ts_graph_states = {}
+    second_layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict()
+    second_layer._q_token_kv_block_sparse_ts_eager_workspace = None
+    second_layer.topk_indices_buffer = compact_blocks + block_topk
+    if kv_cache_dtype == "fp8":
+        second_layer._qsa_fp8_query_buffer = torch.empty_like(
+            layer._qsa_fp8_query_buffer
+        )
+    second_typed_cache = typed_kv_cache.clone()
+    second_typed_cache[..., head_dim:].copy_(-typed_kv_cache[..., head_dim:].float())
+    second_cache = (
+        second_typed_cache.view(torch.uint8)
+        if kv_cache_dtype == "fp8"
+        else second_typed_cache
+    )
+    second_output = torch.empty_like(output)
+    second_tokens = _expand_qsa_indices_reference(
+        second_layer.topk_indices_buffer,
+        logical_positions,
+        row_sequence_lengths,
+        sparse_block_size,
+        block_topk * sparse_block_size,
+    )
+    second_reference = _qsa_sparse_paged_attention_reference(
+        reference_query,
+        second_typed_cache[..., :head_dim].transpose(1, 2),
+        second_typed_cache[..., head_dim:].transpose(1, 2),
+        second_tokens,
+        block_table,
+        token_to_req,
+        impl.scale,
+    )
+    run(second_layer, second_cache, second_output)
+    run()
+    torch.accelerator.synchronize()
+    state_kind = "eager" if has_prefill else "graph"
+    first_state = next(
+        iter(
+            getattr(layer, f"_q_token_kv_block_sparse_ts_{state_kind}_states").values()
+        )
+    )
+    second_state = next(
+        iter(
+            getattr(
+                second_layer, f"_q_token_kv_block_sparse_ts_{state_kind}_states"
+            ).values()
+        )
+    )
+    assert first_state.workspace is second_state.workspace
+    torch.testing.assert_close(
+        second_output.float(), second_reference, rtol=tolerance, atol=tolerance
+    )
+    torch.testing.assert_close(
+        output.float(), reference, rtol=tolerance, atol=tolerance
+    )
+
     if has_prefill:
         assert not layer._q_token_kv_block_sparse_ts_graph_states
         assert len(layer._q_token_kv_block_sparse_ts_eager_states) == 1
@@ -1575,14 +1644,19 @@ def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         run()
+        run(second_layer, second_cache, second_output)
     assert prepared_state in layer._q_token_kv_block_sparse_ts_graph_states.values()
-    output.fill_(torch.nan)
-    graph.replay()
-    torch.accelerator.synchronize()
-    assert torch.isfinite(output).all()
-    torch.testing.assert_close(
-        output.float(), reference, rtol=tolerance, atol=tolerance
-    )
+    for _ in range(3):
+        output.fill_(torch.nan)
+        second_output.fill_(torch.nan)
+        graph.replay()
+        torch.accelerator.synchronize()
+        torch.testing.assert_close(
+            output.float(), reference, rtol=tolerance, atol=tolerance
+        )
+        torch.testing.assert_close(
+            second_output.float(), second_reference, rtol=tolerance, atol=tolerance
+        )
 
 
 @pytest.mark.parametrize(
@@ -2127,6 +2201,7 @@ def _q_token_kv_block_sparse_ts_prepared_state_harness(
         _q_token_kv_block_sparse_ts_graph_states={},
         _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
         _q_token_kv_block_sparse_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_workspaces=_QTokenKvBlockSparseTSWorkspaces(),
     )
     impl = qsa_model.Qwen4ExpQSAFlashAttentionImpl.__new__(
         qsa_model.Qwen4ExpQSAFlashAttentionImpl
@@ -2168,12 +2243,18 @@ def _q_token_kv_block_sparse_ts_prepared_state_harness(
         qsa_ops, "q_token_kv_block_sparse_ts_prepare_attention", prepare
     )
 
-    def get_state(max_seq_len_kv: int, *, persistent: bool = False) -> object:
+    def get_state(
+        max_seq_len_kv: int,
+        *,
+        persistent: bool = False,
+        owner: SimpleNamespace = layer,
+        kv_cache: torch.Tensor = cache,
+    ) -> object:
         return impl._get_q_token_kv_block_sparse_ts_prepared_state(
-            layer,
+            owner,
             query,
-            cache,
-            cache,
+            kv_cache,
+            kv_cache,
             block_indices,
             full_block_table,
             token_to_req,
@@ -2188,6 +2269,39 @@ def _q_token_kv_block_sparse_ts_prepared_state_harness(
         )
 
     return layer, get_state, prepared
+
+
+@pytest.mark.parametrize("persistent", [False, True], ids=["eager", "graph"])
+def test_q_token_kv_block_sparse_ts_layers_share_workspace_until_last_owner_releases(
+    monkeypatch: pytest.MonkeyPatch,
+    persistent: bool,
+) -> None:
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
+    second_layer = copy(layer)
+    second_layer._q_token_kv_block_sparse_ts_graph_states = {}
+    second_layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict()
+    other_cache = torch.empty(8, 1, 16, 256, dtype=torch.bfloat16)
+    first = cast(SimpleNamespace, get_state(2, persistent=persistent))
+    second = cast(
+        SimpleNamespace,
+        get_state(2, persistent=persistent, owner=second_layer, kv_cache=other_cache),
+    )
+    assert first is not second
+    assert first.workspace is second.workspace
+    workspace_ref = weakref.ref(first.workspace)
+    pool = layer._q_token_kv_block_sparse_ts_workspaces
+    prepared.clear()
+    del first, second, layer
+    # The get_state closure still owns the original layer; clear its plans.
+    del get_state
+    gc.collect()
+    assert workspace_ref() is not None
+    del second_layer
+    gc.collect()
+    assert workspace_ref() is None
+    assert not pool._buffers
 
 
 def test_q_token_kv_block_sparse_ts_eager_plan_cache_reuses_alternating_geometries(
