@@ -1,4 +1,4 @@
-"""Overlay local QSA PrimTS Python code onto the Qwen runtime image.
+"""Overlay local QToken-KvBlock-Sparse-Attention onto the Qwen runtime image.
 
 The dedicated Qwen image supplies ABI-matched vLLM extensions and FlashInfer
 GDN/MoE modules.  Replacing the complete FlashInfer package would hide those
@@ -114,15 +114,15 @@ def _load_replacement(name: str, path: Path) -> ModuleType:
     return module
 
 
-def _overlay_qsa_flashinfer(source_root: Path) -> None:
+def _overlay_q_token_kv_block_sparse_flashinfer(source_root: Path) -> None:
     package_root = source_root / "flashinfer"
     attention_root = package_root / "attention"
-    jit_qsa_metadata = package_root / "jit" / "qsa_metadata.py"
+    jit_metadata = package_root / "jit" / "q_token_kv_block_sparse_metadata.py"
     trace_template = package_root / "trace" / "template.py"
     trace_attention = package_root / "trace" / "templates" / "attention.py"
     if (
         not attention_root.is_dir()
-        or not jit_qsa_metadata.is_file()
+        or not jit_metadata.is_file()
         or not trace_template.is_file()
         or not trace_attention.is_file()
     ):
@@ -143,14 +143,15 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
     _load_replacement("flashinfer.trace.template", trace_template)
     _load_replacement("flashinfer.trace.templates.attention", trace_attention)
 
-    # Keep the image's ABI-matched JIT runtime, but load the QSA-specific spec
+    # Keep the image's ABI-matched JIT runtime, but load the sparse metadata spec
     # from the same checkout as the attention code. The spec resolves its CUDA
     # and header inputs relative to its own file, so it does not depend on the
     # image wheel already containing this new kernel.
-    qsa_jit = _load_replacement("flashinfer.jit.qsa_metadata", jit_qsa_metadata)
-    jit_package.gen_prims_ts_qsa_metadata_module = (  # type: ignore[attr-defined]
-        qsa_jit.gen_prims_ts_qsa_metadata_module
+    metadata_jit = _load_replacement(
+        "flashinfer.jit.q_token_kv_block_sparse_metadata", jit_metadata
     )
+    metadata_jit_name = "gen_prims_ts_q_token_kv_block_sparse_metadata_module"
+    setattr(jit_package, metadata_jit_name, getattr(metadata_jit, metadata_jit_name))
 
     local_attention_path = str(attention_root)
     if local_attention_path not in attention_package.__path__:
@@ -159,23 +160,23 @@ def _overlay_qsa_flashinfer(source_root: Path) -> None:
     prims_decode = importlib.import_module("flashinfer.attention.prims_ts.decode")
     for name in (
         "get_prims_ts_batch_decode_workspace_size",
-        "validate_prims_ts_qsa_group_size",
-        "make_prims_ts_qsa_qo_indptr",
+        "validate_q_token_kv_block_sparse_group_size",
+        "make_q_token_kv_block_sparse_qo_indptr",
+        "suggest_q_token_kv_block_sparse_group_size",
         "prepare_prims_ts_batch_decode_with_kv_cache",
         "prims_ts_batch_decode_with_kv_cache",
     ):
         setattr(public_decode, name, getattr(prims_decode, name))
 
-    qsa_metadata = importlib.import_module("flashinfer.attention.prims_ts.qsa_metadata")
+    sparse_metadata = importlib.import_module(
+        "flashinfer.attention.prims_ts.q_token_kv_block_sparse_metadata"
+    )
     for name in (
-        "PrimsTSQSAPlan",
-        "build_prims_ts_qsa_metadata",
-        "get_prims_ts_qsa_metadata_output_shapes",
-        "get_prims_ts_qsa_workspace_size",
-        "prepare_prims_ts_qsa_attention",
-        "prims_ts_qsa_attention",
+        "QTokenKvBlockSparsePagedTSWrapper",
+        "get_q_token_kv_block_sparse_workspace_size",
+        "q_token_kv_block_sparse_attention_with_paged_kv_cache",
     ):
-        setattr(public_decode, name, getattr(qsa_metadata, name))
+        setattr(public_decode, name, getattr(sparse_metadata, name))
 
 
 if os.environ.get("QSA_USE_IMAGE_DSL_STACK") == "1":
@@ -184,4 +185,4 @@ if packages := os.environ.get("QSA_CUTLASS_DSL_PACKAGES"):
     _overlay_cutlass_dsl(Path(packages).resolve())
 _extend_vllm_for_image_extensions()
 if source := os.environ.get("QSA_FLASHINFER_SOURCE"):
-    _overlay_qsa_flashinfer(Path(source).resolve())
+    _overlay_q_token_kv_block_sparse_flashinfer(Path(source).resolve())

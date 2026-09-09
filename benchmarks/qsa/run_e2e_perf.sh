@@ -7,7 +7,7 @@ qsa_flashinfer=${QSA_FLASHINFER_SOURCE:-${qsa_workspace}/flashinfer}
 qsa_model=${QSA_MODEL:-${qsa_workspace}/models/Qwen3.8-Flash-Next-de4b8e4}
 qsa_runtime_overlay=${QSA_RUNTIME_OVERLAY:-${qsa_repo}/benchmarks/qsa/runtime_overlay}
 qsa_cutlass_packages=${QSA_CUTLASS_DSL_PACKAGES:-${qsa_workspace}/.runtime/cutlass-dsl-4.7.1/nvidia_cutlass_dsl/dsl_packages}
-qsa_python=${QSA_PYTHON:-python3}
+qsa_python=${QSA_PYTHON:-${qsa_repo}/.venv/bin/python}
 qsa_port=${QSA_PORT:-8000}
 qsa_seed=${QSA_SEED:-42}
 qsa_output_root=${QSA_OUTPUT_ROOT:-${qsa_workspace}/qsa_e2e_perf}
@@ -148,15 +148,9 @@ case "${action}" in
     if [[ $# -ne 2 ]]; then
       usage
     fi
-    if [[ ${backend} == prims_ts ]]; then
-      # Keep the image's TVM-FFI ABI while overriding only CUTLASS Python/DSL
-      # code needed by the local PrimTS kernels.
-      export QSA_FLASHINFER_SOURCE=${qsa_flashinfer}
-    else
-      # Do not import the experimental FlashInfer overlay for the Triton
-      # baseline, but keep the same image ABI and requested CUTLASS 4.7 layer.
-      unset QSA_FLASHINFER_SOURCE
-    fi
+    # Both backends use the same sparse-attention overlay and image GDN/MoE
+    # stack; only the selected attention backend changes in a paired run.
+    export QSA_FLASHINFER_SOURCE=${qsa_flashinfer}
     export VLLM_QSA_ATTENTION_BACKEND=${backend}
     export FLASHINFER_DISABLE_VERSION_CHECK=1
     export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-${qsa_workspace}/.triton-cache/${cache_tag}}

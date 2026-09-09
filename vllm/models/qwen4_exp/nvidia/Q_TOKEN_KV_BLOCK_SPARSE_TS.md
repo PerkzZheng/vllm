@@ -136,6 +136,24 @@ policy. The compact immutable CPU boundary tuple is built once in shared QSA
 metadata and reused as the packed-route cache key by every layer; no layer
 converts the expanded `qo_indptr` back to Python values.
 
+## Dedicated-image evaluation environment
+
+The local evaluation launcher uses the repository's `.venv/bin/python` with
+`vllm/vllm-openai:qwen38-flash-next`. Set `QSA_FLASHINFER_SOURCE` to the tested
+FlashInfer checkout and `QSA_CUTLASS_DSL_PACKAGES` to the CUTLASS DSL 4.7.1
+wheel's `nvidia_cutlass_dsl/dsl_packages` directory. The launcher puts
+`benchmarks/qsa/runtime_overlay` first on `PYTHONPATH`.
+
+The overlay imports the image's ABI-matched FlashInfer/TVM-FFI stack, then
+loads the local attention package, trace schema, and
+`q_token_kv_block_sparse_metadata` JIT spec. It exposes the public sparse
+wrapper and helpers through `flashinfer.decode`; it does not export the
+retired `PrimsTSQSAPlan` interface. GDN and MoE remain image implementations.
+Both Triton and PrimTS comparisons use this same environment, changing only
+`VLLM_QSA_ATTENTION_BACKEND`. Replacing the entire image FlashInfer package
+with a newer source checkout can instead load an incompatible prebuilt MoE
+module; bypassing version checks does not make that binary ABI compatible.
+
 ## Historical validation and performance log
 
 The metadata kernel is covered on SM103 with both 16-token and 256-token
