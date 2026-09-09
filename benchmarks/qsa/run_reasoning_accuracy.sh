@@ -3,6 +3,7 @@ set -euo pipefail
 
 qsa_workspace=${QSA_WORKSPACE:-/workspace}
 qsa_repo=${QSA_REPO:-${qsa_workspace}/vllm-pr53896-qsa}
+qsa_python=${QSA_PYTHON:-${qsa_repo}/.venv/bin/python}
 qsa_flashinfer=${QSA_FLASHINFER_SOURCE:-${qsa_workspace}/flashinfer}
 qsa_model=${QSA_MODEL:-${qsa_workspace}/models/Qwen3.8-Flash-Next-de4b8e4}
 qsa_model_name=${QSA_MODEL_NAME:-Qwen/Qwen3.8-Flash-Next}
@@ -63,7 +64,7 @@ case "$1" in
     export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS:-1800}
     mkdir -p "${TRITON_CACHE_DIR}" "${VLLM_CACHE_ROOT}"
     cd "${qsa_repo}"
-    exec python3 -m vllm.entrypoints.openai.api_server \
+    exec "${qsa_python}" -m vllm.entrypoints.openai.api_server \
       --model "${qsa_model}" \
       --served-model-name "${qsa_model_name}" \
       --reasoning-parser qwen3 \
@@ -89,7 +90,7 @@ case "$1" in
     qsa_output=$4
     qsa_job=${SLURM_JOB_ID:-unknown}
     cd "${qsa_repo}"
-    exec python3 benchmarks/qsa/qsa_reasoning_eval.py \
+    exec "${qsa_python}" benchmarks/qsa/qsa_reasoning_eval.py \
       --task "${qsa_task}" \
       --url "http://127.0.0.1:${qsa_port}" \
       --model "${qsa_model_name}" \
