@@ -78,3 +78,5 @@ It covers compact index selection, BF16/FP8, query boundaries, graph padding,
 fixed/packed layouts, shared storage, and cache-lifecycle replay.
 The [interface guide](../../../../benchmarks/qsa/PRIMS_TS_QSA_VLLM_INTERFACE.md)
 describes the matched model evaluation and profiling workflow.
+The [validation report](../../../../benchmarks/qsa/VALIDATION_20260909.md)
+records the results and remaining qualification limits.

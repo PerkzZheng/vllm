@@ -18,6 +18,8 @@ revision `de4b8e4`.
 
 The [interface guide](PRIMS_TS_QSA_VLLM_INTERFACE.md) contains the public
 FlashInfer calls, tensor shapes, vLLM phase policy, and CUDA-graph lifetime.
+The [validation report](VALIDATION_20260909.md) records the matched model
+results, pure-stage timings, workspace calculation, and qualification limits.
 
 ## Runtime environment
 

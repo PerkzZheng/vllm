@@ -5,6 +5,9 @@ framework user's perspective. The interface is the same for prefill, ordinary
 decode, and MTP decode: choose a query layout, size one byte workspace, prepare
 the metadata-plus-attention plan, and run it repeatedly.
 
+The [validation report](VALIDATION_20260909.md) records current correctness,
+accuracy, pure-stage performance, memory accounting, and unresolved caveats.
+
 ## Selecting the vLLM backend
 
 Applications do not allocate QSA metadata directly. Select the implementation
@@ -319,10 +322,11 @@ persistent cache hit remains valid during capture; a missing persistent state
 discovered while the CUDA stream is capturing is an error, because capture is
 never allowed to allocate or prepare a new plan.
 
-Up to four eager geometry plans reference one growable arena per layer. If a larger
-geometry needs more storage, vLLM clears the plans before replacing the arena;
-otherwise plans reuse it sequentially on the current stream. Thus retained
-eager storage is the largest arena, not the sum of four arenas.
+Up to four eager geometry plans reference one growable arena through each
+layer's owner. Matching owners can share its underlying allocation, as described
+below. If a larger geometry needs more storage, vLLM clears that owner's plans
+before replacing its arena; otherwise plans reuse it sequentially on the current
+stream. Retained eager storage is the largest arena, not the sum of four plans.
 
 All sparse layers in one model's static forward context, including MTP,
 share a weak allocation pool. Matching graph geometries and equal-size eager
@@ -331,6 +335,14 @@ geometries remain disjoint; plans and K/V TensorMaps remain layer-specific.
 The weak pool does not keep old allocations alive after their last owner
 drops them. DBO/microbatching is rejected because unordered overlap would
 violate this ownership contract.
+
+One measured TP2/MTP3 configuration retained 20,110,336 bytes across eleven
+graph/eager geometries per layer. Sharing across twelve target sparse layers
+and one MTP layer reduced unique storage from 261,434,368 to 20,110,336 bytes
+per rank (249.323 to 19.179 MiB). This inventory used max_model_len=32768,
+max_num_batched_tokens=8192, max_num_seqs=32 and graph token counts
+4/8/16/32/64/128. Other capture ladders have different totals; use the workspace
+size API for the actual geometry rather than assuming this example's size.
 
 Metadata output
 capacity depends on route count, group size, and top-k width; it is independent
