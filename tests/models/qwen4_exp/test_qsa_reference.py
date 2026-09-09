@@ -28,20 +28,20 @@ requires_qsa_kernels = pytest.mark.skipif(
 )
 
 
-def _has_real_qsa_prims_ts_kernels() -> bool:
+def _has_real_q_token_kv_block_sparse_ts_kernels() -> bool:
     if not torch.cuda.is_available():
         return False
     try:
         return (
             current_platform.is_device_capability(100)
             or current_platform.is_device_capability(103)
-        ) and qsa_ops.has_qsa_prims_ts_attention()
+        ) and qsa_ops.has_q_token_kv_block_sparse_ts_attention()
     except (AttributeError, ImportError, RuntimeError):
         return False
 
 
-requires_real_qsa_prims_ts = pytest.mark.skipif(
-    not _has_real_qsa_prims_ts_kernels(),
+requires_real_q_token_kv_block_sparse_ts = pytest.mark.skipif(
+    not _has_real_q_token_kv_block_sparse_ts_kernels(),
     reason=(
         "real PrimTS QSA integration requires SM100 or SM103 and its FlashInfer API"
     ),
@@ -1198,7 +1198,7 @@ def test_qsa_attention_backend_selection(
         return available
 
     assert (
-        qsa_model._resolve_qsa_prims_ts_backend(
+        qsa_model._resolve_q_token_kv_block_sparse_ts_backend(
             capable=capable,
             availability_probe=availability_probe,
         )
@@ -1218,7 +1218,7 @@ def test_qsa_attention_backend_selection_rejects_unsupported(
         "prims_ts",
     )
     with pytest.raises(RuntimeError, match="SM100 or SM103"):
-        qsa_model._resolve_qsa_prims_ts_backend(
+        qsa_model._resolve_q_token_kv_block_sparse_ts_backend(
             capable=False,
             availability_probe=lambda: pytest.fail(
                 "unsupported geometry must not probe FlashInfer"
@@ -1226,7 +1226,7 @@ def test_qsa_attention_backend_selection_rejects_unsupported(
         )
 
 
-def test_qsa_prims_ts_geometry_capability() -> None:
+def test_q_token_kv_block_sparse_ts_geometry_capability() -> None:
     from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
 
     def supported(
@@ -1235,7 +1235,7 @@ def test_qsa_prims_ts_geometry_capability() -> None:
         head_size: int = 256,
         sparse_block_size: int = 4,
     ) -> bool:
-        return qsa_model._supports_qsa_prims_ts_geometry(
+        return qsa_model._supports_q_token_kv_block_sparse_ts_geometry(
             num_heads=num_heads,
             num_kv_heads=2,
             head_size=head_size,
@@ -1249,7 +1249,7 @@ def test_qsa_prims_ts_geometry_capability() -> None:
     assert not supported(num_heads=26)
 
 
-def test_qsa_prims_ts_device_capability_is_exact(
+def test_q_token_kv_block_sparse_ts_device_capability_is_exact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
@@ -1260,10 +1260,10 @@ def test_qsa_prims_ts_device_capability_is_exact(
             "is_device_capability",
             lambda requested, actual=actual: requested == actual,
         )
-        assert qsa_model._supports_qsa_prims_ts_device() is expected
+        assert qsa_model._supports_q_token_kv_block_sparse_ts_device() is expected
 
 
-def _make_qsa_prims_ts_owner_case(
+def _make_q_token_kv_block_sparse_ts_owner_case(
     group_size: int,
     query_starts: tuple[int, ...],
     kv_cache_dtype: str,
@@ -1331,8 +1331,8 @@ def _make_qsa_prims_ts_owner_case(
     output = torch.empty_like(query)
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
-        qsa_prims_ts_decode_group_size=group_size,
-        qsa_prims_ts_max_seq_len_kv=4 * storage_page_size,
+        q_token_kv_block_sparse_ts_decode_group_size=group_size,
+        q_token_kv_block_sparse_ts_max_seq_len_kv=4 * storage_page_size,
         indexer=SimpleNamespace(compress_ratio=4),
         topk_indices_buffer=torch.zeros(
             num_tokens,
@@ -1344,9 +1344,9 @@ def _make_qsa_prims_ts_owner_case(
         _q_scale_float=2.0,
         _k_scale_float=3.0,
         _v_scale_float=4.0,
-        _qsa_prims_ts_graph_states={},
-        _qsa_prims_ts_eager_states=OrderedDict(),
-        _qsa_prims_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_graph_states={},
+        _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
+        _q_token_kv_block_sparse_ts_eager_workspace=None,
     )
     metadata = SimpleNamespace(
         num_actual_tokens=num_tokens,
@@ -1369,7 +1369,7 @@ def _make_qsa_prims_ts_owner_case(
     )
 
 
-@requires_real_qsa_prims_ts
+@requires_real_q_token_kv_block_sparse_ts
 @pytest.mark.parametrize(
     ("kv_cache_dtype", "group_size", "query_lengths", "has_prefill"),
     [
@@ -1380,7 +1380,7 @@ def _make_qsa_prims_ts_owner_case(
         pytest.param("fp8", 4, (4, 4), False, id="fp8-fixed-g4"),
     ],
 )
-def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
+def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
     kv_cache_dtype: str,
     group_size: int,
     query_lengths: tuple[int, int],
@@ -1481,8 +1481,8 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
     output = torch.empty_like(query)
     layer = SimpleNamespace(
         qsa_indices_are_blocks=True,
-        qsa_prims_ts_decode_group_size=group_size,
-        qsa_prims_ts_max_seq_len_kv=pages_per_request * storage_page_size,
+        q_token_kv_block_sparse_ts_decode_group_size=group_size,
+        q_token_kv_block_sparse_ts_max_seq_len_kv=pages_per_request * storage_page_size,
         indexer=SimpleNamespace(compress_ratio=sparse_block_size),
         topk_indices_buffer=compact_blocks,
         _qsa_fp8_query_buffer=(
@@ -1494,9 +1494,9 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
         _q_scale_float=1.0,
         _k_scale_float=1.0,
         _v_scale_float=1.0,
-        _qsa_prims_ts_graph_states={},
-        _qsa_prims_ts_eager_states=OrderedDict(),
-        _qsa_prims_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_graph_states={},
+        _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
+        _q_token_kv_block_sparse_ts_eager_workspace=None,
     )
     metadata = SimpleNamespace(
         num_actual_tokens=num_tokens,
@@ -1512,7 +1512,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
     impl.alibi_slopes = None
     impl.sinks = None
     impl.sliding_window = (-1, -1)
-    impl.use_qsa_prims_ts = True
+    impl.use_q_token_kv_block_sparse_ts = True
 
     def run() -> torch.Tensor:
         return impl.forward_qsa(
@@ -1566,16 +1566,16 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
     )
 
     if has_prefill:
-        assert not layer._qsa_prims_ts_graph_states
-        assert len(layer._qsa_prims_ts_eager_states) == 1
+        assert not layer._q_token_kv_block_sparse_ts_graph_states
+        assert len(layer._q_token_kv_block_sparse_ts_eager_states) == 1
         return
 
-    prepared_state = next(iter(layer._qsa_prims_ts_graph_states.values()))
+    prepared_state = next(iter(layer._q_token_kv_block_sparse_ts_graph_states.values()))
     torch.accelerator.synchronize()
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         run()
-    assert prepared_state in layer._qsa_prims_ts_graph_states.values()
+    assert prepared_state in layer._q_token_kv_block_sparse_ts_graph_states.values()
     output.fill_(torch.nan)
     graph.replay()
     torch.accelerator.synchronize()
@@ -1698,7 +1698,7 @@ def test_qsa_prims_ts_owner_real_cuda_matches_reference_and_graph(
         ),
     ],
 )
-def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
+def test_q_token_kv_block_sparse_ts_owner_routes_fixed_and_packed_queries(
     monkeypatch: pytest.MonkeyPatch,
     kv_cache_dtype: str,
     has_prefill: bool,
@@ -1711,7 +1711,7 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
 ) -> None:
     from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
 
-    case = _make_qsa_prims_ts_owner_case(
+    case = _make_q_token_kv_block_sparse_ts_owner_case(
         group_size,
         query_starts,
         kv_cache_dtype,
@@ -1742,7 +1742,7 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
     if expected_qo_indptr is None:
         monkeypatch.setattr(
             qsa_ops,
-            "qsa_prims_ts_qo_indptr",
+            "q_token_kv_block_sparse_ts_qo_indptr",
             lambda *_args, **_kwargs: pytest.fail(
                 "fixed decode must not build packed query offsets"
             ),
@@ -1761,7 +1761,9 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
             )
             return torch.tensor(expected_qo_indptr, dtype=torch.int32)
 
-        monkeypatch.setattr(qsa_ops, "qsa_prims_ts_qo_indptr", fake_qo_indptr)
+        monkeypatch.setattr(
+            qsa_ops, "q_token_kv_block_sparse_ts_qo_indptr", fake_qo_indptr
+        )
 
     def fake_get_state(
         _layer: object,
@@ -1773,8 +1775,6 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
         token_to_req: torch.Tensor,
         logical_positions: torch.Tensor,
         route_output: torch.Tensor,
-        bmm1_scale: float,
-        bmm2_scale: float,
         qo_indptr: torch.Tensor | None,
         qo_topology: tuple[int, ...] | None,
         route_group_size: int,
@@ -1792,8 +1792,6 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
             token_to_req=token_to_req,
             logical_positions=logical_positions,
             output=route_output,
-            bmm1_scale=bmm1_scale,
-            bmm2_scale=bmm2_scale,
             qo_indptr=qo_indptr,
             qo_topology=qo_topology,
             group_size=route_group_size,
@@ -1808,24 +1806,35 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
     def fake_run(
         plan: object,
         actual_query: torch.Tensor,
-        block_indices: torch.Tensor,
+        actual_key_cache: torch.Tensor,
+        actual_value_cache: torch.Tensor,
         actual_block_table: torch.Tensor,
+        block_indices: torch.Tensor,
         actual_token_to_req: torch.Tensor,
         actual_positions: torch.Tensor,
         actual_output: torch.Tensor,
+        *,
+        qo_indptr: torch.Tensor | None,
+        sm_scale: float,
+        v_scale: float,
     ) -> torch.Tensor:
         assert plan is prepared_plan
         captured["run"] = (
             actual_query,
+            actual_key_cache,
+            actual_value_cache,
             block_indices,
             actual_block_table,
             actual_token_to_req,
             actual_positions,
+            qo_indptr,
+            sm_scale,
+            v_scale,
         )
         actual_output.fill_(7)
         return actual_output
 
-    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_run_prepared", fake_run)
+    monkeypatch.setattr(qsa_ops, "q_token_kv_block_sparse_ts_run_prepared", fake_run)
 
     if kv_cache_dtype == "fp8":
         monkeypatch.setattr(
@@ -1861,8 +1870,10 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
     impl.alibi_slopes = None
     impl.sinks = None
     impl.sliding_window = (-1, -1)
-    impl.use_qsa_prims_ts = True
-    monkeypatch.setattr(impl, "_get_qsa_prims_ts_prepared_state", fake_get_state)
+    impl.use_q_token_kv_block_sparse_ts = True
+    monkeypatch.setattr(
+        impl, "_get_q_token_kv_block_sparse_ts_prepared_state", fake_get_state
+    )
 
     result = impl.forward_qsa(
         case.layer,
@@ -1916,38 +1927,85 @@ def test_qsa_prims_ts_owner_routes_fixed_and_packed_queries(
         assert state.qo_indptr is None
         assert state.qo_topology is None
 
+    run_args = cast(tuple[object, ...], captured["run"])
     if kv_cache_dtype == "fp8":
         assert state.query.dtype == state.key_cache.dtype == torch.float8_e4m3fn
         quantized_query = captured["quantized"]
         assert isinstance(quantized_query, torch.Tensor)
         assert quantized_query.data_ptr() == state.query.data_ptr()
-        assert state.bmm1_scale == pytest.approx(impl.scale * 2.0 * 3.0)
-        assert state.bmm2_scale == 4.0
+        assert run_args[-2] == pytest.approx(impl.scale * 2.0 * 3.0)
+        assert run_args[-1] == 4.0
     else:
         assert state.query.dtype == state.key_cache.dtype == torch.bfloat16
-        assert state.bmm1_scale == impl.scale
-        assert state.bmm2_scale == 1.0
+        assert run_args[-2] == impl.scale
+        assert run_args[-1] == 1.0
 
 
-def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
+def test_q_token_kv_block_sparse_ts_public_adapter_forwards_grouped_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: set[str] = set()
 
     class FakePlan:
+        def plan(
+            self,
+            batch_size: int,
+            seq_len_q: int,
+            num_qo_heads: int,
+            num_kv_heads: int,
+            head_dim: int,
+            kv_block_size: int,
+            page_size: int,
+            block_topk: int,
+            max_seq_len_kv: int,
+            *,
+            device: torch.device,
+            workspace_buffer: torch.Tensor,
+            use_packed_q: bool,
+            q_data_type: torch.dtype,
+            kv_data_type: torch.dtype,
+            o_data_type: torch.dtype,
+        ) -> None:
+            assert (
+                batch_size,
+                seq_len_q,
+                num_qo_heads,
+                num_kv_heads,
+                head_dim,
+                kv_block_size,
+                page_size,
+                block_topk,
+                max_seq_len_kv,
+            ) == (2, 2, 12, 1, 256, 4, 16, 512, 2048)
+            assert device == q.device
+            assert workspace_buffer is workspace
+            assert use_packed_q
+            assert q_data_type == kv_data_type == o_data_type == torch.bfloat16
+            calls.add("plan")
+
         def run(
             self,
             q: torch.Tensor,
-            block_indices: torch.Tensor,
+            paged_kv_cache: tuple[torch.Tensor, torch.Tensor],
             block_table: torch.Tensor,
-            token_to_req: torch.Tensor,
-            logical_positions: torch.Tensor,
+            indexer_block_ids: torch.Tensor,
+            token_to_request: torch.Tensor,
+            query_positions: torch.Tensor,
             *,
+            qo_indptr: torch.Tensor | None,
+            sm_scale: float | None,
+            v_scale: float | None,
             out: torch.Tensor,
         ) -> torch.Tensor:
-            assert q.shape[0] == block_indices.shape[0] == token_to_req.shape[0]
+            assert paged_kv_cache[0].shape == paged_kv_cache[1].shape
+            assert q.shape[0] == indexer_block_ids.shape[0]
+            assert q.shape[0] == token_to_request.shape[0]
             assert block_table.ndim == 2
-            assert logical_positions.shape == token_to_req.shape
+            assert query_positions.shape == token_to_request.shape
+            assert qo_indptr is not None
+            assert tuple(qo_indptr.tolist()) == (0, 1, 3)
+            assert sm_scale == 0.125
+            assert v_scale == 0.25
             calls.add("run")
             out.fill_(5)
             return out
@@ -1958,8 +2016,8 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
         _block_table: torch.Tensor,
         **options: object,
     ) -> int:
-        assert options["sparse_block_size"] == 4
-        assert options["max_seq_len_q"] == 2
+        assert options["kv_block_size"] == 4
+        assert options["seq_len_q"] == 2
         assert options["max_seq_len_kv"] == 2048
         calls.add("workspace")
         return 64
@@ -1980,36 +2038,17 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
         calls.add("qo_indptr")
         return torch.tensor([0, 1, 3], dtype=torch.int32)
 
-    def prepare(
-        q: torch.Tensor,
-        paged_kv_cache: tuple[torch.Tensor, torch.Tensor],
-        block_indices: torch.Tensor,
-        _block_table: torch.Tensor,
-        _token_to_req: torch.Tensor,
-        _logical_positions: torch.Tensor,
-        workspace: torch.Tensor,
-        **options: object,
-    ) -> FakePlan:
-        assert paged_kv_cache[0].shape == paged_kv_cache[1].shape
-        assert q.shape[0] == block_indices.shape[0]
-        assert workspace.numel() == 64
-        assert options["max_seq_len_q"] == 2
-        assert options["max_seq_len_kv"] == 2048
-        assert options["sparse_block_size"] == 4
-        calls.add("prepare")
-        return FakePlan()
-
     monkeypatch.setattr(
         qsa_ops,
-        "_qsa_prims_ts_apis",
+        "_q_token_kv_block_sparse_ts_apis",
         lambda: (
             lambda *_args, **_kwargs: None,
             workspace_size,
             make_qo_indptr,
-            prepare,
+            FakePlan,
         ),
     )
-    qsa_ops._qsa_prims_ts_qo_indptr_cached.cache_clear()
+    qsa_ops._q_token_kv_block_sparse_ts_qo_indptr_cached.cache_clear()
     q = torch.empty(3, 12, 256, dtype=torch.bfloat16)
     cache = torch.empty(2, 1, 16, 256, dtype=torch.bfloat16)
     blocks = torch.empty(3, 512, dtype=torch.int32)
@@ -2019,49 +2058,50 @@ def test_qsa_prims_ts_public_adapter_forwards_grouped_contract(
     workspace = torch.empty(64, dtype=torch.uint8)
     output = torch.empty_like(q)
 
-    qo_indptr = qsa_ops.qsa_prims_ts_qo_indptr((0, 1, 3), 3, 2)
-    required = qsa_ops.qsa_prims_ts_combined_workspace_size(
+    qo_indptr = qsa_ops.q_token_kv_block_sparse_ts_qo_indptr((0, 1, 3), 3, 2)
+    required = qsa_ops.q_token_kv_block_sparse_ts_combined_workspace_size(
         q,
         cache,
         block_table,
         512,
         max_seq_len_kv=2048,
         qo_indptr=qo_indptr,
-        max_seq_len_q=2,
-        sparse_block_size=4,
+        seq_len_q=2,
+        kv_block_size=4,
     )
-    plan = qsa_ops.qsa_prims_ts_prepare_attention(
+    plan = qsa_ops.q_token_kv_block_sparse_ts_prepare_attention(
         q,
         cache,
-        cache,
         blocks,
-        block_table,
-        token_to_req,
-        positions,
         workspace,
         output,
         max_seq_len_kv=2048,
         qo_indptr=qo_indptr,
-        max_seq_len_q=2,
-        sparse_block_size=4,
+        seq_len_q=2,
+        kv_block_size=4,
     )
-    result = qsa_ops.qsa_prims_ts_run_prepared(
+    result = qsa_ops.q_token_kv_block_sparse_ts_run_prepared(
         plan,
         q,
-        blocks,
+        cache,
+        cache,
         block_table,
+        blocks,
         token_to_req,
         positions,
         output,
+        qo_indptr=qo_indptr,
+        sm_scale=0.125,
+        v_scale=0.25,
     )
 
     assert required == workspace.numel()
-    assert calls == {"qo_indptr", "workspace", "prepare", "run"}
+    assert calls == {"qo_indptr", "workspace", "plan", "run"}
     assert result is output
     assert torch.all(output == 5)
 
 
-def _qsa_prims_ts_prepared_state_harness(
+def _q_token_kv_block_sparse_ts_prepared_state_harness(
     monkeypatch: pytest.MonkeyPatch,
     *,
     workspace_size_for_max_seq_len: Callable[[int], int] | None = None,
@@ -2084,9 +2124,9 @@ def _qsa_prims_ts_prepared_state_harness(
     out = torch.empty_like(query)
     qo_indptr = torch.tensor([0, 4, 8], dtype=torch.int32)
     layer = SimpleNamespace(
-        _qsa_prims_ts_graph_states={},
-        _qsa_prims_ts_eager_states=OrderedDict(),
-        _qsa_prims_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_graph_states={},
+        _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
+        _q_token_kv_block_sparse_ts_eager_workspace=None,
     )
     impl = qsa_model.Qwen4ExpQSAFlashAttentionImpl.__new__(
         qsa_model.Qwen4ExpQSAFlashAttentionImpl
@@ -2109,28 +2149,27 @@ def _qsa_prims_ts_prepared_state_harness(
         assert workspace_size_for_max_seq_len is not None
         return workspace_size_for_max_seq_len(cast(int, kwargs["max_seq_len_kv"]))
 
-    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_combined_workspace_size", workspace_size)
+    monkeypatch.setattr(
+        qsa_ops, "q_token_kv_block_sparse_ts_combined_workspace_size", workspace_size
+    )
 
     def prepare(
         _query: torch.Tensor,
         _key_cache: torch.Tensor,
-        _value_cache: torch.Tensor,
         _block_indices: torch.Tensor,
-        block_table: torch.Tensor,
-        _token_to_req: torch.Tensor,
-        _logical_positions: torch.Tensor,
         workspace: torch.Tensor,
         _out: torch.Tensor,
         **kwargs: object,
     ) -> object:
-        assert block_table is full_block_table
         prepared.append((cast(int, kwargs["max_seq_len_kv"]), workspace))
         return object()
 
-    monkeypatch.setattr(qsa_ops, "qsa_prims_ts_prepare_attention", prepare)
+    monkeypatch.setattr(
+        qsa_ops, "q_token_kv_block_sparse_ts_prepare_attention", prepare
+    )
 
     def get_state(max_seq_len_kv: int, *, persistent: bool = False) -> object:
-        return impl._get_qsa_prims_ts_prepared_state(
+        return impl._get_q_token_kv_block_sparse_ts_prepared_state(
             layer,
             query,
             cache,
@@ -2140,8 +2179,6 @@ def _qsa_prims_ts_prepared_state_harness(
             token_to_req,
             logical_positions,
             out,
-            0.125,
-            1.0,
             qo_indptr,
             (0, 8),
             4,
@@ -2153,10 +2190,12 @@ def _qsa_prims_ts_prepared_state_harness(
     return layer, get_state, prepared
 
 
-def test_qsa_prims_ts_eager_plan_cache_reuses_alternating_geometries(
+def test_q_token_kv_block_sparse_ts_eager_plan_cache_reuses_alternating_geometries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(monkeypatch)
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
 
     state_a = get_state(2)
     state_b = get_state(4)
@@ -2165,20 +2204,44 @@ def test_qsa_prims_ts_eager_plan_cache_reuses_alternating_geometries(
     assert get_state(4) is state_b
     assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 4]
     assert prepared[0][1] is prepared[1][1]
-    assert prepared[0][1] is layer._qsa_prims_ts_eager_workspace
-    cached_states = tuple(layer._qsa_prims_ts_eager_states.values())
+    assert prepared[0][1] is layer._q_token_kv_block_sparse_ts_eager_workspace
+    cached_states = tuple(layer._q_token_kv_block_sparse_ts_eager_states.values())
     assert cached_states[0] is state_a
     assert cached_states[1] is state_b
-    assert not layer._qsa_prims_ts_graph_states
+    assert not layer._q_token_kv_block_sparse_ts_graph_states
 
 
-def test_qsa_prims_ts_eager_plan_cache_is_bounded_lru(
+def test_q_token_kv_block_sparse_ts_graph_workspace_growth_preserves_captured_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, _ = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch,
+        workspace_size_for_max_seq_len=lambda max_seq_len_kv: max_seq_len_kv * 64,
+    )
+
+    first = cast(SimpleNamespace, get_state(2, persistent=True))
+    first.workspace.fill_(17)
+    address = first.workspace.data_ptr()
+    second = cast(SimpleNamespace, get_state(4, persistent=True))
+    second.workspace.fill_(29)
+
+    assert get_state(2, persistent=True) is first
+    assert get_state(4, persistent=True) is second
+    assert first.workspace.data_ptr() == address
+    assert torch.all(first.workspace == 17)
+    assert second.workspace.numel() == 4 * 64
+    assert len(layer._q_token_kv_block_sparse_ts_graph_states) == 2
+
+
+def test_q_token_kv_block_sparse_ts_eager_plan_cache_is_bounded_lru(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
 
-    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(monkeypatch)
-    capacity = qsa_model._QSA_PRIMS_TS_EAGER_PLAN_CACHE_CAPACITY
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
+    capacity = qsa_model._Q_TOKEN_KV_BLOCK_SPARSE_TS_EAGER_PLAN_CACHE_CAPACITY
     assert capacity == 4
     states = {
         max_seq_len_kv: get_state(max_seq_len_kv)
@@ -2188,29 +2251,29 @@ def test_qsa_prims_ts_eager_plan_cache_is_bounded_lru(
     assert get_state(1) is states[1]
     state_after_eviction = get_state(capacity + 1)
 
-    assert len(layer._qsa_prims_ts_eager_states) == capacity
-    cached_states = tuple(layer._qsa_prims_ts_eager_states.values())
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == capacity
+    cached_states = tuple(layer._q_token_kv_block_sparse_ts_eager_states.values())
     assert any(state is states[1] for state in cached_states)
     assert all(state is not states[2] for state in cached_states)
     assert any(state is state_after_eviction for state in cached_states)
     rebuilt_state = get_state(2)
     assert rebuilt_state is not states[2]
-    assert len(layer._qsa_prims_ts_eager_states) == capacity
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == capacity
     assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [1, 2, 3, 4, 5, 2]
 
 
-def test_qsa_prims_ts_eager_workspace_growth_clears_plans_then_reuses_arena(
+def test_q_token_kv_block_sparse_ts_eager_workspace_growth_invalidates_plans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
         monkeypatch,
         workspace_size_for_max_seq_len=lambda max_seq_len_kv: max_seq_len_kv * 64,
     )
 
     old_small_state = get_state(2)
-    old_workspace = layer._qsa_prims_ts_eager_workspace
+    old_workspace = layer._q_token_kv_block_sparse_ts_eager_workspace
     large_state = get_state(4)
-    grown_workspace = layer._qsa_prims_ts_eager_workspace
+    grown_workspace = layer._q_token_kv_block_sparse_ts_eager_workspace
 
     assert old_workspace is not None
     assert grown_workspace is not None
@@ -2218,20 +2281,22 @@ def test_qsa_prims_ts_eager_workspace_growth_clears_plans_then_reuses_arena(
     assert grown_workspace.numel() == 4 * 64
     assert all(
         state is not old_small_state
-        for state in layer._qsa_prims_ts_eager_states.values()
+        for state in layer._q_token_kv_block_sparse_ts_eager_states.values()
     )
     rebuilt_small_state = get_state(2)
     assert prepared[-1][1] is grown_workspace
     assert get_state(4) is large_state
     assert get_state(2) is rebuilt_small_state
     assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 4, 2]
-    assert len(layer._qsa_prims_ts_eager_states) == 2
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == 2
 
 
-def test_qsa_prims_ts_eager_cache_rechecks_capture_and_persistent_hit_skips_it(
+def test_q_token_kv_block_sparse_ts_eager_capture_guard_and_persistent_hit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    layer, get_state, prepared = _qsa_prims_ts_prepared_state_harness(monkeypatch)
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
     get_state(2)
     graph_state = get_state(3, persistent=True)
     capture_checks = 0
@@ -2249,16 +2314,20 @@ def test_qsa_prims_ts_eager_cache_rechecks_capture_and_persistent_hit_skips_it(
     assert get_state(3, persistent=True) is graph_state
     assert capture_checks == 0
 
-    with pytest.raises(RuntimeError, match="eager QSA PrimTS state"):
+    with pytest.raises(
+        RuntimeError, match="eager QToken-KvBlock-Sparse-Attention PrimTS state"
+    ):
         get_state(2)
-    with pytest.raises(RuntimeError, match="eager QSA PrimTS state"):
+    with pytest.raises(
+        RuntimeError, match="eager QToken-KvBlock-Sparse-Attention PrimTS state"
+    ):
         get_state(4)
     with pytest.raises(RuntimeError, match="must be prepared during CUDA-graph warmup"):
         get_state(4, persistent=True)
     assert capture_checks == 3
     assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 3]
-    assert len(layer._qsa_prims_ts_eager_states) == 1
-    assert len(layer._qsa_prims_ts_graph_states) == 1
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == 1
+    assert len(layer._q_token_kv_block_sparse_ts_graph_states) == 1
 
 
 def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
@@ -2266,18 +2335,22 @@ def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
 
     layer = Qwen4ExpQSAAttention.__new__(Qwen4ExpQSAAttention)
     torch.nn.Module.__init__(layer)
-    layer._qsa_prims_ts_graph_states = {"profiling": object()}
-    layer._qsa_prims_ts_eager_states = OrderedDict([("profiling", object())])
-    layer._qsa_prims_ts_eager_workspace = torch.empty(64, dtype=torch.uint8)
+    layer._q_token_kv_block_sparse_ts_graph_states = {"profiling": object()}
+    layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict(
+        [("profiling", object())]
+    )
+    layer._q_token_kv_block_sparse_ts_eager_workspace = torch.empty(
+        64, dtype=torch.uint8
+    )
     layer.kv_cache = torch.empty(0)
     real_kv_cache = torch.empty(2, 1, 16, 512)
 
     Qwen4ExpQSAAttention.bind_kv_cache(layer, real_kv_cache)
 
     assert layer.kv_cache is real_kv_cache
-    assert not layer._qsa_prims_ts_graph_states
-    assert not layer._qsa_prims_ts_eager_states
-    assert layer._qsa_prims_ts_eager_workspace is None
+    assert not layer._q_token_kv_block_sparse_ts_graph_states
+    assert not layer._q_token_kv_block_sparse_ts_eager_states
+    assert layer._q_token_kv_block_sparse_ts_eager_workspace is None
 
 
 def test_qsa_generic_kv_cache_teardown_releases_prepared_storage() -> None:
@@ -2294,18 +2367,18 @@ def test_qsa_generic_kv_cache_teardown_releases_prepared_storage() -> None:
     key_ref = weakref.ref(key_cache)
     value_ref = weakref.ref(value_cache)
     workspace_ref = weakref.ref(workspace)
-    layer._qsa_prims_ts_graph_states = {"graph": state}
-    layer._qsa_prims_ts_eager_states = OrderedDict([("eager", state)])
-    layer._qsa_prims_ts_eager_workspace = workspace
+    layer._q_token_kv_block_sparse_ts_graph_states = {"graph": state}
+    layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict([("eager", state)])
+    layer._q_token_kv_block_sparse_ts_eager_workspace = workspace
     del key_cache, value_cache, workspace, plan, state
 
     clear_layer_kv_caches([layer])
     gc.collect()
 
     assert layer.kv_cache.numel() == 0
-    assert not layer._qsa_prims_ts_graph_states
-    assert not layer._qsa_prims_ts_eager_states
-    assert layer._qsa_prims_ts_eager_workspace is None
+    assert not layer._q_token_kv_block_sparse_ts_graph_states
+    assert not layer._q_token_kv_block_sparse_ts_eager_states
+    assert layer._q_token_kv_block_sparse_ts_eager_workspace is None
     assert key_ref() is None
     assert value_ref() is None
     assert workspace_ref() is None

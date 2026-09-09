@@ -16,7 +16,7 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 
 _LOGITS_WORKSPACE_BYTES = 128 * 1024 * 1024
 _TOPK_WORKSPACE_BYTES = 1024 * 1024
-_QSAPrimsTSAPIs = tuple[
+_QTokenKvBlockSparseTSAPIs = tuple[
     Callable[..., int],
     Callable[..., int],
     Callable[..., torch.Tensor],
@@ -24,15 +24,19 @@ _QSAPrimsTSAPIs = tuple[
 ]
 
 
-class _QSAPrimsTSPlan(Protocol):
+class _QTokenKvBlockSparseTSPlan(Protocol):
     def run(
         self,
         q: torch.Tensor,
-        block_indices: torch.Tensor,
+        paged_kv_cache: tuple[torch.Tensor, torch.Tensor],
         block_table: torch.Tensor,
-        token_to_req: torch.Tensor,
-        logical_positions: torch.Tensor,
+        indexer_block_ids: torch.Tensor,
+        token_to_request: torch.Tensor,
+        query_positions: torch.Tensor,
         *,
+        qo_indptr: torch.Tensor | None = None,
+        sm_scale: float | None = None,
+        v_scale: float | None = None,
         out: torch.Tensor,
     ) -> torch.Tensor: ...
 
@@ -766,8 +770,8 @@ def expand_qsa_block_indices_cuda(
 
 
 @lru_cache
-def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
-    """Resolve the FlashInfer sparse-block QSA API without a hard dependency.
+def _q_token_kv_block_sparse_ts_apis() -> _QTokenKvBlockSparseTSAPIs | None:
+    """Resolve QToken-KvBlock-Sparse-Attention without a hard dependency.
 
     The validator is a compatibility sentinel for the caller-owned grouping
     contract. Workspace sizing and plan preparation perform the validation,
@@ -776,44 +780,46 @@ def _qsa_prims_ts_apis() -> _QSAPrimsTSAPIs | None:
 
     try:
         from flashinfer.decode import (
-            get_prims_ts_qsa_workspace_size,
-            make_prims_ts_qsa_qo_indptr,
-            prepare_prims_ts_qsa_attention,
-            validate_prims_ts_qsa_group_size,
+            QTokenKvBlockSparsePagedTSWrapper,
+            get_q_token_kv_block_sparse_workspace_size,
+            make_q_token_kv_block_sparse_qo_indptr,
+            validate_q_token_kv_block_sparse_group_size,
         )
     except (AttributeError, ImportError):
         return None
     return (
-        validate_prims_ts_qsa_group_size,
-        get_prims_ts_qsa_workspace_size,
-        make_prims_ts_qsa_qo_indptr,
-        prepare_prims_ts_qsa_attention,
+        validate_q_token_kv_block_sparse_group_size,
+        get_q_token_kv_block_sparse_workspace_size,
+        make_q_token_kv_block_sparse_qo_indptr,
+        QTokenKvBlockSparsePagedTSWrapper,
     )
 
 
-def has_qsa_prims_ts_attention() -> bool:
-    """Return whether FlashInfer exposes sparse-block PrimTS QSA."""
+def has_q_token_kv_block_sparse_ts_attention() -> bool:
+    """Return whether FlashInfer exposes QToken-KvBlock-Sparse-Attention."""
 
-    return _qsa_prims_ts_apis() is not None
+    return _q_token_kv_block_sparse_ts_apis() is not None
 
 
-def qsa_prims_ts_combined_workspace_size(
+def q_token_kv_block_sparse_ts_combined_workspace_size(
     q: torch.Tensor,
     k_cache: torch.Tensor,
     block_table: torch.Tensor,
     block_topk: int,
     *,
     max_seq_len_kv: int,
-    out_dtype: torch.dtype | None = None,
+    o_data_type: torch.dtype | None = None,
     qo_indptr: torch.Tensor | None = None,
-    max_seq_len_q: int | None = None,
-    sparse_block_size: int = 4,
+    seq_len_q: int | None = None,
+    kv_block_size: int = 4,
 ) -> int:
     """Return bytes required for a fixed or packed causal QSA launch."""
 
-    apis = _qsa_prims_ts_apis()
+    apis = _q_token_kv_block_sparse_ts_apis()
     if apis is None:
-        raise RuntimeError("FlashInfer does not provide sparse-block PrimTS QSA")
+        raise RuntimeError(
+            "FlashInfer does not provide QToken-KvBlock-Sparse-Attention"
+        )
     _, get_workspace_size, _, _ = apis
     return int(
         get_workspace_size(
@@ -822,25 +828,27 @@ def qsa_prims_ts_combined_workspace_size(
             block_table,
             block_topk=block_topk,
             max_seq_len_kv=max_seq_len_kv,
-            out_dtype=out_dtype,
+            o_data_type=o_data_type,
             qo_indptr=qo_indptr,
-            max_seq_len_q=max_seq_len_q,
-            sparse_block_size=sparse_block_size,
+            seq_len_q=seq_len_q,
+            kv_block_size=kv_block_size,
         )
     )
 
 
 @lru_cache(maxsize=1)
-def _qsa_prims_ts_qo_indptr_cached(
+def _q_token_kv_block_sparse_ts_qo_indptr_cached(
     query_starts: tuple[int, ...],
     num_query_tokens: int,
     group_size: int,
 ) -> torch.Tensor:
     """Build one immutable CPU route tensor shared by all QSA layers."""
 
-    apis = _qsa_prims_ts_apis()
+    apis = _q_token_kv_block_sparse_ts_apis()
     if apis is None:
-        raise RuntimeError("FlashInfer does not provide packed sparse-block QSA")
+        raise RuntimeError(
+            "FlashInfer does not provide QToken-KvBlock-Sparse-Attention"
+        )
     _, _, make_qo_indptr, _ = apis
     return make_qo_indptr(
         torch.tensor(query_starts, dtype=torch.int32),
@@ -850,7 +858,7 @@ def _qsa_prims_ts_qo_indptr_cached(
     )
 
 
-def qsa_prims_ts_qo_indptr(
+def q_token_kv_block_sparse_ts_qo_indptr(
     query_start_offsets: tuple[int, ...] | torch.Tensor | None,
     num_query_tokens: int,
     group_size: int,
@@ -869,72 +877,94 @@ def qsa_prims_ts_qo_indptr(
         query_starts = tuple(int(value) for value in query_start_offsets.tolist())
     else:
         query_starts = query_start_offsets
-    return _qsa_prims_ts_qo_indptr_cached(
+    return _q_token_kv_block_sparse_ts_qo_indptr_cached(
         query_starts,
         num_query_tokens,
         group_size,
     )
 
 
-def qsa_prims_ts_prepare_attention(
+def q_token_kv_block_sparse_ts_prepare_attention(
     q: torch.Tensor,
     k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    block_indices: torch.Tensor,
-    block_table: torch.Tensor,
-    token_to_req: torch.Tensor,
-    logical_positions: torch.Tensor,
+    indexer_block_ids: torch.Tensor,
     workspace_buffer: torch.Tensor,
     out: torch.Tensor,
     *,
     max_seq_len_kv: int,
-    bmm1_scale: float | None = None,
-    bmm2_scale: float = 1.0,
     qo_indptr: torch.Tensor | None = None,
-    max_seq_len_q: int | None = None,
-    sparse_block_size: int = 4,
+    seq_len_q: int | None = None,
+    kv_block_size: int = 4,
 ) -> object:
-    """Prepare metadata and attention as one framework-owned QSA plan."""
+    """Plan one framework-owned QToken-KvBlock-Sparse-Attention wrapper."""
 
-    apis = _qsa_prims_ts_apis()
+    apis = _q_token_kv_block_sparse_ts_apis()
     if apis is None:
-        raise RuntimeError("FlashInfer does not provide sparse-block PrimTS QSA")
-    _, _, _, prepare_attention = apis
-    return prepare_attention(
-        q,
-        (k_cache, v_cache),
-        block_indices,
-        block_table,
-        token_to_req,
-        logical_positions,
-        workspace_buffer,
-        out=out,
-        max_seq_len_kv=max_seq_len_kv,
-        bmm1_scale=bmm1_scale,
-        bmm2_scale=bmm2_scale,
-        qo_indptr=qo_indptr,
-        max_seq_len_q=max_seq_len_q,
-        sparse_block_size=sparse_block_size,
+        raise RuntimeError(
+            "FlashInfer does not provide QToken-KvBlock-Sparse-Attention"
+        )
+    _, _, _, wrapper_type = apis
+    use_packed_q = qo_indptr is not None
+    if use_packed_q:
+        if seq_len_q is None:
+            raise ValueError("packed QToken attention requires seq_len_q")
+        batch_size = int(qo_indptr.numel()) - 1
+    else:
+        if q.ndim != 5:
+            raise ValueError("fixed QToken attention requires [B,Nq,G,Hq,D] q")
+        batch_size = int(q.shape[0] * q.shape[1])
+        fixed_seq_len_q = int(q.shape[2])
+        if seq_len_q is not None and seq_len_q != fixed_seq_len_q:
+            raise ValueError("fixed seq_len_q must match q.shape[2]")
+        seq_len_q = fixed_seq_len_q
+    plan = wrapper_type()
+    plan.plan(
+        batch_size,
+        seq_len_q,
+        int(q.shape[-2]),
+        int(k_cache.shape[1]),
+        int(q.shape[-1]),
+        kv_block_size,
+        int(k_cache.shape[2]),
+        int(indexer_block_ids.shape[1]),
+        max_seq_len_kv,
+        device=q.device,
+        workspace_buffer=workspace_buffer,
+        use_packed_q=use_packed_q,
+        q_data_type=q.dtype,
+        kv_data_type=k_cache.dtype,
+        o_data_type=out.dtype,
     )
+    return plan
 
 
-def qsa_prims_ts_run_prepared(
+def q_token_kv_block_sparse_ts_run_prepared(
     plan: object,
     q: torch.Tensor,
-    block_indices: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
     block_table: torch.Tensor,
-    token_to_req: torch.Tensor,
-    logical_positions: torch.Tensor,
+    indexer_block_ids: torch.Tensor,
+    token_to_request: torch.Tensor,
+    query_positions: torch.Tensor,
     out: torch.Tensor,
+    *,
+    qo_indptr: torch.Tensor | None = None,
+    sm_scale: float | None = None,
+    v_scale: float | None = None,
 ) -> torch.Tensor:
     """Launch a prepared framework-owned metadata-plus-attention plan."""
 
-    return cast(_QSAPrimsTSPlan, plan).run(
+    return cast(_QTokenKvBlockSparseTSPlan, plan).run(
         q,
-        block_indices,
+        (k_cache, v_cache),
         block_table,
-        token_to_req,
-        logical_positions,
+        indexer_block_ids,
+        token_to_request,
+        query_positions,
+        qo_indptr=qo_indptr,
+        sm_scale=sm_scale,
+        v_scale=v_scale,
         out=out,
     )
 
@@ -1338,10 +1368,10 @@ __all__ = [
     "expand_qsa_block_indices_cuda",
     "qsa_compress_groups_with_ratio",
     "qsa_mqa_paged",
-    "qsa_prims_ts_combined_workspace_size",
-    "qsa_prims_ts_qo_indptr",
-    "qsa_prims_ts_prepare_attention",
-    "qsa_prims_ts_run_prepared",
+    "q_token_kv_block_sparse_ts_combined_workspace_size",
+    "q_token_kv_block_sparse_ts_qo_indptr",
+    "q_token_kv_block_sparse_ts_prepare_attention",
+    "q_token_kv_block_sparse_ts_run_prepared",
     "qsa_select_paged_tokens",
     "qsa_sparse_paged_attention",
     "qsa_store_cache_rows",

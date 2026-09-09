@@ -1,8 +1,12 @@
-# QSA PrimTS integration
+# QToken-KvBlock-Sparse-Attention PrimTS integration
 
-This integration keeps the QSA indexer's existing fixed-width token output and
-adapts it to FlashInfer PrimTS native paged-KV metadata. It does not add a
+This integration keeps the model's QSA indexer's compact four-token block
+output and adapts it to FlashInfer PrimTS native paged-KV metadata. It does not add a
 kernel-specific top-k argument.
+
+FlashInfer and this bridge use `q_token_kv_block_sparse` for functions, fields,
+and modules, with `QTokenKvBlockSparse` for types. The model's existing QSA
+indexer, cache, and backend-selection names remain upstream model concepts.
 
 ## Current query-layout policy
 
@@ -43,8 +47,8 @@ Q1 maps one dense route row per query directly. Q2/Q4/Q5 form at most
 `G * (block_topk + 1)` tagged candidates per route, radix-sort them in one CUDA
 C++ CTA, and unique equal logical IDs while OR-reducing query-membership bits.
 Locators and query membership are separate:
-`qsa_page_indices` contains plain encoded physical subpage locators, while
-`qsa_page_memberships` packs four consecutive 8-bit membership masks into each
+`q_token_kv_block_sparse_page_indices` contains encoded physical subpage locators.
+`q_token_kv_block_sparse_page_memberships` packs four 8-bit masks into each
 Int32 word. The optional causal tail is inserted into the same union. Pages
 with zero membership are omitted.
 
@@ -52,8 +56,8 @@ The public prepared plan owns the following views inside one caller-provided
 byte workspace:
 
 ```text
-qsa_page_indices: [num_routes, G * (block_topk + 1)]
-qsa_page_memberships: [num_routes, ceil(G * (block_topk + 1) / 4)]
+q_token_kv_block_sparse_page_indices: [num_routes, G * (block_topk + 1)]
+q_token_kv_block_sparse_page_memberships: [num_routes, ceil(G * (block_topk + 1) / 4)]
 seq_lens: [num_routes]
 attention and optional split-KV scratch
 ```
@@ -80,8 +84,10 @@ strides. It prepares the metadata and attention plan for each semantic launch
 key outside the hot path, and then calls:
 
 ```text
-plan.run(query, block_indices, block_table,
-         token_to_request, query_positions, out=output)
+plan.run(query, (key_cache, value_cache), block_table,
+         indexer_block_ids, token_to_request, query_positions,
+         qo_indptr=packed_offsets, sm_scale=qk_scale,
+         v_scale=value_cache_scale, out=output)
 ```
 
 Workspace is allocated lazily at the exact public size. Every PrimTS plan uses
@@ -101,8 +107,10 @@ to its old storage, releases it, and allocates one larger arena. Subsequent
 smaller geometries bind different typed views into that same allocation. This
 is legal because Qwen4Exp rejects dual-batch overlap and microbatching, so QSA
 launches are sequential on the current stream; callers must not reuse an arena
-for concurrent launches. Persistent CUDA-graph plans retain their own stable
-workspaces instead of sharing this eager arena.
+for concurrent launches. Persistent CUDA-graph plans each own separate stable
+storage. Capturing fewer query tokens can increase scratch requirements when
+split-KV changes, so descending token order does not guarantee descending
+workspace sizes. Preparing another graph must not change a captured address.
 
 For 8K packed Q4 with block-top-k 512, the persistent metadata outputs use
 roughly 16 MiB for locators and 4 MiB for packed memberships. Radix-sort and
@@ -111,9 +119,11 @@ independent of a 128K model bound and has no context-sized bitmap suffix. The
 shared arena therefore retains about 20 MiB plus attention scratch per QSA
 layer rather than the sum of four eager workspaces. Metadata outputs are fully
 overwritten on every run. Prefill does not allocate split-KV scratch.
-Decode split counters occupy a disjoint workspace section, are initialized
-during plan preparation, and are restored by the qualified reducer after each
-launch. The previous Triton sparse-attention path remains the fallback on
+Decode split counters occupy a disjoint workspace section and are initialized
+during plan preparation. Current QSA splits use a separate reducer and do not
+read those counters; shared eager storage relies on this policy as well as
+ordered launches. A fused-counter policy would require dedicated counter
+storage before it could share eager arenas. The Triton path remains the fallback on
 unsupported architectures or when the complete FlashInfer sparse-block API is
 absent.
 

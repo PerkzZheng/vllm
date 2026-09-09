@@ -465,7 +465,7 @@ records dataset hashes, full raw generations, parsed predictions, run
 metadata, and elapsed time. The server log is
 `server-official.log` in the same directory.
 
-Historical figures in `QSA_PRIMS_TS.md` come from the prior model branch and
+Historical figures in `Q_TOKEN_KV_BLOCK_SPARSE_TS.md` come from the prior model branch and
 are not mixed with this reference. The next accepted comparison is PrimTS
 BF16/MTP=0 with the identical model snapshot and evaluation protocol.
 

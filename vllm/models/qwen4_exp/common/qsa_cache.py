@@ -547,7 +547,7 @@ build_qsa_metadata = (
     build_qsa_metadata_triton if HAS_TRITON else _build_qsa_metadata_torch
 )
 
-QSA_PRIMS_TS_GROUP_SIZES = (1, 2, 4, 5)
+Q_TOKEN_KV_BLOCK_SPARSE_TS_GROUP_SIZES = (1, 2, 4, 5)
 
 
 def _uniform_qsa_decode_query_len(
@@ -649,7 +649,7 @@ class QSAMetadataBuilder(AttentionMetadataBuilder[QSAForwardMetadata]):
         decode_group_size = vllm_config.uniform_decode_query_len
         self.decode_group_size = (
             int(decode_group_size)
-            if decode_group_size in QSA_PRIMS_TS_GROUP_SIZES
+            if decode_group_size in Q_TOKEN_KV_BLOCK_SPARSE_TS_GROUP_SIZES
             else 1
         )
         compilation_config = vllm_config.compilation_config

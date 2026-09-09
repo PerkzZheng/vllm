@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Run the recorded PrimTS QSA standalone suites.
+"""Run the recorded QToken-KvBlock-Sparse-Attention PrimTS standalone suites.
 
 This runner consumes the manifests under ``qsa_bench/suites``.  It keeps plan
 construction, validation, allocation, compilation, and graph capture outside
@@ -10,7 +10,7 @@ the same-stream cold-L2 eviction used by the legacy QSA benchmark.
 Run from the vLLM repository root with the local FlashInfer checkout first on
 ``PYTHONPATH``::
 
-    python benchmarks/kernels/benchmark_qsa_prims_ts_suites.py \
+    python benchmarks/kernels/benchmark_q_token_kv_block_sparse_ts_suites.py \
       ../qsa_bench/suites/q5_bf16_real_topk.json \
       --output-json ../qsa_bench/results/q5.json
 """
@@ -28,20 +28,23 @@ import statistics
 import subprocess
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import torch
 from flashinfer.attention.prims_ts import (
-    build_prims_ts_qsa_metadata,
-    get_prims_ts_qsa_metadata_output_shapes,
-    get_prims_ts_qsa_workspace_size,
-    make_prims_ts_qsa_qo_indptr,
-    prepare_prims_ts_qsa_attention,
-    validate_prims_ts_qsa_group_size,
+    QTokenKvBlockSparsePagedTSWrapper,
+    get_q_token_kv_block_sparse_workspace_size,
+    make_q_token_kv_block_sparse_qo_indptr,
+    suggest_q_token_kv_block_sparse_group_size,
+    validate_q_token_kv_block_sparse_group_size,
 )
 from flashinfer.attention.prims_ts.decode import _resolve_decode_launch_spec
+from flashinfer.attention.prims_ts.q_token_kv_block_sparse_metadata import (
+    _build_q_token_kv_block_sparse_metadata,
+    _get_q_token_kv_block_sparse_metadata_output_shapes,
+)
 
 from vllm.models.qwen4_exp.nvidia.ops.qsa import (
     expand_qsa_block_indices_cuda,
@@ -587,7 +590,7 @@ def _select_case_routes(
         )
     if case.phase != "decode":
         raise ValueError(f"unsupported suite phase: {case.phase}")
-    begin = trace.context_length - case.group_size
+    begin = trace.context_length - case.seq_len_q
     source_blocks = trace.block_indices[begin:]
     source_tails = trace.tail_token_indices[begin:]
     source_positions = trace.logical_positions[begin:]
@@ -595,7 +598,7 @@ def _select_case_routes(
     tails = source_tails.repeat(case.batch_size, 1)
     positions = source_positions.repeat(case.batch_size)
     requests = torch.arange(case.batch_size, dtype=torch.int32).repeat_interleave(
-        case.group_size
+        case.seq_len_q
     )
     return blocks, tails, positions, requests, case.batch_size
 
@@ -663,7 +666,7 @@ def _prepare_case_tensors(
             )
         else:
             query_start_loc = torch.tensor([0, rows], dtype=torch.int32)
-    validate_prims_ts_qsa_group_size(
+    validate_q_token_kv_block_sparse_group_size(
         query_start_loc,
         rows,
         num_q_heads,
@@ -720,8 +723,14 @@ def _prepare_case_tensors(
         raise AssertionError("Triton NHD cache is not native contiguous storage")
 
     if case.phase == "decode":
+        if case.seq_len_q % case.group_size:
+            raise ValueError(
+                f"{case.case_id}: fixed benchmark layout requires explicit "
+                "semantic padding when seq_len_q is not divisible by group_size"
+            )
+        num_query_groups = case.seq_len_q // case.group_size
         base_query = _random_values(
-            (1, 1, case.group_size, num_q_heads, HEAD_DIM), dtype
+            (1, num_query_groups, case.group_size, num_q_heads, HEAD_DIM), dtype
         )
         query = base_query.repeat(case.batch_size, 1, 1, 1, 1).contiguous()
     elif case.q5_start_position is not None:
@@ -733,7 +742,7 @@ def _prepare_case_tensors(
 
     qo_indptr = None
     if case.phase == "prefill":
-        qo_indptr = make_prims_ts_qsa_qo_indptr(
+        qo_indptr = make_q_token_kv_block_sparse_qo_indptr(
             torch.tensor([0, rows], dtype=torch.int32),
             rows,
             group_size=case.group_size,
@@ -762,7 +771,7 @@ def _prepare_case_tensors(
         metadata_page_indices_shape,
         metadata_page_memberships_shape,
         metadata_seq_lens_shape,
-    ) = get_prims_ts_qsa_metadata_output_shapes(
+    ) = _get_q_token_kv_block_sparse_metadata_output_shapes(
         rows,
         BLOCK_TOPK,
         case.group_size,
@@ -778,31 +787,45 @@ def _prepare_case_tensors(
     metadata_seq_lens = torch.empty(
         metadata_seq_lens_shape, dtype=torch.int32, device="cuda"
     )
-    attention_bytes = get_prims_ts_qsa_workspace_size(
+    attention_bytes = get_q_token_kv_block_sparse_workspace_size(
         query,
         prims_k,
         block_table,
         block_topk=BLOCK_TOPK,
         max_seq_len_kv=max_seq_len_kv,
-        out_dtype=torch.bfloat16,
+        o_data_type=torch.bfloat16,
         qo_indptr=qo_indptr,
-        max_seq_len_q=case.group_size if qo_indptr is not None else None,
-        sparse_block_size=SPARSE_BLOCK_SIZE,
+        seq_len_q=case.group_size if qo_indptr is not None else None,
+        kv_block_size=SPARSE_BLOCK_SIZE,
     )
     attention_workspace = torch.zeros(attention_bytes, dtype=torch.uint8, device="cuda")
-    attention_plan = prepare_prims_ts_qsa_attention(
+    attention_plan = QTokenKvBlockSparsePagedTSWrapper()
+    attention_plan.plan(
+        groups,
+        case.group_size,
+        num_q_heads,
+        num_kv_heads,
+        HEAD_DIM,
+        SPARSE_BLOCK_SIZE,
+        trace.storage_page_size,
+        BLOCK_TOPK,
+        max_seq_len_kv,
+        device=query.device,
+        workspace_buffer=attention_workspace,
+        use_packed_q=qo_indptr is not None,
+        q_data_type=query.dtype,
+        kv_data_type=prims_k.dtype,
+        o_data_type=output.dtype,
+    )
+    attention_plan.run(
         query,
         (prims_k, prims_v),
-        block_indices,
         block_table,
+        block_indices,
         token_to_request,
         query_positions,
-        attention_workspace,
         out=output,
-        max_seq_len_kv=max_seq_len_kv,
         qo_indptr=qo_indptr,
-        max_seq_len_q=case.group_size if qo_indptr is not None else None,
-        sparse_block_size=SPARSE_BLOCK_SIZE,
     )
     return CaseTensors(
         query=query,
@@ -1205,7 +1228,7 @@ def _run_case(
     )
 
     def metadata() -> object:
-        return build_prims_ts_qsa_metadata(
+        return _build_q_token_kv_block_sparse_metadata(
             tensors.block_indices,
             tensors.block_table,
             tensors.token_to_request,
@@ -1223,7 +1246,8 @@ def _run_case(
         )
 
     def prims_attention() -> object:
-        return tensors.attention_plan._attention_plan.run(
+        assert tensors.attention_plan._prepared_plan is not None
+        return tensors.attention_plan._prepared_plan._attention_plan.run(
             tensors.attention_query,
             out=tensors.attention_output,
             bmm1_scale=HEAD_DIM**-0.5,
@@ -1232,10 +1256,12 @@ def _run_case(
     def prims_combined() -> object:
         return tensors.attention_plan.run(
             tensors.query,
-            tensors.block_indices,
+            (tensors.prims_k, tensors.prims_v),
             tensors.block_table,
+            tensors.block_indices,
             tensors.token_to_request,
             tensors.query_positions,
+            qo_indptr=tensors.qo_indptr,
             out=tensors.output,
         )
 
@@ -1278,9 +1304,9 @@ def _run_case(
         tensors.metadata_page_indices,
         tensors.metadata_page_memberships,
         tensors.metadata_seq_lens,
-        tensors.attention_plan._metadata_plan.qsa_page_indices,
-        tensors.attention_plan._metadata_plan.qsa_page_memberships,
-        tensors.attention_plan._metadata_plan.seq_lens,
+        tensors.attention_plan._prepared_plan._metadata_plan.q_token_kv_block_sparse_page_indices,
+        tensors.attention_plan._prepared_plan._metadata_plan.q_token_kv_block_sparse_page_memberships,
+        tensors.attention_plan._prepared_plan._metadata_plan.seq_lens,
     )
     triton_attention()
     torch.cuda.synchronize()
@@ -1325,9 +1351,9 @@ def _run_case(
         tensors.metadata_page_indices,
         tensors.metadata_page_memberships,
         tensors.metadata_seq_lens,
-        tensors.attention_plan._metadata_plan.qsa_page_indices,
-        tensors.attention_plan._metadata_plan.qsa_page_memberships,
-        tensors.attention_plan._metadata_plan.seq_lens,
+        tensors.attention_plan._prepared_plan._metadata_plan.q_token_kv_block_sparse_page_indices,
+        tensors.attention_plan._prepared_plan._metadata_plan.q_token_kv_block_sparse_page_memberships,
+        tensors.attention_plan._prepared_plan._metadata_plan.seq_lens,
     )
     fp32_oracle = _sample_fp32_oracle(
         case,
@@ -1560,6 +1586,15 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
+        "--auto-group-size",
+        action="store_true",
+        help=(
+            "Use suggest_q_token_kv_block_sparse_group_size for each selected "
+            "case. "
+            "The runner queries the selected device's SM count once and passes it."
+        ),
+    )
+    parser.add_argument(
         "--model-len",
         "--metadata-max-seq-len-kv",
         dest="model_len",
@@ -1603,6 +1638,32 @@ def main() -> int:
     )
     if warmup_iterations < 0 or iterations <= 0:
         raise ValueError("timing iterations must be nonnegative/positive")
+    if args.auto_group_size:
+        if not torch.cuda.is_available():
+            raise RuntimeError("automatic QSA grouping requires CUDA")
+        torch.cuda.set_device(args.device)
+        multi_processor_count = torch.cuda.get_device_properties(
+            args.device
+        ).multi_processor_count
+        selected_with_suggestions = []
+        for case in selected:
+            num_q_heads, num_kv_heads = _tp_heads(case.tp)
+            group_size = suggest_q_token_kv_block_sparse_group_size(
+                case.batch_size,
+                case.seq_len_q,
+                EXPANDED_WIDTH,
+                num_q_heads,
+                num_kv_heads,
+                multi_processor_count,
+            )
+            selected_with_suggestions.append(
+                replace(
+                    case,
+                    case_id=f"{case.case_id}-auto-g{group_size}",
+                    group_size=group_size,
+                )
+            )
+        selected = selected_with_suggestions
     for case in selected:
         print(case.case_id, flush=True)
     if args.dry_run:
