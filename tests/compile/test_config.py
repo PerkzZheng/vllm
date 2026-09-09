@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.passes.utility.fix_functionalization import (
@@ -30,6 +30,7 @@ from vllm.utils.torch_utils import (
     _is_torch_equal_or_newer,
     is_torch_equal,
 )
+from vllm.v1.attention.backend import AttentionCGSupport
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 
 # This import automatically registers `torch.ops.silly.attention`
@@ -501,6 +502,86 @@ def test_cudagraph_sizes_post_init(
         )
 
 
+def test_piecewise_exact_capture_sizes_are_normalized_and_bounded():
+    compilation_config = CompilationConfig(
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+        cudagraph_capture_sizes=[1, 8],
+        piecewise_cudagraph_exact_capture_sizes=[8192, 128, 8192, 16384],
+    )
+    config = _mock_config_for_cudagraph_sizes(
+        max_num_seqs=8,
+        num_speculative_tokens=0,
+        max_num_batched_tokens=8192,
+        compilation_config=compilation_config,
+    )
+
+    VllmConfig._set_cudagraph_sizes(config)
+
+    assert compilation_config.cudagraph_capture_sizes == [1, 8]
+    assert compilation_config.max_cudagraph_capture_size == 8
+    assert compilation_config.piecewise_cudagraph_exact_capture_sizes == [128, 8192]
+
+
+def test_piecewise_exact_capture_sizes_affect_hash_and_serialization():
+    default_config = CompilationConfig()
+    exact_config = CompilationConfig(piecewise_cudagraph_exact_capture_sizes=[8192])
+
+    assert default_config.compute_hash() != exact_config.compute_hash()
+    serialized = TypeAdapter(CompilationConfig).dump_python(exact_config)
+    assert serialized["piecewise_cudagraph_exact_capture_sizes"] == [8192]
+
+
+def test_piecewise_exact_capture_sizes_must_be_positive():
+    with pytest.raises(
+        ValidationError, match="piecewise_cudagraph_exact_capture_sizes"
+    ):
+        CompilationConfig(piecewise_cudagraph_exact_capture_sizes=[0, 8192])
+
+
+def test_piecewise_exact_capture_sizes_require_piecewise_execution():
+    compilation_config = CompilationConfig(
+        mode=CompilationMode.VLLM_COMPILE,
+        cudagraph_mode=CUDAGraphMode.FULL,
+        cudagraph_capture_sizes=[1, 8],
+        piecewise_cudagraph_exact_capture_sizes=[8192],
+    )
+
+    with pytest.raises(ValueError, match="requires.*PIECEWISE"):
+        compilation_config.resolve_cudagraph_mode_and_sizes(
+            min_cg_support=AttentionCGSupport.ALWAYS,
+            min_cg_attn_backend="test",
+            use_v2_model_runner=True,
+        )
+
+
+def test_piecewise_exact_capture_sizes_reject_sequence_parallel_rounding():
+    compilation_config = CompilationConfig(
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+        cudagraph_capture_sizes=[2, 8],
+        piecewise_cudagraph_exact_capture_sizes=[8191],
+    )
+    compilation_config.pass_config.enable_sp = True
+    config = _mock_config_for_cudagraph_sizes(
+        max_num_seqs=8,
+        num_speculative_tokens=0,
+        max_num_batched_tokens=8192,
+        compilation_config=compilation_config,
+    )
+    config.parallel_config = SimpleNamespace(tensor_parallel_size=2)
+    config.update_sizes_for_sequence_parallelism = lambda sizes: (
+        VllmConfig.update_sizes_for_sequence_parallelism(config, sizes)
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "piecewise_cudagraph_exact_capture_sizes must be divisible by "
+            "tensor_parallel_size"
+        ),
+    ):
+        VllmConfig._set_cudagraph_sizes(config)
+
+
 def _mock_config_for_cudagraph_sizes(
     max_num_seqs: int,
     num_speculative_tokens: int,
@@ -542,29 +623,29 @@ def _mock_config_for_cudagraph_sizes(
 
 
 @pytest.mark.parametrize(
-    ("max_num_seqs", "num_speculative_tokens", "widest_is_captured"),
+    ("max_num_seqs", "num_speculative_tokens"),
     [
         # No speculation: the 2x headroom under the platform ceiling, unchanged.
-        (8, 0, True),
-        (32, 0, True),
+        (8, 0),
+        (32, 0),
         # Speculating, but the widest decode batch still fits under the ceiling.
-        (64, 7, True),
-        (256, 1, True),
+        (64, 7),
+        (256, 1),
         # Wider decode batches must not raise the memory-safety ceiling.
-        (32, 16, False),
-        (64, 16, False),
+        (32, 16),
+        (64, 16),
         # Exact H200 regressions: DFlash (2176) and suffix decoding (6400).
-        (128, 16, False),
-        (256, 24, False),
+        (128, 16),
+        (256, 24),
         # Widest decode batch off the capture stride, above the ceiling.
-        (33, 16, False),
+        (33, 16),
         # ... and off the stride while below it, where the ceiling stands but
         # the generated sizes would otherwise stop at 400.
-        (24, 16, True),
+        (24, 16),
     ],
 )
 def test_default_cudagraph_capture_size_respects_platform_ceiling(
-    max_num_seqs, num_speculative_tokens, widest_is_captured
+    max_num_seqs, num_speculative_tokens
 ):
     """Uniform decode coverage must not raise the platform default ceiling.
 
@@ -599,9 +680,9 @@ def test_default_cudagraph_capture_size_respects_platform_ceiling(
         compilation_config.max_cudagraph_capture_size
         == compilation_config.cudagraph_capture_sizes[-1]
     )
-    assert (
-        widest_uniform_decode in compilation_config.cudagraph_capture_sizes
-    ) is widest_is_captured
+    assert (widest_uniform_decode in compilation_config.cudagraph_capture_sizes) is (
+        widest_uniform_decode <= default_max_graph_size
+    )
 
 
 def test_default_cudagraph_capture_sizes_keep_all_sizes_bounded():
@@ -728,13 +809,19 @@ def test_real_vllm_config_caps_widest_ngram_decode_batch():
 
 
 @pytest.mark.parametrize("max_num_seqs", [8, 32, 256, 300, 512, 600, 1024, 2048])
-def test_default_cudagraph_capture_size_unchanged_without_speculation(max_num_seqs):
+def test_default_cudagraph_capture_size_unchanged_without_speculation(
+    max_num_seqs, monkeypatch
+):
     """Without speculation the default must reproduce the historical formula.
 
     The platform ceiling bounds a request count, and without speculation a
     request is one token, so `min(max_num_seqs, ceiling) * 1` can never lift it.
     The result must match `min(max_num_seqs * 2, ceiling)` bit for bit.
     """
+    # This regression encodes the historical 512-token platform ceiling.
+    monkeypatch.setattr(
+        current_platform, "is_device_capability_family", lambda _: False
+    )
     compilation_config = CompilationConfig(
         cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE
     )
@@ -745,12 +832,7 @@ def test_default_cudagraph_capture_size_unchanged_without_speculation(max_num_se
         compilation_config=compilation_config,
     )
 
-    with patch.object(
-        current_platform,
-        "is_device_capability_family",
-        return_value=False,
-    ):
-        VllmConfig._set_cudagraph_sizes(config)
+    VllmConfig._set_cudagraph_sizes(config)
 
     default_max_graph_size = (
         1024 if current_platform.is_device_capability_family(100) else 512
@@ -761,13 +843,17 @@ def test_default_cudagraph_capture_size_unchanged_without_speculation(max_num_se
     )
 
 
-def test_single_speculative_token_does_not_raise_default_capture_size():
+def test_single_speculative_token_does_not_raise_default_capture_size(monkeypatch):
     """One speculative token must not raise the default capture ceiling.
 
     MTP at depth 1 gives a query length of 2, so 300 requests is a 600-token
     decode batch against the platform's token ceiling. The widest batch falls
     back to eager execution rather than expanding the capture range.
     """
+    # A 600-token batch exceeds 512, but not Blackwell's 1024-token ceiling.
+    monkeypatch.setattr(
+        current_platform, "is_device_capability_family", lambda _: False
+    )
     compilation_config = CompilationConfig(
         cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE
     )
@@ -937,7 +1023,7 @@ def test_default_cudagraph_capture_size_still_clamped_by_token_budget():
         32 * decode_query_len,
         512,
     )
-    expected_max_size = max(token_grid_max, widest_capturable_decode)
+    expected_max_size = min(max(token_grid_max, widest_capturable_decode), 512)
     assert compilation_config.max_cudagraph_capture_size == expected_max_size
     assert (
         compilation_config.max_cudagraph_capture_size

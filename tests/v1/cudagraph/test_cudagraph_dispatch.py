@@ -205,6 +205,63 @@ class TestCudagraphDispatcher:
         assert rt_mode == CUDAGraphMode.NONE
         assert key == BatchDescriptor(num_tokens=8)
 
+    def test_exact_piecewise_size_does_not_extend_padding_ladder(self):
+        comp_config = CompilationConfig(
+            cudagraph_mode="FULL_AND_PIECEWISE",
+            mode=CompilationMode.VLLM_COMPILE,
+            cudagraph_capture_sizes=[1, 8],
+            piecewise_cudagraph_exact_capture_sizes=[5, 8192],
+        )
+        config = _create_vllm_config(comp_config, max_num_seqs=8)
+        dispatcher = CudagraphDispatcher(config)
+        dispatcher.initialize_cudagraph_keys(
+            cudagraph_mode=comp_config.cudagraph_mode,
+            uniform_decode_query_len=1,
+        )
+
+        capture_descs = dict(dispatcher.get_capture_descs())
+        piecewise_capture_sizes = {
+            desc.num_tokens for desc in capture_descs[CUDAGraphMode.PIECEWISE]
+        }
+        full_capture_sizes = {
+            desc.num_tokens for desc in capture_descs[CUDAGraphMode.FULL]
+        }
+        assert {5, 8192} <= piecewise_capture_sizes
+        assert 8192 not in full_capture_sizes
+
+        mode, desc = dispatcher.dispatch(num_tokens=5, uniform_decode=False)
+        assert mode == CUDAGraphMode.PIECEWISE
+        assert desc == BatchDescriptor(num_tokens=5)
+
+        # A compatible FULL decode graph keeps priority over the exact
+        # PIECEWISE graph.
+        mode, desc = dispatcher.dispatch(num_tokens=5, uniform_decode=True)
+        assert mode == CUDAGraphMode.FULL
+        assert desc.num_tokens == 8
+
+        mode, desc = dispatcher.dispatch(num_tokens=6, uniform_decode=False)
+        assert mode == CUDAGraphMode.PIECEWISE
+        assert desc.num_tokens == 8
+
+        for num_tokens in (9, 8191):
+            mode, desc = dispatcher.dispatch(
+                num_tokens=num_tokens, uniform_decode=False
+            )
+            assert mode == CUDAGraphMode.NONE
+            assert desc == BatchDescriptor(num_tokens=num_tokens)
+
+        mode, desc = dispatcher.dispatch(num_tokens=8192, uniform_decode=False)
+        assert mode == CUDAGraphMode.PIECEWISE
+        assert desc == BatchDescriptor(num_tokens=8192)
+
+        mode, desc = dispatcher.dispatch(
+            num_tokens=8192,
+            uniform_decode=False,
+            valid_modes={CUDAGraphMode.NONE, CUDAGraphMode.FULL},
+        )
+        assert mode == CUDAGraphMode.NONE
+        assert desc == BatchDescriptor(num_tokens=8192)
+
     @pytest.mark.parametrize(
         "cudagraph_mode_str,compilation_mode,expected_modes",
         [

@@ -220,6 +220,8 @@ def test_prepare_inputs():
         block_size=BLOCK_SIZE,
         device=device,
     )
+    is_prefilling = torch.tensor([True, False, True], device=device)
+    common_attn_metadata.is_prefilling = is_prefilling
 
     # If there are `k` sampled tokens, then `k-1` tokens are draft tokens
     # from the previous iteration, and the last token is the bonus token sampled
@@ -274,7 +276,8 @@ def test_prepare_inputs():
         dtype=torch.int32,
         device=device,
     )
-    proposer = _create_proposer("eagle", 1)
+    proposer = EagleProposer.__new__(EagleProposer)
+    proposer.token_arange_np = np.arange(16, dtype=np.int32)
 
     updated_metadata, token_indices = proposer.prepare_inputs(
         common_attn_metadata, sampled_token_ids, num_draft_tokens
@@ -283,6 +286,8 @@ def test_prepare_inputs():
     assert torch.equal(updated_metadata.query_start_loc, expected_cu_num_tokens)
     assert token_indices.shape[0] == expected_cu_num_tokens[-1].item()
     assert torch.equal(token_indices, expected_token_indices)
+    assert updated_metadata.is_prefilling is not None
+    assert torch.equal(updated_metadata.is_prefilling, is_prefilling)
 
 
 def test_prepare_inputs_padded():
@@ -315,6 +320,8 @@ def test_prepare_inputs_padded():
         block_size=BLOCK_SIZE,
         device=device,
     )
+    is_prefilling = torch.tensor([True, False, True], device=device)
+    common_attn_metadata.is_prefilling = is_prefilling
 
     # Needed for cu_num_draft_tokens, which is expected to be [3, 6, 9]
     expected_query_start_loc = torch.tensor(
@@ -332,7 +339,7 @@ def test_prepare_inputs_padded():
         [2, 3, 1], dtype=torch.int32, device=device
     )
 
-    proposer = _create_proposer("eagle", num_speculative_tokens)
+    proposer = EagleProposer.__new__(EagleProposer)
 
     output_metadata, token_indices_to_sample, num_rejected_tokens_gpu = (
         proposer.prepare_inputs_padded(
@@ -347,6 +354,8 @@ def test_prepare_inputs_padded():
     assert output_metadata.max_query_len == 3
     assert torch.equal(output_metadata.query_start_loc, expected_query_start_loc)
     assert torch.equal(token_indices_to_sample, expected_token_indices_to_sample)
+    assert output_metadata.is_prefilling is not None
+    assert torch.equal(output_metadata.is_prefilling, is_prefilling)
 
 
 def test_set_inputs_first_pass_default_eagle():

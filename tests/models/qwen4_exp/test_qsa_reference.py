@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import gc
 import math
+import weakref
+from collections import OrderedDict
+from collections.abc import Callable
+from copy import copy
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 import torch
@@ -15,6 +21,7 @@ from vllm.models.qwen4_exp.nvidia import (
 )
 from vllm.models.qwen4_exp.nvidia.ops import qsa as qsa_ops
 from vllm.models.qwen4_exp.nvidia.ops import qsa_indexer as qsa_indexer_ops
+from vllm.models.qwen4_exp.nvidia.qsa import _QTokenKvBlockSparseTSWorkspaces
 from vllm.platforms import current_platform
 from vllm.triton_utils import HAS_TRITON
 
@@ -24,8 +31,30 @@ requires_qsa_kernels = pytest.mark.skipif(
 )
 
 
+def _has_real_q_token_kv_block_sparse_ts_kernels() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        return (
+            current_platform.is_device_capability(100)
+            or current_platform.is_device_capability(103)
+        ) and qsa_ops.has_q_token_kv_block_sparse_ts_attention()
+    except (AttributeError, ImportError, RuntimeError):
+        return False
+
+
+requires_real_q_token_kv_block_sparse_ts = pytest.mark.skipif(
+    not _has_real_q_token_kv_block_sparse_ts_kernels(),
+    reason=(
+        "real PrimTS QSA integration requires SM100 or SM103 and its FlashInfer API"
+    ),
+)
+
+
+@pytest.mark.parametrize("compact_blocks", [False, True])
 def test_qsa_mtp_index_share_updates_cache_but_skips_selection(
     monkeypatch: pytest.MonkeyPatch,
+    compact_blocks: bool,
 ) -> None:
     rows = torch.tensor([[3, 1, -1], [5, 2, 0]], dtype=torch.int32)
     raw_metadata = SimpleNamespace(
@@ -83,11 +112,106 @@ def test_qsa_mtp_index_share_updates_cache_but_skips_selection(
         torch.zeros(2, 2),
         torch.tensor([7, 8]),
         rows,
+        compact_blocks=compact_blocks,
     )
 
     assert actual is rows
     assert len(updates) == 1
     assert not selections
+
+
+@pytest.mark.parametrize("compact_blocks", [False, True])
+def test_qsa_indexer_profiling_rows_are_inert(compact_blocks: bool) -> None:
+    indexer = SimpleNamespace(
+        skip_topk=False,
+        _metadata=lambda: None,
+        block_topk=2,
+        packed_output_width=12,
+    )
+    width = indexer.block_topk if compact_blocks else indexer.packed_output_width
+    out = torch.full((3, width), 99, dtype=torch.int32)
+    result = indexer_qsa.QSAIndexer.forward(
+        indexer,
+        torch.zeros(3, 2),
+        torch.arange(3),
+        out,
+        compact_blocks=compact_blocks,
+    )
+    assert result is out
+    if compact_blocks:
+        assert torch.all(out == -1)
+    else:
+        assert torch.all(out[:, :-1] == -1)
+        assert torch.all(out[:, -1] == 0)
+
+
+def test_qsa_mtp_reuse_keeps_step_zero_tail_positions(monkeypatch) -> None:
+    from vllm.config import CUDAGraphMode
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+    from vllm.models.qwen4_exp.nvidia.mtp import Qwen4ExpMultiTokenPredictor
+
+    class Indexer(torch.nn.Module):
+        skip_topk = False
+        raw_key_cache = SimpleNamespace(prefix="raw")
+
+        def forward(self, projected_qk, positions, out, **kwargs):
+            return out
+
+    seen_positions = []
+    main = SimpleNamespace(
+        num_actual_tokens=3, max_query_len=1, slot_mapping=torch.arange(3)
+    )
+    side = SimpleNamespace(
+        num_actual_tokens=3,
+        logical_positions=torch.tensor([4, 7, 2048]),
+        token_to_req=torch.arange(3),
+        query_start_offsets=(0, 1, 2, 3),
+        has_prefill=False,
+        uniform_decode_query_len=1,
+        prepare_cudagraph_plan=False,
+    )
+    monkeypatch.setattr(
+        qsa_model,
+        "get_forward_context",
+        lambda: SimpleNamespace(
+            attn_metadata={"main": main, "raw": side},
+            cudagraph_runtime_mode=CUDAGraphMode.NONE,
+        ),
+    )
+    owner = SimpleNamespace(
+        layer_name="main",
+        kv_cache=torch.ones(1),
+        indexer=Indexer(),
+        topk_indices_buffer=torch.zeros(3, 512, dtype=torch.int32),
+        topk_query_positions_buffer=torch.full((3,), -1, dtype=torch.int64),
+        qsa_indices_are_blocks=True,
+        _max_decode_query_len=4,
+        impl=SimpleNamespace(
+            do_kv_cache_update=lambda *args: None,
+            forward_qsa=lambda *args, **kwargs: seen_positions.append(
+                kwargs["logical_positions"].clone()
+            ),
+        ),
+    )
+    empty = torch.empty(0)
+
+    def run():
+        qsa_model.Qwen4ExpQSAAttention._run_qsa(
+            owner, empty, empty, empty, empty, empty, empty
+        )
+
+    run()
+    expected = side.logical_positions.clone()
+    owner.indexer.skip_topk = True
+    draft = SimpleNamespace(_iter_qsa_attentions=lambda: iter([owner]))
+    selected_rows = torch.tensor([2, 0])
+    Qwen4ExpMultiTokenPredictor.compact_topk_indices(draft, selected_rows)
+    main.num_actual_tokens = side.num_actual_tokens = 2
+    side.logical_positions = expected[selected_rows] + 1
+    run()
+    torch.testing.assert_close(seen_positions[0], expected)
+    # Advancing the query must not change the tail selected on MTP step 0.
+    torch.testing.assert_close(seen_positions[1], expected[selected_rows])
 
 
 def _qsa_mqa_paged_reference(
@@ -225,6 +349,62 @@ def _qsa_sparse_paged_attention_reference(
     return output
 
 
+@pytest.mark.parametrize(
+    (
+        "query_start_offsets",
+        "num_query_tokens",
+        "max_query_len",
+        "has_prefill",
+        "expected",
+    ),
+    [
+        pytest.param(
+            (0, 4, 8, 8, 8),
+            16,
+            4,
+            False,
+            4,
+            id="uniform-g4-with-graph-padding",
+        ),
+        pytest.param(
+            (0, 1, 2, 2),
+            16,
+            4,
+            False,
+            1,
+            id="uniform-g1-with-varlen-graph-bound",
+        ),
+        pytest.param(
+            (0, 2, 4),
+            4,
+            4,
+            False,
+            None,
+            id="uniform-g2-cannot-use-larger-graph-bound",
+        ),
+        pytest.param((0, 1, 4), 4, 4, False, None, id="unsafe-one-plus-three"),
+        pytest.param((0, 4, 8), 8, 4, True, None, id="prefill"),
+        pytest.param(None, 8, 4, False, None, id="device-only-boundaries"),
+    ],
+)
+def test_uniform_qsa_decode_query_len_requires_request_safe_groups(
+    query_start_offsets: tuple[int, ...] | None,
+    num_query_tokens: int,
+    max_query_len: int,
+    has_prefill: bool,
+    expected: int | None,
+) -> None:
+    assert (
+        qsa_cache._uniform_qsa_decode_query_len(
+            query_start_offsets,
+            num_query_tokens=num_query_tokens,
+            max_query_len=max_query_len,
+            has_prefill=has_prefill,
+        )
+        == expected
+    )
+
+
 @requires_qsa_kernels
 def test_qsa_side_metadata_marks_cudagraph_padding_inert() -> None:
     device = torch.device("cuda")
@@ -232,6 +412,8 @@ def test_qsa_side_metadata_marks_cudagraph_padding_inert() -> None:
     builder.compress_ratio = 1
     builder.reorder_batch_threshold = 4
     builder.is_circular_buffer = False
+    builder.decode_group_size = 4
+    builder.full_decode_graph_token_counts = frozenset({16})
     builder.storage_block_size = 64
     builder.token_to_req_buffer = torch.empty(16, dtype=torch.int32, device=device)
     builder.slot_mapping_buffer = torch.empty(16, dtype=torch.int64, device=device)
@@ -251,6 +433,7 @@ def test_qsa_side_metadata_marks_cudagraph_padding_inert() -> None:
         slot_mapping=torch.tensor(list(range(12)) + [-1] * 4, device=device),
         block_table_tensor=torch.empty((4, 0), dtype=torch.int32, device=device),
         token_to_req_indices=lambda buffer: buffer.copy_(token_to_req),
+        is_prefilling=torch.zeros(4, dtype=torch.bool),
     )
 
     metadata = builder.build(0, common)
@@ -275,6 +458,55 @@ def test_qsa_side_metadata_marks_cudagraph_padding_inert() -> None:
     ]
     assert metadata.slot_mapping.tolist() == list(range(12)) + [-1] * 4
     assert metadata.visible_blocks.tolist() == [65, 66, 67, 68] * 3 + [0] * 4
+    assert metadata.query_start_offsets == (0, 4, 8, 12, 12)
+    assert metadata.uniform_decode_query_len == 4
+    assert metadata.prepare_cudagraph_plan
+
+    builder.full_decode_graph_token_counts = frozenset()
+    capture_metadata = builder.build_for_cudagraph_capture(common)
+    assert capture_metadata.prepare_cudagraph_plan
+
+    # Fast drafting has no authoritative CPU boundaries and therefore uses
+    # the request-independent Q1 route, including during graph warmup.
+    builder.full_decode_graph_token_counts = frozenset({16})
+    fast_metadata = builder.build(0, common, fast_build=True)
+    assert fast_metadata.query_start_offsets is None
+    assert fast_metadata.uniform_decode_query_len is None
+    assert fast_metadata.prepare_cudagraph_plan
+
+    common.is_prefilling = torch.tensor([True, True, True, False])
+    prefill_metadata = builder.build(0, common)
+    assert prefill_metadata.query_start_offsets == (0, 4, 8, 12, 12)
+    assert prefill_metadata.uniform_decode_query_len is None
+    assert not prefill_metadata.prepare_cudagraph_plan
+
+    # Missing phase metadata cannot distinguish one-token prefill from decode,
+    # so both ordinary builds and capture builds stay conservative. Producers
+    # that reconstruct common metadata must preserve the original phase.
+    common.is_prefilling = None
+    unknown_phase_metadata = builder.build(0, common)
+    assert unknown_phase_metadata.has_prefill
+    assert unknown_phase_metadata.uniform_decode_query_len is None
+    capture_metadata = builder.build_for_cudagraph_capture(common)
+    assert capture_metadata.has_prefill
+    assert capture_metadata.uniform_decode_query_len is None
+    assert capture_metadata.prepare_cudagraph_plan
+
+    # Piecewise graph profiling may retain the configured G4 upper bound while
+    # supplying one real row per request. Preserve that proven Q1 ownership so
+    # the owner can prepare the request-independent fixed layout.
+    q1_query_start_loc = torch.tensor([0, 1, 2], dtype=torch.int32, device=device)
+    token_to_req = torch.tensor([0, 1] + [0] * 14, dtype=torch.int32, device=device)
+    common.num_reqs = 2
+    common.query_start_loc = q1_query_start_loc
+    common.query_start_loc_cpu = q1_query_start_loc.cpu()
+    common.seq_lens = torch.tensor([65, 65], dtype=torch.int32, device=device)
+    common.is_prefilling = torch.zeros(2, dtype=torch.bool, device=device)
+    q1_metadata = builder.build(0, common)
+    assert not q1_metadata.has_prefill
+    assert q1_metadata.query_start_offsets == (0, 1, 2)
+    assert q1_metadata.uniform_decode_query_len == 1
+    assert q1_metadata.prepare_cudagraph_plan
 
 
 @requires_qsa_kernels
@@ -356,7 +588,12 @@ def test_qsa_circular_buffer_survives_one_speculative_step(chunk_start: int) -> 
     assert set(slots.tolist()).isdisjoint((committed % capacity).tolist())
 
 
-def _qsa_key_cache(block_size: int, compress_ratio: int) -> qsa_cache.QSAKeyStateCache:
+def _qsa_key_cache(
+    block_size: int,
+    compress_ratio: int,
+    *,
+    cache_rope_positions: bool = False,
+) -> qsa_cache.QSAKeyStateCache:
     return qsa_cache.QSAKeyStateCache(
         head_size=64,
         dtype=torch.bfloat16,
@@ -366,6 +603,7 @@ def _qsa_key_cache(block_size: int, compress_ratio: int) -> qsa_cache.QSAKeyStat
             compilation_config=SimpleNamespace(static_forward_context={})
         ),
         compress_ratio=compress_ratio,
+        cache_rope_positions=cache_rope_positions,
     )
 
 
@@ -391,6 +629,34 @@ def test_qsa_state_caches_adapt_the_unified_logical_layout() -> None:
     assert compressed_cache.kv_cache.shape == (2, 8, 1, 64)
     assert raw_cache.kv_cache.data_ptr() == raw_view.data_ptr()
     assert compressed_cache.kv_cache.data_ptr() == compressed_view.data_ptr()
+
+
+def test_qsa_key_state_cache_teardown_releases_derived_views() -> None:
+    from vllm.v1.worker.utils import clear_layer_kv_caches
+
+    cache = _qsa_key_cache(
+        block_size=32,
+        compress_ratio=4,
+        cache_rope_positions=True,
+    )
+    raw_view = torch.empty(2, 1, 8, cache.head_size, dtype=torch.bfloat16)
+    cache.bind_kv_cache(raw_view)
+    key_cache = cache.key_cache
+    rope_position_cache = cache.rope_position_cache
+    raw_ref = weakref.ref(raw_view)
+    key_ref = weakref.ref(key_cache)
+    rope_ref = weakref.ref(rope_position_cache)
+    del raw_view, key_cache, rope_position_cache
+
+    clear_layer_kv_caches([cache])
+    gc.collect()
+
+    assert cache.kv_cache.numel() == 0
+    assert cache.key_cache is None
+    assert cache.rope_position_cache is None
+    assert raw_ref() is None
+    assert key_ref() is None
+    assert rope_ref() is None
 
 
 @pytest.mark.parametrize(
@@ -897,6 +1163,37 @@ def test_qsa_block_expansion_correctness() -> None:
     assert actual[:, 11].tolist() == [6, 11]
 
 
+@pytest.mark.parametrize("cache_dtype", [torch.bfloat16, torch.float8_e4m3fn])
+def test_qsa_warmup_uses_runtime_cache_dtype_and_packed_count(
+    monkeypatch, cache_dtype
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        qsa_ops._qsa_sparse_paged_gqa_splitk_kernel,
+        "warmup",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        qsa_ops._qsa_merge_splitk_kernel, "warmup", lambda *args, **kwargs: None
+    )
+    cache = torch.zeros(2, 1, 16, 512, dtype=cache_dtype)
+    if cache_dtype == torch.float8_e4m3fn:
+        cache = cache.view(torch.uint8)
+    qsa_ops.warmup_qsa_sparse_paged_attention(
+        cache,
+        torch.zeros(2, 1, dtype=torch.int32),
+        num_query_heads=12,
+        selection_width=2051,
+    )
+    assert calls
+    for args, kwargs in calls:
+        assert all(tensor.dtype == cache_dtype for tensor in args[:3])
+        assert args[3].shape == (16, 2052)
+        assert args[8].dtype == torch.bfloat16
+        assert args[-2:] == (256**-0.5, 1.0)
+        assert kwargs["TOPK"] == 2051
+
+
 @requires_qsa_kernels
 @pytest.mark.parametrize(
     (
@@ -1315,3 +1612,1341 @@ def test_qsa_streaming_compression_and_compressor_state_store_match_reference() 
                 rope_cache[block, position % 4, 0],
                 position_row(request, position).to("cuda"),
             )
+
+
+@pytest.mark.parametrize(
+    ("backend", "capable", "available", "expected", "expected_probes"),
+    [
+        ("auto", True, True, True, 1),
+        ("auto", True, False, False, 1),
+        ("triton", True, True, False, 0),
+        ("prims_ts", True, True, True, 1),
+    ],
+)
+def test_qsa_attention_backend_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    capable: bool,
+    available: bool,
+    expected: bool,
+    expected_probes: int,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    monkeypatch.setattr(
+        qsa_model.envs,
+        "VLLM_QSA_ATTENTION_BACKEND",
+        backend,
+    )
+    probes = 0
+
+    def availability_probe() -> bool:
+        nonlocal probes
+        probes += 1
+        return available
+
+    assert (
+        qsa_model._resolve_q_token_kv_block_sparse_ts_backend(
+            capable=capable,
+            availability_probe=availability_probe,
+        )
+        is expected
+    )
+    assert probes == expected_probes
+
+
+def test_qsa_attention_backend_selection_rejects_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    monkeypatch.setattr(
+        qsa_model.envs,
+        "VLLM_QSA_ATTENTION_BACKEND",
+        "prims_ts",
+    )
+    with pytest.raises(RuntimeError, match="SM100 or SM103"):
+        qsa_model._resolve_q_token_kv_block_sparse_ts_backend(
+            capable=False,
+            availability_probe=lambda: pytest.fail(
+                "unsupported geometry must not probe FlashInfer"
+            ),
+        )
+
+
+def test_q_token_kv_block_sparse_ts_geometry_capability() -> None:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    def supported(
+        *,
+        num_heads: int = 24,
+        head_size: int = 256,
+        sparse_block_size: int = 4,
+    ) -> bool:
+        return qsa_model._supports_q_token_kv_block_sparse_ts_geometry(
+            num_heads=num_heads,
+            num_kv_heads=2,
+            head_size=head_size,
+            sparse_block_size=sparse_block_size,
+            max_group_size=5,
+        )
+
+    assert supported()
+    assert not supported(head_size=128)
+    assert not supported(sparse_block_size=8)
+    assert not supported(num_heads=26)
+
+
+def test_q_token_kv_block_sparse_ts_device_capability_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    for actual, expected in ((100, True), (103, True), (101, False)):
+        monkeypatch.setattr(
+            qsa_model.current_platform,
+            "is_device_capability",
+            lambda requested, actual=actual: requested == actual,
+        )
+        assert qsa_model._supports_q_token_kv_block_sparse_ts_device() is expected
+
+
+def _make_q_token_kv_block_sparse_ts_owner_case(
+    group_size: int,
+    query_starts: tuple[int, ...],
+    kv_cache_dtype: str,
+) -> SimpleNamespace:
+    # Use the TP1 geometry so the owner test detects an accidental swap of
+    # the non-singleton K/V head and storage-page axes.
+    num_query_heads = 24
+    num_kv_heads = 2
+    head_dim = 256
+    storage_page_size = 16
+    block_topk = 512
+    num_tokens = query_starts[-1]
+    num_requests = len(query_starts) - 1
+    num_storage_pages = 4 * num_requests
+
+    query = torch.zeros(
+        num_tokens,
+        num_query_heads,
+        head_dim,
+        dtype=torch.bfloat16,
+    )
+    if kv_cache_dtype == "fp8":
+        kv_cache = torch.zeros(
+            num_storage_pages,
+            num_kv_heads,
+            storage_page_size,
+            2 * head_dim,
+            dtype=torch.float8_e4m3fn,
+        ).view(torch.uint8)
+        fp8_query_buffer = torch.empty(
+            num_tokens,
+            num_query_heads,
+            head_dim,
+            dtype=torch.float8_e4m3fn,
+        )
+    else:
+        kv_cache = torch.zeros(
+            num_storage_pages,
+            num_kv_heads,
+            storage_page_size,
+            2 * head_dim,
+            dtype=torch.bfloat16,
+        )
+        fp8_query_buffer = None
+
+    request_lengths = torch.diff(torch.tensor(query_starts, dtype=torch.int32))
+    token_to_req = torch.repeat_interleave(
+        torch.arange(num_requests, dtype=torch.int32),
+        request_lengths,
+    )
+    logical_positions = torch.cat(
+        [
+            torch.arange(
+                2 * storage_page_size - int(length),
+                2 * storage_page_size,
+                dtype=torch.int64,
+            )
+            for length in request_lengths
+        ]
+    )
+    block_table = torch.arange(
+        num_storage_pages,
+        dtype=torch.int32,
+    ).reshape(num_requests, 4)
+    output = torch.empty_like(query)
+    layer = SimpleNamespace(
+        qsa_indices_are_blocks=True,
+        q_token_kv_block_sparse_ts_decode_group_size=group_size,
+        q_token_kv_block_sparse_ts_max_seq_len_kv=4 * storage_page_size,
+        indexer=SimpleNamespace(compress_ratio=4),
+        topk_indices_buffer=torch.zeros(
+            num_tokens,
+            block_topk,
+            dtype=torch.int32,
+        ),
+        _qsa_fp8_query_buffer=fp8_query_buffer,
+        _q_scale=torch.tensor(2.0),
+        _q_scale_float=2.0,
+        _k_scale_float=3.0,
+        _v_scale_float=4.0,
+        _q_token_kv_block_sparse_ts_graph_states={},
+        _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
+        _q_token_kv_block_sparse_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_workspaces=_QTokenKvBlockSparseTSWorkspaces(),
+    )
+    metadata = SimpleNamespace(
+        num_actual_tokens=num_tokens,
+        block_table=block_table,
+        max_seq_len=2 * storage_page_size,
+    )
+    return SimpleNamespace(
+        query=query,
+        kv_cache=kv_cache,
+        output=output,
+        layer=layer,
+        metadata=metadata,
+        token_to_req=token_to_req,
+        logical_positions=logical_positions,
+        num_query_heads=num_query_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        storage_page_size=storage_page_size,
+        block_topk=block_topk,
+    )
+
+
+@requires_real_q_token_kv_block_sparse_ts
+@pytest.mark.parametrize(
+    ("num_kv_heads", "storage_page_size"),
+    [(2, 16), (1, 3200)],
+    ids=["multi-kv-head", "tp2-single-kv-head"],
+)
+@pytest.mark.parametrize(
+    ("kv_cache_dtype", "group_size", "query_lengths", "has_prefill"),
+    [
+        pytest.param("bfloat16", 4, (5, 3), True, id="bf16-packed-g4"),
+        pytest.param("bfloat16", 1, (1, 1), False, id="bf16-fixed-g1"),
+        pytest.param("bfloat16", 4, (4, 4), False, id="bf16-fixed-g4"),
+        pytest.param("bfloat16", 5, (5, 5), False, id="bf16-fixed-g5"),
+        pytest.param("fp8", 1, (1, 1), False, id="fp8-fixed-g1"),
+        pytest.param("fp8", 4, (4, 4), False, id="fp8-fixed-g4"),
+    ],
+)
+def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
+    kv_cache_dtype: str,
+    group_size: int,
+    query_lengths: tuple[int, int],
+    has_prefill: bool,
+    num_kv_heads: int,
+    storage_page_size: int,
+) -> None:
+    """Exercise the real vLLM owner boundary, including fixed CUDA graphs."""
+
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    device = torch.device("cuda")
+    num_query_heads = 12 * num_kv_heads
+    head_dim = 256
+    block_topk = 512
+    sparse_block_size = 4
+    first_query_position = 2 * block_topk * sparse_block_size - 1
+    pages_per_request = (
+        first_query_position + max(query_lengths) + storage_page_size - 1
+    ) // storage_page_size
+    num_requests = len(query_lengths)
+    num_tokens = sum(query_lengths)
+    generator = torch.Generator(device=device).manual_seed(
+        1701 + group_size + (100 if kv_cache_dtype == "fp8" else 0)
+    )
+
+    query = (
+        torch.randn(
+            num_tokens,
+            num_query_heads,
+            head_dim,
+            generator=generator,
+            device=device,
+        )
+        .mul_(0.125)
+        .to(torch.bfloat16)
+    )
+    num_pages = num_requests * pages_per_request
+    cache_dtype = (
+        current_platform.fp8_dtype() if kv_cache_dtype == "fp8" else torch.bfloat16
+    )
+    typed_kv_cache = torch.empty(
+        num_pages,
+        num_kv_heads,
+        storage_page_size,
+        2 * head_dim,
+        dtype=cache_dtype,
+        device=device,
+    )
+    keys = torch.randn(
+        num_pages,
+        num_kv_heads,
+        storage_page_size,
+        head_dim,
+        generator=generator,
+        device=device,
+    ).mul_(0.125)
+    head_bias = torch.linspace(-0.375, 0.375, num_kv_heads, device=device).view(
+        1, num_kv_heads, 1, 1
+    )
+    values = (
+        torch.randn(
+            keys.shape,
+            generator=generator,
+            device=device,
+        ).mul_(0.05)
+        + head_bias
+    )
+    typed_kv_cache[..., :head_dim].copy_(keys)
+    typed_kv_cache[..., head_dim:].copy_(values)
+    kv_cache = (
+        typed_kv_cache.view(torch.uint8) if kv_cache_dtype == "fp8" else typed_kv_cache
+    )
+    block_table = torch.arange(num_pages, dtype=torch.int32, device=device).reshape(
+        num_requests, pages_per_request
+    )
+    token_to_req = torch.repeat_interleave(
+        torch.arange(num_requests, dtype=torch.int32, device=device),
+        torch.tensor(query_lengths, dtype=torch.int64, device=device),
+    )
+    logical_positions = torch.cat(
+        [
+            torch.arange(
+                first_query_position,
+                first_query_position + length,
+                dtype=torch.int64,
+                device=device,
+            )
+            for length in query_lengths
+        ]
+    )
+    sequence_lengths = torch.tensor(
+        [first_query_position + length for length in query_lengths],
+        dtype=torch.int64,
+        device=device,
+    )
+    base_blocks = torch.arange(block_topk, dtype=torch.int32, device=device)
+    compact_blocks = torch.stack(
+        [torch.roll(base_blocks, row % 7) for row in range(num_tokens)]
+    ).contiguous()
+    query_start_offsets = (0, query_lengths[0], num_tokens)
+    output = torch.empty_like(query)
+    layer = SimpleNamespace(
+        qsa_indices_are_blocks=True,
+        q_token_kv_block_sparse_ts_decode_group_size=group_size,
+        q_token_kv_block_sparse_ts_max_seq_len_kv=pages_per_request * storage_page_size,
+        indexer=SimpleNamespace(compress_ratio=sparse_block_size),
+        topk_indices_buffer=compact_blocks,
+        _qsa_fp8_query_buffer=(
+            torch.empty_like(query, dtype=cache_dtype)
+            if kv_cache_dtype == "fp8"
+            else None
+        ),
+        _q_scale=torch.tensor(1.0, dtype=torch.float32, device=device),
+        _q_scale_float=1.0,
+        _k_scale_float=1.0,
+        _v_scale_float=1.0,
+        _q_token_kv_block_sparse_ts_graph_states={},
+        _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
+        _q_token_kv_block_sparse_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_workspaces=_QTokenKvBlockSparseTSWorkspaces(),
+    )
+    metadata = SimpleNamespace(
+        num_actual_tokens=num_tokens,
+        block_table=block_table,
+        max_seq_len=int(sequence_lengths.max().item()),
+    )
+    impl = qsa_model.Qwen4ExpQSAFlashAttentionImpl.__new__(
+        qsa_model.Qwen4ExpQSAFlashAttentionImpl
+    )
+    impl.head_size = head_dim
+    impl.scale = head_dim**-0.5
+    impl.kv_cache_dtype = kv_cache_dtype
+    impl.alibi_slopes = None
+    impl.sinks = None
+    impl.sliding_window = (-1, -1)
+    impl.use_q_token_kv_block_sparse_ts = True
+
+    def run(
+        owner: SimpleNamespace = layer,
+        cache: torch.Tensor = kv_cache,
+        out: torch.Tensor = output,
+    ) -> torch.Tensor:
+        return impl.forward_qsa(
+            owner,
+            query,
+            query,
+            query,
+            cache,
+            metadata,
+            out,
+            token_to_req,
+            logical_positions,
+            query_start_offsets=query_start_offsets,
+            has_prefill=has_prefill,
+            uniform_decode_query_len=None if has_prefill else group_size,
+            persistent_plan=not has_prefill,
+        )
+
+    actual = run()
+    torch.accelerator.synchronize()
+    assert actual is output
+    assert compact_blocks.shape == (num_tokens, block_topk)
+
+    row_sequence_lengths = sequence_lengths.index_select(0, token_to_req.long())
+    # This is the 2,051-token representation consumed by the vLLM Triton
+    # path and by the independent FP32 oracle; PrimTS receives only 512 blocks.
+    expanded_tokens = _expand_qsa_indices_reference(
+        compact_blocks,
+        logical_positions,
+        row_sequence_lengths,
+        sparse_block_size,
+        block_topk * sparse_block_size,
+    )
+    reference_query = (
+        layer._qsa_fp8_query_buffer.float()
+        if kv_cache_dtype == "fp8"
+        else query.float()
+    )
+    reference = _qsa_sparse_paged_attention_reference(
+        reference_query,
+        typed_kv_cache[..., :head_dim].transpose(1, 2),
+        typed_kv_cache[..., head_dim:].transpose(1, 2),
+        expanded_tokens,
+        block_table,
+        token_to_req,
+        impl.scale,
+    )
+    tolerance = 3e-2 if kv_cache_dtype == "fp8" else 1e-2
+    torch.testing.assert_close(
+        actual.float(), reference, rtol=tolerance, atol=tolerance
+    )
+
+    # A second layer has different K/V and selections, but the same scratch
+    # layout. Alternating them must overwrite metadata and split partials.
+    second_layer = copy(layer)
+    second_layer._q_token_kv_block_sparse_ts_graph_states = {}
+    second_layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict()
+    second_layer._q_token_kv_block_sparse_ts_eager_workspace = None
+    second_layer.topk_indices_buffer = compact_blocks + block_topk
+    if kv_cache_dtype == "fp8":
+        second_layer._qsa_fp8_query_buffer = torch.empty_like(
+            layer._qsa_fp8_query_buffer
+        )
+    second_typed_cache = typed_kv_cache.clone()
+    second_typed_cache[..., head_dim:].copy_(-typed_kv_cache[..., head_dim:].float())
+    second_cache = (
+        second_typed_cache.view(torch.uint8)
+        if kv_cache_dtype == "fp8"
+        else second_typed_cache
+    )
+    second_output = torch.empty_like(output)
+    second_tokens = _expand_qsa_indices_reference(
+        second_layer.topk_indices_buffer,
+        logical_positions,
+        row_sequence_lengths,
+        sparse_block_size,
+        block_topk * sparse_block_size,
+    )
+    second_reference = _qsa_sparse_paged_attention_reference(
+        reference_query,
+        second_typed_cache[..., :head_dim].transpose(1, 2),
+        second_typed_cache[..., head_dim:].transpose(1, 2),
+        second_tokens,
+        block_table,
+        token_to_req,
+        impl.scale,
+    )
+    run(second_layer, second_cache, second_output)
+    run()
+    torch.accelerator.synchronize()
+    state_kind = "eager" if has_prefill else "graph"
+    first_state = next(
+        iter(
+            getattr(layer, f"_q_token_kv_block_sparse_ts_{state_kind}_states").values()
+        )
+    )
+    second_state = next(
+        iter(
+            getattr(
+                second_layer, f"_q_token_kv_block_sparse_ts_{state_kind}_states"
+            ).values()
+        )
+    )
+    assert first_state.workspace is second_state.workspace
+    torch.testing.assert_close(
+        second_output.float(), second_reference, rtol=tolerance, atol=tolerance
+    )
+    torch.testing.assert_close(
+        output.float(), reference, rtol=tolerance, atol=tolerance
+    )
+
+    if has_prefill:
+        assert not layer._q_token_kv_block_sparse_ts_graph_states
+        assert len(layer._q_token_kv_block_sparse_ts_eager_states) == 1
+        return
+
+    prepared_state = next(iter(layer._q_token_kv_block_sparse_ts_graph_states.values()))
+    torch.accelerator.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+        run(second_layer, second_cache, second_output)
+    assert prepared_state in layer._q_token_kv_block_sparse_ts_graph_states.values()
+    for _ in range(3):
+        output.fill_(torch.nan)
+        second_output.fill_(torch.nan)
+        graph.replay()
+        torch.accelerator.synchronize()
+        torch.testing.assert_close(
+            output.float(), reference, rtol=tolerance, atol=tolerance
+        )
+        torch.testing.assert_close(
+            second_output.float(), second_reference, rtol=tolerance, atol=tolerance
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "kv_cache_dtype",
+        "has_prefill",
+        "uniform_decode_query_len",
+        "group_size",
+        "query_starts",
+        "query_start_offsets",
+        "expected_qo_indptr",
+        "expected_route_group_size",
+    ),
+    [
+        pytest.param(
+            "bfloat16",
+            True,
+            None,
+            4,
+            (0, 5, 8),
+            (0, 5, 8),
+            (0, 4, 5, 8),
+            4,
+            id="packed-prefill-g4",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
+            1,
+            1,
+            (0, 1, 2),
+            (0, 1, 2),
+            None,
+            1,
+            id="fixed-decode-g1",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
+            1,
+            4,
+            (0, 1, 2),
+            (0, 1, 2),
+            None,
+            1,
+            id="fixed-mtp-recurrence-g1-from-decode-g4",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
+            4,
+            4,
+            (0, 4, 8),
+            (0, 4, 8),
+            None,
+            4,
+            id="fixed-decode-g4",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
+            2,
+            4,
+            (0, 2, 4),
+            (0, 2, 4),
+            None,
+            1,
+            id="fixed-q1-decode-runtime-g2-with-configured-g4",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
+            5,
+            5,
+            (0, 5, 10),
+            (0, 5, 10),
+            None,
+            5,
+            id="fixed-decode-g5",
+        ),
+        pytest.param(
+            "fp8",
+            False,
+            4,
+            4,
+            (0, 4, 8),
+            (0, 4, 8),
+            None,
+            4,
+            id="fp8-fixed-decode-g4",
+        ),
+        pytest.param(
+            "bfloat16",
+            False,
+            None,
+            4,
+            (0, 1, 4),
+            (0, 1, 4),
+            None,
+            1,
+            id="fixed-q1-irregular-decode",
+        ),
+        pytest.param(
+            "bfloat16",
+            True,
+            None,
+            4,
+            (0, 5, 8),
+            None,
+            tuple(range(9)),
+            1,
+            id="packed-prefill-device-boundaries",
+        ),
+    ],
+)
+def test_q_token_kv_block_sparse_ts_owner_routes_fixed_and_packed_queries(
+    monkeypatch: pytest.MonkeyPatch,
+    kv_cache_dtype: str,
+    has_prefill: bool,
+    uniform_decode_query_len: int | None,
+    group_size: int,
+    query_starts: tuple[int, ...],
+    query_start_offsets: tuple[int, ...] | None,
+    expected_qo_indptr: tuple[int, ...] | None,
+    expected_route_group_size: int,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    case = _make_q_token_kv_block_sparse_ts_owner_case(
+        group_size,
+        query_starts,
+        kv_cache_dtype,
+    )
+    num_tokens = query_starts[-1]
+    route_starts = (
+        (0, num_tokens) if has_prefill and query_start_offsets is None else query_starts
+    )
+    num_query_groups = (
+        len(expected_qo_indptr) - 1
+        if expected_qo_indptr is not None
+        else num_tokens // expected_route_group_size
+    )
+    expected_query_shape = (
+        (num_tokens, case.num_query_heads, case.head_dim)
+        if expected_qo_indptr is not None
+        else (
+            num_query_groups,
+            1,
+            expected_route_group_size,
+            case.num_query_heads,
+            case.head_dim,
+        )
+    )
+    captured: dict[str, object] = {}
+    prepared_plan = object()
+
+    if expected_qo_indptr is None:
+        monkeypatch.setattr(
+            qsa_ops,
+            "q_token_kv_block_sparse_ts_qo_indptr",
+            lambda *_args, **_kwargs: pytest.fail(
+                "fixed decode must not build packed query offsets"
+            ),
+        )
+    else:
+
+        def fake_qo_indptr(
+            actual_starts: tuple[int, ...],
+            actual_num_tokens: int,
+            actual_group_size: int,
+        ) -> torch.Tensor:
+            captured["packed_route"] = (
+                actual_starts,
+                actual_num_tokens,
+                actual_group_size,
+            )
+            return torch.tensor(expected_qo_indptr, dtype=torch.int32)
+
+        monkeypatch.setattr(
+            qsa_ops, "q_token_kv_block_sparse_ts_qo_indptr", fake_qo_indptr
+        )
+
+    def fake_get_state(
+        _layer: object,
+        route_query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_table: torch.Tensor,
+        token_to_req: torch.Tensor,
+        logical_positions: torch.Tensor,
+        route_output: torch.Tensor,
+        qo_indptr: torch.Tensor | None,
+        qo_topology: tuple[int, ...] | None,
+        route_group_size: int,
+        sparse_block_size: int,
+        max_seq_len_kv: int,
+        *,
+        persistent: bool,
+    ) -> SimpleNamespace:
+        state = SimpleNamespace(
+            query=route_query,
+            key_cache=key_cache,
+            value_cache=value_cache,
+            block_indices=block_indices,
+            block_table=block_table,
+            token_to_req=token_to_req,
+            logical_positions=logical_positions,
+            output=route_output,
+            qo_indptr=qo_indptr,
+            qo_topology=qo_topology,
+            group_size=route_group_size,
+            sparse_block_size=sparse_block_size,
+            max_seq_len_kv=max_seq_len_kv,
+            persistent=persistent,
+            plan=prepared_plan,
+        )
+        captured["state"] = state
+        return state
+
+    def fake_run(
+        plan: object,
+        actual_query: torch.Tensor,
+        actual_key_cache: torch.Tensor,
+        actual_value_cache: torch.Tensor,
+        actual_block_table: torch.Tensor,
+        block_indices: torch.Tensor,
+        actual_token_to_req: torch.Tensor,
+        actual_positions: torch.Tensor,
+        actual_output: torch.Tensor,
+        *,
+        qo_indptr: torch.Tensor | None,
+        sm_scale: float,
+        v_scale: float,
+    ) -> torch.Tensor:
+        assert plan is prepared_plan
+        captured["run"] = (
+            actual_query,
+            actual_key_cache,
+            actual_value_cache,
+            block_indices,
+            actual_block_table,
+            actual_token_to_req,
+            actual_positions,
+            qo_indptr,
+            sm_scale,
+            v_scale,
+        )
+        actual_output.fill_(7)
+        return actual_output
+
+    monkeypatch.setattr(qsa_ops, "q_token_kv_block_sparse_ts_run_prepared", fake_run)
+
+    if kv_cache_dtype == "fp8":
+        monkeypatch.setattr(
+            qsa_model,
+            "current_platform",
+            SimpleNamespace(fp8_dtype=lambda: torch.float8_e4m3fn),
+        )
+
+        def fake_scaled_fp8_quant(
+            actual_query: torch.Tensor,
+            *,
+            scale: torch.Tensor,
+            output: torch.Tensor,
+        ) -> None:
+            assert scale is case.layer._q_scale
+            assert actual_query.dtype == torch.bfloat16
+            assert output.dtype == torch.float8_e4m3fn
+            output.zero_()
+            captured["quantized"] = output
+
+        monkeypatch.setattr(
+            qsa_model.custom_ops,
+            "scaled_fp8_quant",
+            fake_scaled_fp8_quant,
+        )
+
+    impl = qsa_model.Qwen4ExpQSAFlashAttentionImpl.__new__(
+        qsa_model.Qwen4ExpQSAFlashAttentionImpl
+    )
+    impl.head_size = case.head_dim
+    impl.scale = case.head_dim**-0.5
+    impl.kv_cache_dtype = kv_cache_dtype
+    impl.alibi_slopes = None
+    impl.sinks = None
+    impl.sliding_window = (-1, -1)
+    impl.use_q_token_kv_block_sparse_ts = True
+    monkeypatch.setattr(
+        impl, "_get_q_token_kv_block_sparse_ts_prepared_state", fake_get_state
+    )
+
+    result = impl.forward_qsa(
+        case.layer,
+        case.query,
+        case.query,
+        case.query,
+        case.kv_cache,
+        case.metadata,
+        case.output,
+        case.token_to_req,
+        case.logical_positions,
+        query_start_offsets=query_start_offsets,
+        has_prefill=has_prefill,
+        uniform_decode_query_len=uniform_decode_query_len,
+        persistent_plan=expected_qo_indptr is None,
+    )
+
+    assert result is case.output
+    assert torch.all(result == 7)
+
+    state = cast(SimpleNamespace, captured["state"])
+    assert state.query.shape == expected_query_shape
+    assert state.output.shape == expected_query_shape
+    assert (
+        state.key_cache.shape
+        == state.value_cache.shape
+        == (
+            4 * (len(query_starts) - 1),
+            case.num_kv_heads,
+            case.storage_page_size,
+            case.head_dim,
+        )
+    )
+    assert state.block_table.shape[1] == 4
+    # The prepared plan uses the model-length bound, independent of this
+    # batch's shorter live context and of global physical-cache allocation.
+    assert state.max_seq_len_kv == 4 * case.storage_page_size
+    assert state.block_indices.shape == (num_tokens, case.block_topk)
+    assert state.group_size == expected_route_group_size
+    assert state.sparse_block_size == 4
+    assert state.persistent is (expected_qo_indptr is None)
+    if expected_qo_indptr is not None:
+        assert captured["packed_route"] == (
+            route_starts,
+            num_tokens,
+            expected_route_group_size,
+        )
+        assert tuple(state.qo_indptr.tolist()) == expected_qo_indptr
+        assert state.qo_topology == route_starts
+    else:
+        assert state.qo_indptr is None
+        assert state.qo_topology is None
+
+    run_args = cast(tuple[object, ...], captured["run"])
+    if kv_cache_dtype == "fp8":
+        assert state.query.dtype == state.key_cache.dtype == torch.float8_e4m3fn
+        quantized_query = captured["quantized"]
+        assert isinstance(quantized_query, torch.Tensor)
+        assert quantized_query.data_ptr() == state.query.data_ptr()
+        assert run_args[-2] == pytest.approx(impl.scale * 2.0 * 3.0)
+        assert run_args[-1] == 4.0
+    else:
+        assert state.query.dtype == state.key_cache.dtype == torch.bfloat16
+        assert run_args[-2] == impl.scale
+        assert run_args[-1] == 1.0
+
+
+def test_q_token_kv_block_sparse_ts_public_adapter_forwards_grouped_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: set[str] = set()
+
+    class FakePlan:
+        def plan(
+            self,
+            batch_size: int,
+            seq_len_q: int,
+            num_qo_heads: int,
+            num_kv_heads: int,
+            head_dim: int,
+            kv_block_size: int,
+            page_size: int,
+            block_topk: int,
+            max_seq_len_kv: int,
+            *,
+            device: torch.device,
+            workspace_buffer: torch.Tensor,
+            use_packed_q: bool,
+            q_data_type: torch.dtype,
+            kv_data_type: torch.dtype,
+            o_data_type: torch.dtype,
+        ) -> None:
+            assert (
+                batch_size,
+                seq_len_q,
+                num_qo_heads,
+                num_kv_heads,
+                head_dim,
+                kv_block_size,
+                page_size,
+                block_topk,
+                max_seq_len_kv,
+            ) == (2, 2, 12, 1, 256, 4, 16, 512, 2048)
+            assert device == q.device
+            assert workspace_buffer is workspace
+            assert use_packed_q
+            assert q_data_type == kv_data_type == o_data_type == torch.bfloat16
+            calls.add("plan")
+
+        def run(
+            self,
+            q: torch.Tensor,
+            paged_kv_cache: tuple[torch.Tensor, torch.Tensor],
+            block_table: torch.Tensor,
+            indexer_block_ids: torch.Tensor,
+            token_to_request: torch.Tensor,
+            query_positions: torch.Tensor,
+            *,
+            qo_indptr: torch.Tensor | None,
+            sm_scale: float | None,
+            v_scale: float | None,
+            out: torch.Tensor,
+        ) -> torch.Tensor:
+            assert paged_kv_cache[0].shape == paged_kv_cache[1].shape
+            assert q.shape[0] == indexer_block_ids.shape[0]
+            assert q.shape[0] == token_to_request.shape[0]
+            assert block_table.ndim == 2
+            assert query_positions.shape == token_to_request.shape
+            assert qo_indptr is not None
+            assert tuple(qo_indptr.tolist()) == (0, 1, 3)
+            assert sm_scale == 0.125
+            assert v_scale == 0.25
+            calls.add("run")
+            out.fill_(5)
+            return out
+
+    def workspace_size(
+        _q: torch.Tensor,
+        _k_cache: torch.Tensor,
+        _block_table: torch.Tensor,
+        **options: object,
+    ) -> int:
+        assert options["kv_block_size"] == 4
+        assert options["seq_len_q"] == 2
+        assert options["max_seq_len_kv"] == 2048
+        calls.add("workspace")
+        return 64
+
+    def make_qo_indptr(
+        starts: torch.Tensor,
+        num_tokens: int,
+        *,
+        group_size: int,
+        device: str,
+    ) -> torch.Tensor:
+        assert (tuple(starts.tolist()), num_tokens, group_size, device) == (
+            (0, 1, 3),
+            3,
+            2,
+            "cpu",
+        )
+        calls.add("qo_indptr")
+        return torch.tensor([0, 1, 3], dtype=torch.int32)
+
+    monkeypatch.setattr(
+        qsa_ops,
+        "_q_token_kv_block_sparse_ts_apis",
+        lambda: (
+            lambda *_args, **_kwargs: None,
+            workspace_size,
+            make_qo_indptr,
+            FakePlan,
+        ),
+    )
+    qsa_ops._q_token_kv_block_sparse_ts_qo_indptr_cached.cache_clear()
+    q = torch.empty(3, 12, 256, dtype=torch.bfloat16)
+    cache = torch.empty(2, 1, 16, 256, dtype=torch.bfloat16)
+    blocks = torch.empty(3, 512, dtype=torch.int32)
+    block_table = torch.empty(1, 2, dtype=torch.int32)
+    token_to_req = torch.zeros(3, dtype=torch.int32)
+    positions = torch.arange(3, dtype=torch.int64)
+    workspace = torch.empty(64, dtype=torch.uint8)
+    output = torch.empty_like(q)
+
+    qo_indptr = qsa_ops.q_token_kv_block_sparse_ts_qo_indptr((0, 1, 3), 3, 2)
+    required = qsa_ops.q_token_kv_block_sparse_ts_combined_workspace_size(
+        q,
+        cache,
+        block_table,
+        512,
+        max_seq_len_kv=2048,
+        qo_indptr=qo_indptr,
+        seq_len_q=2,
+        kv_block_size=4,
+    )
+    plan = qsa_ops.q_token_kv_block_sparse_ts_prepare_attention(
+        q,
+        cache,
+        blocks,
+        workspace,
+        output,
+        max_seq_len_kv=2048,
+        qo_indptr=qo_indptr,
+        seq_len_q=2,
+        kv_block_size=4,
+    )
+    result = qsa_ops.q_token_kv_block_sparse_ts_run_prepared(
+        plan,
+        q,
+        cache,
+        cache,
+        block_table,
+        blocks,
+        token_to_req,
+        positions,
+        output,
+        qo_indptr=qo_indptr,
+        sm_scale=0.125,
+        v_scale=0.25,
+    )
+
+    assert required == workspace.numel()
+    assert calls == {"qo_indptr", "workspace", "plan", "run"}
+    assert result is output
+    assert torch.all(output == 5)
+
+
+def _q_token_kv_block_sparse_ts_prepared_state_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    workspace_size_for_max_seq_len: Callable[[int], int] | None = None,
+) -> tuple[
+    SimpleNamespace,
+    Callable[..., object],
+    list[tuple[int, torch.Tensor]],
+]:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    prepared: list[tuple[int, torch.Tensor]] = []
+    if workspace_size_for_max_seq_len is None:
+        workspace_size_for_max_seq_len = lambda _max_seq_len_kv: 64
+    full_block_table = torch.empty(1, 8, dtype=torch.int32)
+    query = torch.empty(8, 12, 256, dtype=torch.bfloat16)
+    cache = torch.empty(8, 1, 16, 256, dtype=torch.bfloat16)
+    block_indices = torch.empty(8, 512, dtype=torch.int32)
+    token_to_req = torch.zeros(8, dtype=torch.int32)
+    logical_positions = torch.arange(8, dtype=torch.int64)
+    out = torch.empty_like(query)
+    qo_indptr = torch.tensor([0, 4, 8], dtype=torch.int32)
+    layer = SimpleNamespace(
+        _q_token_kv_block_sparse_ts_graph_states={},
+        _q_token_kv_block_sparse_ts_eager_states=OrderedDict(),
+        _q_token_kv_block_sparse_ts_eager_workspace=None,
+        _q_token_kv_block_sparse_ts_workspaces=_QTokenKvBlockSparseTSWorkspaces(),
+    )
+    impl = qsa_model.Qwen4ExpQSAFlashAttentionImpl.__new__(
+        qsa_model.Qwen4ExpQSAFlashAttentionImpl
+    )
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_current_stream_capturing",
+        lambda: False,
+    )
+
+    def workspace_size(
+        _query: torch.Tensor,
+        _key_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        *_args: object,
+        **kwargs: object,
+    ) -> int:
+        assert block_table is full_block_table
+        assert workspace_size_for_max_seq_len is not None
+        return workspace_size_for_max_seq_len(cast(int, kwargs["max_seq_len_kv"]))
+
+    monkeypatch.setattr(
+        qsa_ops, "q_token_kv_block_sparse_ts_combined_workspace_size", workspace_size
+    )
+
+    def prepare(
+        _query: torch.Tensor,
+        _key_cache: torch.Tensor,
+        _block_indices: torch.Tensor,
+        workspace: torch.Tensor,
+        _out: torch.Tensor,
+        **kwargs: object,
+    ) -> object:
+        prepared.append((cast(int, kwargs["max_seq_len_kv"]), workspace))
+        return object()
+
+    monkeypatch.setattr(
+        qsa_ops, "q_token_kv_block_sparse_ts_prepare_attention", prepare
+    )
+
+    def get_state(
+        max_seq_len_kv: int,
+        *,
+        persistent: bool = False,
+        owner: SimpleNamespace = layer,
+        kv_cache: torch.Tensor = cache,
+    ) -> object:
+        return impl._get_q_token_kv_block_sparse_ts_prepared_state(
+            owner,
+            query,
+            kv_cache,
+            kv_cache,
+            block_indices,
+            full_block_table,
+            token_to_req,
+            logical_positions,
+            out,
+            qo_indptr,
+            (0, 8),
+            4,
+            4,
+            max_seq_len_kv,
+            persistent=persistent,
+        )
+
+    return layer, get_state, prepared
+
+
+@pytest.mark.parametrize("persistent", [False, True], ids=["eager", "graph"])
+def test_q_token_kv_block_sparse_ts_layers_share_workspace_until_last_owner_releases(
+    monkeypatch: pytest.MonkeyPatch,
+    persistent: bool,
+) -> None:
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
+    second_layer = copy(layer)
+    second_layer._q_token_kv_block_sparse_ts_graph_states = {}
+    second_layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict()
+    other_cache = torch.empty(8, 1, 16, 256, dtype=torch.bfloat16)
+    first = cast(SimpleNamespace, get_state(2, persistent=persistent))
+    second = cast(
+        SimpleNamespace,
+        get_state(2, persistent=persistent, owner=second_layer, kv_cache=other_cache),
+    )
+    assert first is not second
+    assert first.workspace is second.workspace
+    workspace_ref = weakref.ref(first.workspace)
+    pool = layer._q_token_kv_block_sparse_ts_workspaces
+    prepared.clear()
+    del first, second, layer
+    # The get_state closure still owns the original layer; clear its plans.
+    del get_state
+    gc.collect()
+    assert workspace_ref() is not None
+    del second_layer
+    gc.collect()
+    assert workspace_ref() is None
+    assert not pool._buffers
+
+
+def test_q_token_kv_block_sparse_ts_eager_plan_cache_reuses_alternating_geometries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
+
+    state_a = get_state(2)
+    state_b = get_state(4)
+
+    assert get_state(2) is state_a
+    assert get_state(4) is state_b
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 4]
+    assert prepared[0][1] is prepared[1][1]
+    assert prepared[0][1] is layer._q_token_kv_block_sparse_ts_eager_workspace
+    cached_states = tuple(layer._q_token_kv_block_sparse_ts_eager_states.values())
+    assert cached_states[0] is state_a
+    assert cached_states[1] is state_b
+    assert not layer._q_token_kv_block_sparse_ts_graph_states
+
+
+def test_q_token_kv_block_sparse_ts_graph_workspace_growth_preserves_captured_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, _ = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch,
+        workspace_size_for_max_seq_len=lambda max_seq_len_kv: max_seq_len_kv * 64,
+    )
+
+    first = cast(SimpleNamespace, get_state(2, persistent=True))
+    first.workspace.fill_(17)
+    address = first.workspace.data_ptr()
+    second = cast(SimpleNamespace, get_state(4, persistent=True))
+    second.workspace.fill_(29)
+
+    assert get_state(2, persistent=True) is first
+    assert get_state(4, persistent=True) is second
+    assert first.workspace.data_ptr() == address
+    assert torch.all(first.workspace == 17)
+    assert second.workspace.numel() == 4 * 64
+    assert len(layer._q_token_kv_block_sparse_ts_graph_states) == 2
+
+
+def test_q_token_kv_block_sparse_ts_eager_plan_cache_is_bounded_lru(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
+
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
+    capacity = qsa_model._Q_TOKEN_KV_BLOCK_SPARSE_TS_EAGER_PLAN_CACHE_CAPACITY
+    assert capacity == 4
+    states = {
+        max_seq_len_kv: get_state(max_seq_len_kv)
+        for max_seq_len_kv in range(1, capacity + 1)
+    }
+
+    assert get_state(1) is states[1]
+    state_after_eviction = get_state(capacity + 1)
+
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == capacity
+    cached_states = tuple(layer._q_token_kv_block_sparse_ts_eager_states.values())
+    assert any(state is states[1] for state in cached_states)
+    assert all(state is not states[2] for state in cached_states)
+    assert any(state is state_after_eviction for state in cached_states)
+    rebuilt_state = get_state(2)
+    assert rebuilt_state is not states[2]
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == capacity
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [1, 2, 3, 4, 5, 2]
+
+
+def test_q_token_kv_block_sparse_ts_eager_workspace_growth_invalidates_plans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch,
+        workspace_size_for_max_seq_len=lambda max_seq_len_kv: max_seq_len_kv * 64,
+    )
+
+    old_small_state = get_state(2)
+    old_workspace = layer._q_token_kv_block_sparse_ts_eager_workspace
+    large_state = get_state(4)
+    grown_workspace = layer._q_token_kv_block_sparse_ts_eager_workspace
+
+    assert old_workspace is not None
+    assert grown_workspace is not None
+    assert grown_workspace is not old_workspace
+    assert grown_workspace.numel() == 4 * 64
+    assert all(
+        state is not old_small_state
+        for state in layer._q_token_kv_block_sparse_ts_eager_states.values()
+    )
+    rebuilt_small_state = get_state(2)
+    assert prepared[-1][1] is grown_workspace
+    assert get_state(4) is large_state
+    assert get_state(2) is rebuilt_small_state
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 4, 2]
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == 2
+
+
+def test_q_token_kv_block_sparse_ts_eager_capture_guard_and_persistent_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer, get_state, prepared = _q_token_kv_block_sparse_ts_prepared_state_harness(
+        monkeypatch
+    )
+    get_state(2)
+    graph_state = get_state(3, persistent=True)
+    capture_checks = 0
+
+    def capturing() -> bool:
+        nonlocal capture_checks
+        capture_checks += 1
+        return True
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_current_stream_capturing",
+        capturing,
+    )
+    assert get_state(3, persistent=True) is graph_state
+    assert capture_checks == 0
+
+    with pytest.raises(
+        RuntimeError, match="eager QToken-KvBlock-Sparse-Attention PrimTS state"
+    ):
+        get_state(2)
+    with pytest.raises(
+        RuntimeError, match="eager QToken-KvBlock-Sparse-Attention PrimTS state"
+    ):
+        get_state(4)
+    with pytest.raises(RuntimeError, match="must be prepared during CUDA-graph warmup"):
+        get_state(4, persistent=True)
+    assert capture_checks == 3
+    assert [max_seq_len_kv for max_seq_len_kv, _ in prepared] == [2, 3]
+    assert len(layer._q_token_kv_block_sparse_ts_eager_states) == 1
+    assert len(layer._q_token_kv_block_sparse_ts_graph_states) == 1
+
+
+def test_qsa_kv_cache_rebind_clears_prepared_storage() -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAAttention
+
+    layer = Qwen4ExpQSAAttention.__new__(Qwen4ExpQSAAttention)
+    torch.nn.Module.__init__(layer)
+    layer._q_token_kv_block_sparse_ts_graph_states = {"profiling": object()}
+    layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict(
+        [("profiling", object())]
+    )
+    layer._q_token_kv_block_sparse_ts_eager_workspace = torch.empty(
+        64, dtype=torch.uint8
+    )
+    layer.kv_cache = torch.empty(0)
+    real_kv_cache = torch.empty(2, 1, 16, 512)
+
+    Qwen4ExpQSAAttention.bind_kv_cache(layer, real_kv_cache)
+
+    assert layer.kv_cache is real_kv_cache
+    assert not layer._q_token_kv_block_sparse_ts_graph_states
+    assert not layer._q_token_kv_block_sparse_ts_eager_states
+    assert layer._q_token_kv_block_sparse_ts_eager_workspace is None
+
+
+def test_qsa_generic_kv_cache_teardown_releases_prepared_storage() -> None:
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAAttention
+    from vllm.v1.worker.utils import clear_layer_kv_caches
+
+    layer = Qwen4ExpQSAAttention.__new__(Qwen4ExpQSAAttention)
+    torch.nn.Module.__init__(layer)
+    layer.kv_cache = torch.empty(2, 1, 16, 512)
+    key_cache, value_cache = layer.kv_cache.split(256, dim=-1)
+    workspace = torch.empty(128, dtype=torch.uint8)
+    plan = SimpleNamespace(key_cache=key_cache, value_cache=value_cache)
+    state = SimpleNamespace(key=("graph",), workspace=workspace, plan=plan)
+    key_ref = weakref.ref(key_cache)
+    value_ref = weakref.ref(value_cache)
+    workspace_ref = weakref.ref(workspace)
+    layer._q_token_kv_block_sparse_ts_graph_states = {"graph": state}
+    layer._q_token_kv_block_sparse_ts_eager_states = OrderedDict([("eager", state)])
+    layer._q_token_kv_block_sparse_ts_eager_workspace = workspace
+    del key_cache, value_cache, workspace, plan, state
+
+    clear_layer_kv_caches([layer])
+    gc.collect()
+
+    assert layer.kv_cache.numel() == 0
+    assert not layer._q_token_kv_block_sparse_ts_graph_states
+    assert not layer._q_token_kv_block_sparse_ts_eager_states
+    assert layer._q_token_kv_block_sparse_ts_eager_workspace is None
+    assert key_ref() is None
+    assert value_ref() is None
+    assert workspace_ref() is None
