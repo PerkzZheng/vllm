@@ -1374,12 +1374,18 @@ def _make_q_token_kv_block_sparse_ts_owner_case(
 
 @requires_real_q_token_kv_block_sparse_ts
 @pytest.mark.parametrize(
+    ("num_kv_heads", "storage_page_size"),
+    [(2, 16), (1, 3200)],
+    ids=["multi-kv-head", "tp2-single-kv-head"],
+)
+@pytest.mark.parametrize(
     ("kv_cache_dtype", "group_size", "query_lengths", "has_prefill"),
     [
         pytest.param("bfloat16", 4, (5, 3), True, id="bf16-packed-g4"),
         pytest.param("bfloat16", 1, (1, 1), False, id="bf16-fixed-g1"),
         pytest.param("bfloat16", 4, (4, 4), False, id="bf16-fixed-g4"),
         pytest.param("bfloat16", 5, (5, 5), False, id="bf16-fixed-g5"),
+        pytest.param("fp8", 1, (1, 1), False, id="fp8-fixed-g1"),
         pytest.param("fp8", 4, (4, 4), False, id="fp8-fixed-g4"),
     ],
 )
@@ -1388,18 +1394,18 @@ def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
     group_size: int,
     query_lengths: tuple[int, int],
     has_prefill: bool,
+    num_kv_heads: int,
+    storage_page_size: int,
 ) -> None:
     """Exercise the real vLLM owner boundary, including fixed CUDA graphs."""
 
     from vllm.models.qwen4_exp.nvidia import qsa as qsa_model
 
     device = torch.device("cuda")
-    num_query_heads = 24
-    num_kv_heads = 2
+    num_query_heads = 12 * num_kv_heads
     head_dim = 256
     block_topk = 512
     sparse_block_size = 4
-    storage_page_size = 16
     first_query_position = 2 * block_topk * sparse_block_size - 1
     pages_per_request = (
         first_query_position + max(query_lengths) + storage_page_size - 1
@@ -1441,7 +1447,9 @@ def test_q_token_kv_block_sparse_ts_owner_real_cuda_matches_reference_and_graph(
         generator=generator,
         device=device,
     ).mul_(0.125)
-    head_bias = torch.tensor((-0.375, 0.375), device=device).view(1, 2, 1, 1)
+    head_bias = torch.linspace(-0.375, 0.375, num_kv_heads, device=device).view(
+        1, num_kv_heads, 1, 1
+    )
     values = (
         torch.randn(
             keys.shape,

@@ -1,4 +1,4 @@
-# PrimTS QSA in vLLM: integration contract
+# QToken-KvBlock-Sparse-Attention in vLLM
 
 This note describes the current local FlashInfer and vLLM integration from a
 framework user's perspective. The interface is the same for prefill, ordinary
@@ -38,7 +38,7 @@ physical storage pages, and `N` the storage page size.
 | fixed `query` | `[B, Nq, G, Hq, D]` | Complete uniform decode groups |
 | `qo_indptr` | `[num_routes + 1]`, Int32 | Packed route boundaries; omitted for fixed Q |
 | `k_cache`, `v_cache` | `[P, Hkv, N, D]` | Logical HND K/V cache views |
-| `block_indices` | `[R, K]`, Int32 | Selected logical sparse-block IDs |
+| `indexer_block_ids` | `[R, K]`, Int32 | Selected logical sparse-block IDs |
 | `block_table` | `[num_requests, max_storage_pages]`, Int32 | Dense logical-to-physical storage-page table |
 | `token_to_request` | `[R]`, Int32 | Owning request for every flattened query |
 | `query_positions` | `[R]`, Int32 or Int64 | Absolute query positions |
@@ -51,7 +51,8 @@ tensor, or metadata scratch buffer.
 
 vLLM stores K and V together as `[P, Hkv, N, 2D]`. It supplies FlashInfer with
 zero-copy `[P, Hkv, N, D]` K/V views; integration does not repack the cache.
-The public name `sparse_block_size` is block-size-neutral and defaults to four.
+The public name `kv_block_size` describes the logical sparse block size.
+The sizing helper defaults it to four; `plan()` takes it explicitly.
 The value must be a positive power of two, but the current kernels deliberately
 reject every value except `4`. The physical storage page size must be a
 multiple of the sparse block size.
@@ -65,7 +66,7 @@ subject to `G * (Hq / Hkv) <= 64`.
 The vLLM policy is:
 
 - Prefill and mixed batches use packed `[R, Hq, D]` Q with `G=4` when exact
-  CPU request boundaries are available. `make_prims_ts_qsa_qo_indptr` chunks
+  CPU request boundaries are available. `make_q_token_kv_block_sparse_qo_indptr` chunks
   each request independently, so a short request tail never joins the next
   request.
 - Decode requests use `G=MTP+1` when that group is supported. A fixed
@@ -84,20 +85,19 @@ sum is divisible by four.
 
 ## Public FlashInfer calls
 
-The QSA functions are lazily exported from `flashinfer.decode`:
+The wrapper and helpers are exported from `flashinfer.decode`:
 
 ```python
 from flashinfer.decode import (
-    get_prims_ts_qsa_workspace_size,
-    make_prims_ts_qsa_qo_indptr,
-    prepare_prims_ts_qsa_attention,
-    validate_prims_ts_qsa_group_size,
+    QTokenKvBlockSparsePagedTSWrapper,
+    get_q_token_kv_block_sparse_workspace_size,
+    make_q_token_kv_block_sparse_qo_indptr,
 )
 ```
 
-`validate_prims_ts_qsa_group_size` validates a caller-selected group against
-request boundaries and head capacity. It is a validator, not a policy or group
-selector.
+`suggest_q_token_kv_block_sparse_group_size` is an optional host-only helper
+that accepts the SM count explicitly. It does not override a caller's group
+size. vLLM uses the fixed phase policy above.
 
 ### Packed prefill example
 
@@ -106,21 +106,15 @@ import torch
 
 # q/out:                 [R, Hq, D]
 # k_cache/v_cache:       [P, Hkv, N, D]
-# block_indices:         [R, K] int32 compact sparse-block IDs
+# indexer_block_ids:     [R, K] int32 compact sparse-block IDs
 # block_table:           [num_requests, max_storage_pages] int32, dense
 # token_to_request:      [R] int32
 # query_positions:       [R] int32/int64
 # query_start_loc_cpu:   CPU cumulative request boundaries
 
 max_seq_len_kv = model_config.max_model_len
-group_size = validate_prims_ts_qsa_group_size(
-    query_start_loc_cpu,
-    q.shape[0],
-    q.shape[1],
-    k_cache.shape[1],
-    group_size=4,
-)
-qo_indptr_cpu = make_prims_ts_qsa_qo_indptr(
+group_size = 4
+qo_indptr_cpu = make_q_token_kv_block_sparse_qo_indptr(
     query_start_loc_cpu,
     q.shape[0],
     group_size=group_size,
@@ -129,49 +123,54 @@ qo_indptr_cpu = make_prims_ts_qsa_qo_indptr(
 qo_indptr = qo_indptr_cpu.to(q.device)
 out = torch.empty_like(q, dtype=torch.bfloat16)
 
-workspace_bytes = get_prims_ts_qsa_workspace_size(
+workspace_bytes = get_q_token_kv_block_sparse_workspace_size(
     q,
     k_cache,
     block_table,
-    block_topk=block_indices.shape[1],
+    block_topk=indexer_block_ids.shape[1],
     max_seq_len_kv=max_seq_len_kv,
-    out_dtype=out.dtype,
+    o_data_type=out.dtype,
     qo_indptr=qo_indptr_cpu,
-    max_seq_len_q=group_size,
-    sparse_block_size=4,
+    seq_len_q=group_size,
+    kv_block_size=4,
 )
 workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
 
-plan = prepare_prims_ts_qsa_attention(
-    q,
-    (k_cache, v_cache),
-    block_indices,
-    block_table,
-    token_to_request,
-    query_positions,
-    workspace,
-    out=out,
+wrapper = QTokenKvBlockSparsePagedTSWrapper()
+wrapper.plan(
+    batch_size=qo_indptr_cpu.numel() - 1,  # Routes, not original requests.
+    seq_len_q=group_size,
+    num_qo_heads=q.shape[-2],
+    num_kv_heads=k_cache.shape[1],
+    head_dim=q.shape[-1],
+    kv_block_size=4,
+    page_size=k_cache.shape[2],
+    block_topk=indexer_block_ids.shape[1],
     max_seq_len_kv=max_seq_len_kv,
-    bmm1_scale=q.shape[-1] ** -0.5,
-    bmm2_scale=1.0,
-    qo_indptr=qo_indptr,
-    max_seq_len_q=group_size,
-    sparse_block_size=4,
+    device=q.device,
+    workspace_buffer=workspace,
+    use_packed_q=True,
+    q_data_type=q.dtype,
+    kv_data_type=k_cache.dtype,
+    o_data_type=out.dtype,
 )
 
-plan.run(
+wrapper.run(
     q,
-    block_indices,
+    (k_cache, v_cache),
     block_table,
+    indexer_block_ids,
     token_to_request,
     query_positions,
+    qo_indptr=qo_indptr,
     out=out,
 )
 ```
 
 The CPU `qo_indptr` is sufficient for sizing because only its shape is needed.
-Preparation and execution use a stable CUDA Int32 copy. The prepared hot path
-does not copy route values back to the host.
+The first `run()` binds a stable CUDA Int32 copy and compiles the live tensor
+geometry. Run once outside capture before recording subsequent calls. The
+prepared hot path does not copy route values back to the host.
 
 ### Fixed uniform decode example
 
@@ -184,31 +183,45 @@ group_size = mtp_num_speculative_tokens + 1
 decode_q = flat_q.view(batch_size, num_groups, group_size, hq, head_dim)
 decode_out = flat_out.view_as(decode_q)
 
-workspace_bytes = get_prims_ts_qsa_workspace_size(
+workspace_bytes = get_q_token_kv_block_sparse_workspace_size(
     decode_q,
     k_cache,
     block_table,
-    block_topk=block_indices.shape[1],
+    block_topk=indexer_block_ids.shape[1],
     max_seq_len_kv=model_config.max_model_len,
-    out_dtype=decode_out.dtype,
-    sparse_block_size=4,
+    o_data_type=decode_out.dtype,
+    kv_block_size=4,
 )
 workspace = torch.empty(
     workspace_bytes,
     dtype=torch.uint8,
     device=decode_q.device,
 )
-plan = prepare_prims_ts_qsa_attention(
+wrapper = QTokenKvBlockSparsePagedTSWrapper()
+wrapper.plan(
+    batch_size=batch_size * num_groups,
+    seq_len_q=group_size,
+    num_qo_heads=hq,
+    num_kv_heads=k_cache.shape[1],
+    head_dim=head_dim,
+    kv_block_size=4,
+    page_size=k_cache.shape[2],
+    block_topk=indexer_block_ids.shape[1],
+    max_seq_len_kv=model_config.max_model_len,
+    device=decode_q.device,
+    workspace_buffer=workspace,
+    q_data_type=decode_q.dtype,
+    kv_data_type=k_cache.dtype,
+    o_data_type=decode_out.dtype,
+)
+wrapper.run(
     decode_q,
     (k_cache, v_cache),
-    block_indices,
     block_table,
+    indexer_block_ids,
     token_to_request,
     query_positions,
-    workspace,
     out=decode_out,
-    max_seq_len_kv=model_config.max_model_len,
-    sparse_block_size=4,
 )
 ```
 
@@ -216,24 +229,29 @@ The view does not move or duplicate Q. vLLM currently uses `Nq=1`; the public
 five-dimensional layout keeps `Nq` explicit for frameworks that can provide
 multiple complete groups per request.
 
+These snippets assume already-prepared semantic tensors. With FP8 cache,
+vLLM first quantizes Q into its FP8 buffer and passes live `sm_scale` and
+`v_scale` to `run()`: `(D**-0.5) * q_scale * k_scale` and `v_scale`,
+respectively. Output stays BF16. Scale changes do not require replanning.
+
 ## vLLM adapter surface
 
 `vllm/models/qwen4_exp/nvidia/ops/qsa.py` intentionally keeps a small internal
 adapter:
 
-- `qsa_prims_ts_combined_workspace_size`
-- `qsa_prims_ts_qo_indptr`
-- `qsa_prims_ts_prepare_attention`
-- `qsa_prims_ts_run_prepared`
+- `q_token_kv_block_sparse_ts_combined_workspace_size`
+- `q_token_kv_block_sparse_ts_qo_indptr`
+- `q_token_kv_block_sparse_ts_prepare_attention`
+- `q_token_kv_block_sparse_ts_run_prepared`
 
 There is no vLLM group-selection wrapper. The adapter imports
-`validate_prims_ts_qsa_group_size` only as an ABI-availability sentinel;
+`validate_q_token_kv_block_sparse_group_size` only as an ABI-availability sentinel;
 FlashInfer workspace sizing and preparation perform the authoritative kernel
 validation. vLLM owns the phase policy described above.
 
 ## Workspace ownership
 
-`get_prims_ts_qsa_workspace_size(...)` returns one byte count covering:
+`get_q_token_kv_block_sparse_workspace_size(...)` returns one byte count covering:
 
 ```text
 combined QSA workspace
@@ -245,16 +263,21 @@ combined QSA workspace
     └── split-KV policy: partial output, statistics, and counters
 ```
 
-The workspace-owned route table is `qsa_page_indices`; the companion
-`qsa_page_memberships` tensor packs four rank-ordered membership bytes in each
+The internal route table is `q_token_kv_block_sparse_page_indices`; its companion
+`q_token_kv_block_sparse_page_memberships` packs four membership bytes in each
 Int32 word. There is no separately allocated page-index tensor, membership
 tensor, or CSR indptr. The metadata and split-KV regions never alias. In
 particular, vLLM does not reuse metadata storage for split-KV counters.
 
 The allocation must be a contiguous CUDA `torch.int8` or `torch.uint8` tensor
-with the required alignment and must be exclusive to one in-flight plan or
-captured graph. Call the sizing API rather than reproducing its formula: the
+with the required alignment. Concurrent execution requires disjoint storage;
+sequential layers may reuse it. Call the sizing API rather than reproducing its formula: the
 attention suffix depends on the resolved direct/split-KV policy.
+
+For Q1, the indexer must provide a valid selected-block prefix of length
+`min(K, (query_position + 1) // 4)` with no missing entries inside that prefix.
+The direct path does not compact arbitrary `-1` holes. vLLM's indexer meets
+this contract; entries beyond the required prefix are ignored.
 
 Q1 maps selected logical blocks and the causal tail directly with one CUDA C++
 CTA per route. Grouped Q2/Q4/Q5 use one CTA per route to CUB radix-sort at most
@@ -267,10 +290,12 @@ softmax.
 
 ## Prepared-plan and CUDA-graph lifetime
 
-Preparation validates the tensor contract, binds workspace views, freezes
-metadata geometry, resolves the attention and split-KV policy, compiles or
-retrieves callables, and initializes split-KV state when needed. `plan.run(...)`
-reuses that work and launches metadata followed by attention and any reducer.
+`plan()` publishes capacity, dtype and workspace geometry. The first eager
+`run()` validates the live tensors, binds workspace views and K/V TensorMaps,
+compiles the selected kernels, and initializes split-KV state when needed.
+Subsequent `run()` calls reuse this state and launch metadata, attention and
+any reducer. Changing retained K/V or packed-offset storage requires another
+eager run before capture.
 
 For CUDA graphs:
 
@@ -294,10 +319,20 @@ persistent cache hit remains valid during capture; a missing persistent state
 discovered while the CUDA stream is capturing is an error, because capture is
 never allowed to allocate or prepare a new plan.
 
-Up to four eager geometry plans share one growable arena per layer. If a larger
+Up to four eager geometry plans reference one growable arena per layer. If a larger
 geometry needs more storage, vLLM clears the plans before replacing the arena;
 otherwise plans reuse it sequentially on the current stream. Thus retained
-eager storage is the largest arena, not the sum of four arenas. Metadata output
+eager storage is the largest arena, not the sum of four arenas.
+
+All sparse layers in one model's static forward context, including MTP,
+share a weak allocation pool. Matching graph geometries and equal-size eager
+arenas reuse the same storage across ordered layers. Different graph
+geometries remain disjoint; plans and K/V TensorMaps remain layer-specific.
+The weak pool does not keep old allocations alive after their last owner
+drops them. DBO/microbatching is rejected because unordered overlap would
+violate this ownership contract.
+
+Metadata output
 capacity depends on route count, group size, and top-k width; it is independent
 of physical KV-cache capacity and unused model-context suffixes. Concurrent QSA
 streams or microbatches would require separate workspace ownership; this model
@@ -338,7 +373,7 @@ chunk sizes rather than populate a dense long-context ladder.
 ## Current constraints
 
 - SM100/SM103 target, with current runtime qualification on SM103;
-- `sparse_block_size=4` only, with generic power-of-two API naming reserved for
+- `kv_block_size=4` only, with generic power-of-two API naming reserved for
   future specializations;
 - Q1/Q2/Q4/Q5, with TileQ64 head-capacity validation;
 - fixed contiguous `[B, Nq, G, Hq, D]` or packed `[R, Hq, D]` with CUDA Int32
