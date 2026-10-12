@@ -82,6 +82,15 @@ class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
         "vllm.v1.attention.backends.mla.flashinfer_mla_sparse."
         "FlashInferMLASparseTRTLLMBackend"
     )
+    PRIMS_TS_MLA_SPARSE = (
+        "vllm.v1.attention.backends.mla.prims_ts_sparse.PrimsTSMLASparseBackend"
+    )
+    PRIMS_TS_MLA_SPARSE_DSV4 = (
+        "vllm.models.deepseek_v4.nvidia.prims_ts_sparse.DeepseekV4PrimsTSBackend"
+    )
+    PRIMS_TS_MLA_SPARSE_DSV41 = (
+        "vllm.models.deepseek_v41.nvidia.prims_ts_sparse.DeepseekV41PrimsTSBackend"
+    )
     FLASHINFER_MLA_SPARSE_SM120 = (
         "vllm.v1.attention.backends.mla.flashinfer_mla_sparse."
         "FlashInferMLASparseSM120Backend"

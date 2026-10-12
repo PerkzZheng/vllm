@@ -61,12 +61,22 @@ def register_dsv41_o_proj_warmup(layer: nn.Module) -> None:
 
 
 def dsv41_o_proj(
-    layer: nn.Module, attn_out: torch.Tensor, positions: torch.Tensor
+    layer: nn.Module,
+    attn_out: torch.Tensor | QuantizedActivation,
+    positions: torch.Tensor,
 ) -> torch.Tensor:
     """``deep_gemm_fp8_o_proj`` with WO-A fused for small SM100/SM103 batches."""
-    o = attn_out[:, : layer.n_local_heads, :]
+    o = (
+        attn_out
+        if isinstance(attn_out, QuantizedActivation)
+        else attn_out[:, : layer.n_local_heads, :]
+    )
     cos_sin_cache = layer.rotary_emb.cos_sin_cache
-    if 1 <= o.shape[0] <= _fused_wo_a_max_tokens(layer) and _can_fuse_wo_a(layer):
+    if (
+        isinstance(o, torch.Tensor)
+        and 1 <= o.shape[0] <= _fused_wo_a_max_tokens(layer)
+        and _can_fuse_wo_a(layer)
+    ):
         from .fused_wo_a import _FUSED_WO_A_KERNEL
 
         q, scales = _FUSED_WO_A_KERNEL(

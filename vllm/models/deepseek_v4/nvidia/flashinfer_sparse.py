@@ -340,6 +340,7 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
             attn_metadata=flashmla_metadata,
             swa_only=swa_only,
             output=output,
+            positions=positions,
         )
 
     def _build_sparse_index_metadata(
@@ -498,6 +499,7 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
         attn_metadata: DeepseekV4FlashMLAMetadata | None,
         swa_only: bool,
         output: torch.Tensor | QuantizedActivation,
+        positions: torch.Tensor | None = None,
     ) -> None:
         assert self.kv_cache_torch_dtype in (torch.bfloat16, torch.float8_e4m3fn)
         num_decodes = swa_metadata.num_decodes

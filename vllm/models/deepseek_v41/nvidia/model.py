@@ -205,6 +205,10 @@ def _select_dsv4_attn_cls(vllm_config: VllmConfig) -> type[DeepseekV4Attention]:
     """
     backend = vllm_config.attention_config.backend
     device_capability = current_platform.get_device_capability()
+    if backend == AttentionBackendEnum.PRIMS_TS_MLA_SPARSE_DSV41:
+        from .prims_ts_sparse import DeepseekV41PrimsTSAttention
+
+        return DeepseekV41PrimsTSAttention
     if backend in (
         AttentionBackendEnum.FLASHINFER_MLA_SPARSE,
         AttentionBackendEnum.FLASHINFER_MLA_SPARSE_SM120,

@@ -567,6 +567,21 @@ steps:
   commands:
     - pytest -v -s tests/kernels/attention/test_minimax_m3.py
 
+- label: ":nvidia: (B200) Prims-TS Sparse MLA Shard %N"
+  key: kernels-prims-ts-sparse-mla-b200
+  timeout_in_minutes: 30
+  parallelism: 2
+  working_dir: "/vllm-workspace/"
+  device: b200-k8s
+  source_file_dependencies:
+  - vllm/v1/attention/backends/mla/prims_ts_sparse.py
+  - vllm/v1/attention/backends/mla/prims_ts_utils.py
+  - vllm/models/deepseek_v4/nvidia/prims_ts_sparse.py
+  - vllm/models/deepseek_v41/nvidia/prims_ts_sparse.py
+  - tests/kernels/attention/test_prims_ts_sparse_mla.py
+  commands:
+    - pytest -v -s tests/kernels/attention/test_prims_ts_sparse_mla.py --shard-id=$$BUILDKITE_PARALLEL_JOB --num-shards=$$BUILDKITE_PARALLEL_JOB_COUNT
+
 - label: ":nvidia: (B200) Kernels Shard %N"
   key: kernels-b200
   timeout_in_minutes: 30

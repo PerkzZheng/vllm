@@ -9,6 +9,7 @@ import torch
 from vllm.config import VllmConfig
 from vllm.config.cache import CacheDType
 from vllm.forward_context import get_forward_context
+from vllm.model_executor.layers.fusion.quant_activation import QuantizedActivation
 from vllm.models.deepseek_v4.nvidia.ops.o_proj import compute_fp8_einsum_recipe
 from vllm.models.deepseek_v41.attention import DeepseekV4Attention
 from vllm.models.deepseek_v41.common.ops import (
@@ -242,7 +243,9 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
     def get_padded_num_q_heads(cls, num_heads: int) -> int:
         return _pad_to_supported_q_heads(num_heads)
 
-    def _o_proj(self, attn_out: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    def _o_proj(
+        self, attn_out: torch.Tensor | QuantizedActivation, positions: torch.Tensor
+    ) -> torch.Tensor:
         return dsv41_o_proj(self, attn_out, positions)
 
     def __init__(self, *args, **kwargs) -> None:
@@ -282,32 +285,34 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
         q: torch.Tensor,
         kv: torch.Tensor,
         positions: torch.Tensor,
-        output: torch.Tensor,
+        output: torch.Tensor | QuantizedActivation,
     ) -> None:
         # The TRTLLM-gen kernel requires h_q in {64, 128}, so the output buffer
         # is allocated at the padded head count while q arrives at the local
         # head count; _forward pads q to match before the launcher.
-        assert output.shape[0] == q.shape[0] and output.shape[-1] == q.shape[-1], (
-            f"output buffer shape {output.shape} incompatible with q shape {q.shape}"
-        )
-        assert output.shape[1] >= q.shape[1], (
-            f"output heads {output.shape[1]} must be >= q heads {q.shape[1]}"
-        )
-        # Per-tensor FP8 q produces a bf16 attention output.
-        expected_output_dtype = (
-            torch.bfloat16 if q.dtype == torch.float8_e4m3fn else q.dtype
-        )
-        assert output.dtype == expected_output_dtype, (
-            f"output dtype {output.dtype} must match expected {expected_output_dtype} "
-            f"for q dtype {q.dtype}"
-        )
+        if isinstance(output, QuantizedActivation):
+            assert output.data.shape[0] == q.shape[0]
+        else:
+            assert output.shape[0] == q.shape[0] and output.shape[-1] == q.shape[-1], (
+                f"output shape {output.shape} incompatible with q {q.shape}"
+            )
+            assert output.shape[1] >= q.shape[1]
+            # Per-tensor FP8 q produces a bf16 attention output.
+            expected_output_dtype = (
+                torch.bfloat16 if q.dtype == torch.float8_e4m3fn else q.dtype
+            )
+            assert output.dtype == expected_output_dtype
 
         forward_context = get_forward_context()
         attn_metadata = forward_context.attn_metadata
         if attn_metadata is None:
             # Warmup dummy run: FlashInfer reads the cache directly and lazily
             # allocates its workspace, so nothing to reserve here.
-            output.zero_()
+            if isinstance(output, QuantizedActivation):
+                output.data.zero_()
+                output.scale.zero_()
+            else:
+                output.zero_()
             return
 
         assert isinstance(attn_metadata, dict)
@@ -339,6 +344,7 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
             attn_metadata=flashmla_metadata,
             swa_only=swa_only,
             output=output,
+            positions=positions,
         )
 
     def _build_sparse_index_metadata(
@@ -465,8 +471,10 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
         swa_metadata: "DeepseekSparseSWAMetadata",
         attn_metadata: DeepseekV4FlashMLAMetadata | None,
         swa_only: bool,
-        output: torch.Tensor,
+        output: torch.Tensor | QuantizedActivation,
+        positions: torch.Tensor | None = None,
     ) -> None:
+        assert isinstance(output, torch.Tensor)
         assert self.kv_cache_torch_dtype in (torch.bfloat16, torch.float8_e4m3fn)
         num_decodes = swa_metadata.num_decodes
         num_prefills = swa_metadata.num_prefills

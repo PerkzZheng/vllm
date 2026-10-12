@@ -660,6 +660,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
             if backend_name in (
                 "FLASHMLA_SPARSE",
                 "FLASHINFER_MLA_SPARSE",
+                "PRIMS_TS_MLA_SPARSE",
                 "FLASHINFER_MLA_SPARSE_SM120",
                 "DEEPSEEK_V32_INDEXER",
             ):
@@ -751,7 +752,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
 
     def _uses_flat_kv_cache(self) -> bool:
         backend = self.attn_backend.get_name()
-        return backend == "FLASHINFER_MLA_SPARSE" or (
+        return backend in ("FLASHINFER_MLA_SPARSE", "PRIMS_TS_MLA_SPARSE") or (
             backend == "FLASHMLA_SPARSE"
             and self.kv_cache_dtype not in ("fp8_ds_mla", "nvfp4_ds_mla")
         )
