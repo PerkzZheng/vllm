@@ -36,62 +36,6 @@ def _compact_rows(
     tl.store(lengths + row, count)
 
 
-@triton.jit
-def _prepare_routes(
-    primary,
-    extra,
-    primary_lengths,
-    extra_lengths,
-    routes,
-    execution_lengths,
-    counts,
-    scale_params,
-    sinks,
-    positions,
-    quant_positions,
-    KS: tl.constexpr,
-    KC: tl.constexpr,
-    HEADS: tl.constexpr,
-    CAPACITY: tl.constexpr,
-    BMM1: tl.constexpr,
-    BMM2: tl.constexpr,
-    HAS_SINKS: tl.constexpr,
-    QUANTIZE: tl.constexpr,
-    BLOCK: tl.constexpr,
-):
-    row = tl.program_id(0)
-    ls = tl.load(primary_lengths + row)
-    lc = tl.load(extra_lengths + row) if KC else 0
-    span_s = tl.cdiv(ls, 128) * 128
-    span_c = tl.cdiv(lc, 128) * 128
-    offset = tl.arange(0, BLOCK)
-    for start in range(0, CAPACITY, BLOCK):
-        col = start + offset
-        a = tl.load(primary + row * KS + col, col < ls, 0x7FFFFFFF)
-        local = col - span_s
-        if KC:
-            b = tl.load(extra + row * KC + local, (local >= 0) & (local < lc), -1)
-            b = b | -2147483648
-        else:
-            b = tl.full((BLOCK,), -1, tl.int32)
-        tl.store(
-            routes + row * CAPACITY + col, tl.where(col < span_s, a, b), col < CAPACITY
-        )
-    tl.store(execution_lengths + row, tl.maximum(span_s + span_c, 1))
-    tl.store(counts + row, ls + lc)
-    tl.store(scale_params + 2 + HEADS + row, (ls + lc).to(tl.float32))
-    if QUANTIZE:
-        tl.store(quant_positions + row, tl.load(positions + row).to(tl.int32))
-    if row == 0:
-        tl.store(scale_params, BMM1)
-        tl.store(scale_params + 1, BMM2)
-        h = tl.arange(0, triton.next_power_of_2(HEADS))
-        sink = (
-            tl.load(sinks + h, h < HEADS, -float("inf")) if HAS_SINKS else -float("inf")
-        )
-        tl.store(scale_params + 2 + h, sink, h < HEADS)
-
-
 def _compact(source, source_lengths):
     rows, width = source.shape
     indices = torch.empty((rows, width), device=source.device, dtype=torch.int32)
@@ -160,11 +104,11 @@ def _plan(
 
 
 def quantized_mla_output(rows, heads, groups, block_size, device):
-    """Natural [token, group, channel] values and DeepGEMM's MN-major UE8M0."""
+    """Logical [token, group, channel] over group-major values and MN-major scales."""
     channels = heads // groups * 512
     data = torch.empty(
-        (rows, groups, channels), dtype=torch.float8_e4m3fn, device=device
-    )
+        (groups, rows, channels), dtype=torch.float8_e4m3fn, device=device
+    ).transpose(0, 1)
     scales = torch.empty(
         (groups, channels // block_size // 4, triton.cdiv(rows, 4) * 4),
         dtype=torch.int32,
@@ -203,14 +147,14 @@ def sparse_mla(
     for the two pools. ``lengths`` bounds each list; -1 holes are compacted.
     All query rows are independent: the model's sparse lists already encode
     causality, so one packed sequence is sufficient for the kernel scheduler.
+    Both pools share a KV descale, already folded into ``bmm1_scale`` and
+    ``bmm2_scale`` by the native-cache producers.
     """
-    from flashinfer.attention.prims_ts import SparseMLAPreparedMetadata
-
     rows, heads, _ = q.shape
     quantized = isinstance(out, QuantizedActivation)
     output_groups = None
     if isinstance(out, QuantizedActivation):
-        assert output_quant_block_size is not None and token_positions is not None
+        assert output_quant_block_size is not None
         output_groups = out.data.shape[1]
     else:
         assert output_quant_block_size is None
@@ -231,44 +175,12 @@ def sparse_mla(
     )
     si, sl = _compact(indices, lengths)
     ci, cl = _compact(extra_indices, extra_lengths) if kc else (None, None)
-    capacity = max(256, (triton.cdiv(ks, 128) + triton.cdiv(kc, 128)) * 128)
-
-    def empty(shape, dtype=torch.int32):
-        return torch.empty(shape, device=q.device, dtype=dtype)
-
-    metadata = SparseMLAPreparedMetadata(
-        si,
-        sl,
-        ci,
-        cl,
-        empty((1, rows, capacity)),
-        empty((1, rows)),
-        empty((1, rows)),
-        empty((1, 2 + heads + rows), torch.float32),
-    )
-    quant_positions = empty((rows,)) if quantized else None
-    _prepare_routes[(rows,)](
-        si,
-        ci,
-        sl,
-        cl,
-        metadata.routes,
-        metadata.execution_lengths,
-        metadata.valid_counts,
-        metadata.scale_params,
-        sinks,
-        token_positions,
-        quant_positions,
-        ks,
-        kc,
-        heads,
-        capacity,
-        bmm1_scale,
-        bmm2_scale,
-        sinks is not None,
-        quantized,
-        256,
-    )
+    quant_positions = None
+    if quantized:
+        assert token_positions is not None
+        quant_positions = (
+            token_positions.reshape(-1)[:rows].to(dtype=torch.int32).contiguous()
+        )
     quant_kwargs = {}
     values = out
     if isinstance(out, QuantizedActivation):
@@ -287,8 +199,11 @@ def sparse_mla(
     result = wrapper.run(
         q.contiguous(),
         kv_cache,
-        metadata,
+        si,
+        sl,
         extra_kv_cache,
+        extra_indices=ci,
+        extra_lengths=cl,
         qo_indptr=qo_indptr,
         softmax_scale=bmm1_scale,
         output_scale=bmm2_scale,

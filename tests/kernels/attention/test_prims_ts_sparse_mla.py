@@ -8,8 +8,8 @@ index/scale/LSE mistakes before expensive model-level accuracy evaluation.
 
 import pytest
 import torch
-
 from vllm.platforms import current_platform
+
 from vllm.v1.attention.backends.mla.prims_ts_utils import (
     quantized_mla_output,
     sparse_mla,
@@ -153,6 +153,7 @@ def test_fused_rope_quant_preserves_padded_output_and_replays_positions(dtype, b
     rope = torch.cat((angles.cos(), angles.sin()), -1).contiguous()
     # The output is allocated for a larger graph bucket than the live Q prefix.
     output = quantized_mla_output(8, heads, groups, block, q.device)
+    assert output.data.transpose(0, 1).is_contiguous()
     output.data.view(torch.uint8).fill_(123)
     output.scale.fill_(123)
 
