@@ -1,0 +1,86 @@
+{
+  "vllm_base": "2eb491e18b1ce5b8a25e4c88f32dbb5d028d525c",
+  "vllm_tested": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0",
+  "flashinfer": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92",
+  "harness": "d6de81643928d653435c431bae19945d41d32520",
+  "image": "vllm/vllm-openai@sha256:c8539d9d8aab312168a241ea679697e0d0f92e05838ede8dd4eb4332ee904a85",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "cutlass_dsl": "4.8.0",
+  "max_model_len": 1048576,
+  "seed": 1234,
+  "temperature": 1.0,
+  "reasoning_effort": "high",
+  "concurrency": 32,
+  "max_num_seqs": 32,
+  "max_num_batched_tokens": 4096,
+  "models": {
+    "v4-flash": {
+      "repo": "deepseek-ai/DeepSeek-V4-Flash",
+      "revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+      "tokenizer": "deepseek_v4",
+      "reasoning": "deepseek_v4",
+      "backend": "PRIMS_TS_MLA_SPARSE_DSV4",
+      "tp": 1,
+      "top_p": 1.0,
+      "max_tokens": 393216
+    },
+    "v4-pro": {
+      "repo": "deepseek-ai/DeepSeek-V4-Pro",
+      "revision": "b5968e9190ef611bbf34a7229255be88a0e937c1",
+      "tokenizer": "deepseek_v4",
+      "reasoning": "deepseek_v4",
+      "backend": "PRIMS_TS_MLA_SPARSE_DSV4",
+      "tp": 4,
+      "top_p": 1.0,
+      "max_tokens": 393216
+    },
+    "v41-flash": {
+      "repo": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "revision": "2cba9e42aa026125f3ed06c6d98c1db82f7ca027",
+      "tokenizer": "deepseek_v41",
+      "reasoning": "deepseek_v41",
+      "backend": "PRIMS_TS_MLA_SPARSE_DSV41",
+      "tp": 2,
+      "top_p": 0.95,
+      "max_tokens": 262144
+    },
+    "glm53-flash": {
+      "repo": "zai-org/GLM-5.3-Flash",
+      "revision": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "tokenizer": null,
+      "reasoning": "glm47",
+      "backend": "PRIMS_TS_MLA_SPARSE",
+      "tp": 2,
+      "top_p": 0.95,
+      "max_tokens": 163840
+    }
+  },
+  "datasets": {
+    "gpqa": {
+      "repo": "Idavidrein/gpqa",
+      "revision": "83022cefff930aea54f654c0b282e74b9eeda5c6",
+      "patterns": [
+        "gpqa_diamond.csv",
+        "README.md",
+        "license.txt"
+      ]
+    },
+    "gsm8k": {
+      "repo": "openai/gsm8k",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "patterns": [
+        "main/*.parquet",
+        "README.md"
+      ]
+    },
+    "aime2026": {
+      "repo": "MathArena/aime_2026",
+      "revision": "d2de22f3c656b4f56cf8981212186377d1e23bc3",
+      "patterns": [
+        "data/*.parquet",
+        "README.md"
+      ]
+    }
+  }
+}
