@@ -1,0 +1,53 @@
+{
+  "sealed_utc": "2026-10-21T16:56:14.470413+00:00",
+  "status": "completed_and_independently_audited",
+  "passed": true,
+  "job": 1364941,
+  "state": "COMPLETED",
+  "exit_code": "0:0",
+  "elapsed": "02:01:23",
+  "node": "nvl72d087-T10",
+  "allocation_released": true,
+  "resources": {
+    "gpus": 4,
+    "qos": "normal",
+    "partition": "batch",
+    "time_limit": "04:00:00"
+  },
+  "source_revisions": {
+    "flashinfer-rebase": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92",
+    "vllm-integration": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0"
+  },
+  "model_revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+  "frozen_files_verified": 153,
+  "cohorts": 4,
+  "questions": 120,
+  "unique_fresh_response_ids": 120,
+  "scores": {
+    "attention-current__moe-current": 21,
+    "attention-current__moe-historical": 22,
+    "attention-historical__moe-current": 23,
+    "attention-historical__moe-historical": 22
+  },
+  "artifacts_sha256": {
+    "manifest.json": "dac239b8eb6e89e28e829202cbdbbc85467b1b89ce5ce41639dfb29f84ff3da2",
+    "offline-input-proof.json": "a310fdd229be7fa8795157611d298a8963998963b214a5eabab00a6cc942e33f",
+    "startup-qualified.json": "7143e1807b87e3677ecd1a0393a19131518efe4acd960fd77911ab2d4a26434b",
+    "reviewer-final-factorial-audit.json": "c1d6e7b1f5fb4cbef8181b1b7fcb38976dc1bc7ee2a49f72f6379dfc649fe623",
+    "REVIEW.md": "cf03ee8060183ba54e4e800c1e81570e9ccb7c103d5ff8deb89493a18940acd5",
+    "progress.json": "4b059628a344d2ffba4e55f563c80e60d05da1df04f62765d6fe54f2a53a6c4f",
+    "cache-provenance.json": "d53c4db72b93e33fcf38f8d65f99dcad4ff6f9c39c336fd67945ee361d4f64e1",
+    "reviewer-three-cohort-audit.json": "e4df9579a344b599300598f1db808eb48a08211f02c74840f68fc042e26cf7b3",
+    "reviewer-token-check.json": "0f71f00afd61fc344fc7bd11713d0668965aec3af0bf90357cb1e23acedcedfb",
+    "reviewer-indexer-boundary.json": "baead02c52aec66dc6329b7264750e860f99d5061024370ddab63f0394938bc6"
+  },
+  "limits": [
+    "One seed and one cohort per factorial cell, not within-cell reproducibility.",
+    "Fresh AIME-only warm history differs from original full-task campaign.",
+    "Async arrival and step batching need not be identical.",
+    "Indexer output ordering and selected sets/logits not captured in this run.",
+    "Pinned source TopK analysis is not proof of nightly compiled operator implementation.",
+    "No official scores or graders changed; scores below are separate diagnostic cohorts."
+  ],
+  "conclusion": "Diagnostic complete; original AIME-drop cause unresolved. No product/sampling/grader changes. Next focused probe would measure actual identical-logit selector order/sets around context2052; not launched."
+}

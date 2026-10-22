@@ -1,0 +1,14 @@
+{
+  "vllm": {
+    "vllm/v1/attention/backends/mla/prims_ts_utils.py": "1445ddd79a82b3401e787e0c5f12e7c9fb6bc88eb3b9c6d89270325635d22d77",
+    "vllm/model_executor/layers/indexer_topk.py": "4dc91f83043c659304e0f0808bd9082574f919361b0b12f7c87fef5e261469bb",
+    "vllm/models/deepseek_v4/nvidia/prims_ts_sparse.py": "bc981b348cb4609445203d029bb0a35983d66bc535c579aaba6131ac2f15343c",
+    "vllm/models/deepseek_v4/nvidia/model.py": "c0debe3f6c08bf60a85c136708509c6e2f5136c8d1f27c018b6e71539f807fa1",
+    "vllm/models/deepseek_v41/nvidia/ops/o_proj.py": "d5a1a1a92dc825b358925f5e2900c47b0833637a70220d9bbc778cf66f22139c"
+  },
+  "flashinfer_revision": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92",
+  "provider_binary_sha256": "d34b72362b9f1395bf7d1db637f861f64847ba465d7ed359a47110379e021f8e",
+  "model_revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+  "vllm_revision": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0",
+  "deep_gemm_binary_sha256": "34f79631897492ff5d53779d6c3e065cb09ccdc580f58bc49bfdc46e45391de6"
+}

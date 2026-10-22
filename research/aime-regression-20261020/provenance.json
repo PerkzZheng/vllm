@@ -1,0 +1,218 @@
+{
+  "exports": {
+    "evidence/replay-comparison.json": {
+      "original": "research/aime-regression-20261020/replay-comparison.json",
+      "original_sha256": "487fd460cb4a0e8e69eb734d0ba7e35575dc1837d6d5c8eb408cb248f3b4d5e9",
+      "export_sha256": "487fd460cb4a0e8e69eb734d0ba7e35575dc1837d6d5c8eb408cb248f3b4d5e9",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/source-controls/qualification.json": {
+      "original": "research/aime-regression-20261020/source-controls/qualification.json",
+      "original_sha256": "e8d864936bc7d629b41fc74eac4f3c1b2e87fb8fd3c7e6b2e650814984d55fe0",
+      "export_sha256": "6fd9f20b5b2558416dc443643a15132895e5ceb4b8e0be315b612ef9a2c02f99",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/source-controls/exact-replay-bytes.json": {
+      "original": "research/aime-regression-20261020/source-controls/exact-replay-bytes.json",
+      "original_sha256": "bccc854cb1725dc7c24899b0c54a36d016457cc25c149042b9346746a08201f0",
+      "export_sha256": "bccc854cb1725dc7c24899b0c54a36d016457cc25c149042b9346746a08201f0",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/consumer-layout/comparison.json": {
+      "original": "research/aime-regression-20261020/consumer-layout/comparison.json",
+      "original_sha256": "19a3f0c52f3b65f1438842c60b0fbb3b5c519878903013a74430e9e038ca2756",
+      "export_sha256": "19a3f0c52f3b65f1438842c60b0fbb3b5c519878903013a74430e9e038ca2756",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/consumer-layout/qualification.json": {
+      "original": "research/aime-regression-20261020/consumer-layout/qualification.json",
+      "original_sha256": "443c351433852a31c6e1b356ca4667519236c4b522712ce674521d6ddffb0118",
+      "export_sha256": "443c351433852a31c6e1b356ca4667519236c4b522712ce674521d6ddffb0118",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/paired-repeats/reviewer-final-factorial-audit.json": {
+      "original": "research/aime-regression-20261020/paired-repeats/reviewer-final-factorial-audit.json",
+      "original_sha256": "c1d6e7b1f5fb4cbef8181b1b7fcb38976dc1bc7ee2a49f72f6379dfc649fe623",
+      "export_sha256": "c1d6e7b1f5fb4cbef8181b1b7fcb38976dc1bc7ee2a49f72f6379dfc649fe623",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/paired-repeats/qualification.json": {
+      "original": "research/aime-regression-20261020/paired-repeats/qualification.json",
+      "original_sha256": "7c1566167442390e23f6ef2562bb76bc5016f1be38bd4653751940ecca1a53f4",
+      "export_sha256": "7c1566167442390e23f6ef2562bb76bc5016f1be38bd4653751940ecca1a53f4",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/paired-repeats/progress.json": {
+      "original": "research/aime-regression-20261020/paired-repeats/progress.json",
+      "original_sha256": "4b059628a344d2ffba4e55f563c80e60d05da1df04f62765d6fe54f2a53a6c4f",
+      "export_sha256": "4b059628a344d2ffba4e55f563c80e60d05da1df04f62765d6fe54f2a53a6c4f",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/offline-case-analysis/trajectories.json": {
+      "original": "research/aime-regression-20261020/offline-case-analysis/trajectories.json",
+      "original_sha256": "50fe96bec48778def9f89dbd06e1fd364d696c9a1ecba0668956e986b4deaf13",
+      "export_sha256": "14138ad39b3de1b525ea7181407be2b96bbb3253fd874ee34957edf6c7ade5f2",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/offline-case-analysis/focus.json": {
+      "original": "research/aime-regression-20261020/offline-case-analysis/focus.json",
+      "original_sha256": "fe1bf82f9b232433af42c4da7ee1ba75385ee6a244a4c6f127ad626e8c936c5c",
+      "export_sha256": "fe1bf82f9b232433af42c4da7ee1ba75385ee6a244a4c6f127ad626e8c936c5c",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/offline-case-analysis/verification.json": {
+      "original": "research/aime-regression-20261020/offline-case-analysis/verification.json",
+      "original_sha256": "0f2813595a73fdba632007531967fa24b6ddf6986fb22b18eedb90f92a418aa2",
+      "export_sha256": "0f2813595a73fdba632007531967fa24b6ddf6986fb22b18eedb90f92a418aa2",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/offline-case-analysis/execution-reproducibility.json": {
+      "original": "research/aime-regression-20261020/offline-case-analysis/execution-reproducibility.json",
+      "original_sha256": "3f63b49ed948a9dd5349058f2a4e27ce61cad89fe8418d323135afd6652387db",
+      "export_sha256": "996782ce6d7454bec6d10e5ba9db7a7357bf8e6284124e2559f301bde9c78526",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/moe-binary-audit/autotune-history.json": {
+      "original": "research/aime-regression-20261020/moe-binary-audit/autotune-history.json",
+      "original_sha256": "8bf0991ef426f6a5d1515af0d7a475c42f4d223c03fb2ce1bcb9bf7eb46f61f4",
+      "export_sha256": "272c704958d79c122505bcf7b4de240b4ec9028573dcf74d6aeb56dc2fc306e8",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/moe-binary-audit/whole-elf-normalization.json": {
+      "original": "research/aime-regression-20261020/moe-binary-audit/whole-elf-normalization.json",
+      "original_sha256": "9a89fd5c3e458f070489c2d893e8afcf2ec0b97da3c3358ae87f259d52223af6",
+      "export_sha256": "9a89fd5c3e458f070489c2d893e8afcf2ec0b97da3c3358ae87f259d52223af6",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/moe-binary-audit/normalized-sections.json": {
+      "original": "research/aime-regression-20261020/moe-binary-audit/normalized-sections.json",
+      "original_sha256": "95b99c3dd89bb93e4f6b874ef1066248e2e502ee8439ee712833b1fb494db8be",
+      "export_sha256": "95b99c3dd89bb93e4f6b874ef1066248e2e502ee8439ee712833b1fb494db8be",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/moe-binary-audit/sass-comparison.json": {
+      "original": "research/aime-regression-20261020/moe-binary-audit/sass-comparison.json",
+      "original_sha256": "a469fc839f768f2ac01fe14714854a8a15ab020e964e61b6691c0222b4f062ce",
+      "export_sha256": "a469fc839f768f2ac01fe14714854a8a15ab020e964e61b6691c0222b4f062ce",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/moe-binary-audit/bmm-cubins.json": {
+      "original": "research/aime-regression-20261020/moe-binary-audit/bmm-cubins.json",
+      "original_sha256": "c407d944878240bdb67997e5c053423fb9351f4f6a35bf22206a3c28525c2c02",
+      "export_sha256": "c4361b3249877cf4a51affb7aa570da4510a611f8f50285b33dcd52570062232",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "evidence/moe-binary-audit/bmm-headers.json": {
+      "original": "research/aime-regression-20261020/moe-binary-audit/bmm-headers.json",
+      "original_sha256": "77fc26edd39c1fa59f1af55052de8eb8edf9ce8b2934056dd45a1871ce352e02",
+      "export_sha256": "77fc26edd39c1fa59f1af55052de8eb8edf9ce8b2934056dd45a1871ce352e02",
+      "transformation": "JSON reserialization; workspace and temporary path prefixes made relative. Numeric values, array order and hashes unchanged."
+    },
+    "profiles/historical-initial-global.json": {
+      "original": "research/vllm-accuracy/cache/vllm/flashinfer_autotune_cache/0.7.2/103a/5817a4dfad7924e39a0e25f9e76cb3e0abfb39215d904b01ef72e0f2fa9cfce1/autotune_configs_dp0_rank0.json",
+      "original_sha256": "9b51862aad53a8e51a57bd859ff38307c19c278b908e825324d5c3d5c0353e1f",
+      "export_sha256": "9b51862aad53a8e51a57bd859ff38307c19c278b908e825324d5c3d5c0353e1f",
+      "transformation": "Byte-identical; resume profile is retained but was not selected in the completed factorial."
+    },
+    "profiles/historical-resume-per-model.json": {
+      "original": "research/vllm-accuracy/model-jobs/v4-flash/cache/prims-fp8/vllm/flashinfer_autotune_cache/0.7.2/103a/2bbfde9f9b0caddf2e3d965f68761832913411f86a7ddcd4ab585afb9f9e6b6a/autotune_configs_dp0_rank0.json",
+      "original_sha256": "4b79fafe311aa8f11c8af4b472228016713327872a90dd80a8c48551b928b78e",
+      "export_sha256": "4b79fafe311aa8f11c8af4b472228016713327872a90dd80a8c48551b928b78e",
+      "transformation": "Byte-identical; resume profile is retained but was not selected in the completed factorial."
+    },
+    "profiles/current-per-model.json": {
+      "original": "research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/cache/prims-fp8/vllm/flashinfer_autotune_cache/0.7.2/103a/cac22c801c11118ad4c1b1a7432a02b43b2e1e55497d527b6bccc697499f32a3/autotune_configs_dp0_rank0.json",
+      "original_sha256": "c53a217a7cd0c162ece1ead001288d88565f15f66a6429cfccf90406a27c781e",
+      "export_sha256": "c53a217a7cd0c162ece1ead001288d88565f15f66a6429cfccf90406a27c781e",
+      "transformation": "Byte-identical; resume profile is retained but was not selected in the completed factorial."
+    }
+  },
+  "ports": {
+    "historical_attention.py": {
+      "original": "research/aime-regression-20261020/source-controls/old_attention.py",
+      "original_sha256": "50d3f82c8ba51252dda00aadd00e77acc6a02c8484cfbe555a989fd36aa8a40f",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "9eafbf931aab4e73a6cd1d587842c67e95a7592eaec060ccb67195441d4e41e6"
+    },
+    "replay_attention.py": {
+      "original": "research/aime-regression-20261020/replay_attention.py",
+      "original_sha256": "50b14c25ab9cc0a829a0a82e326c88f670358970fdf43ca008b3152fcaaa787d",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "4b77bf1d07ec1322015d46a96f9be9760d7c904f9c9d0e1b60219567e4b43ccc"
+    },
+    "compare_replays.py": {
+      "original": "research/aime-regression-20261020/compare_replays.py",
+      "original_sha256": "9e027e4525ae43375b9166f2ab59952f7ac8eba645159bb737db2bdcd86b40f7",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "82a0a1fee6dbd01eb02716dc5f9f8aa9a6270d0a0d508e6b646cb2a8e58d9a1c"
+    },
+    "topk_order.py": {
+      "original": "research/aime-regression-20261020/indexer-order/probe.py",
+      "original_sha256": "e8653ffba0258320220f1026f5f6eee23fa01030c9fc2fc66e738c52c1d9b96f",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "c16b5d276d94d2377fc62d100a9089afdb53d1a86f6fe0a15fb8b2c0b5aa0c3f"
+    },
+    "topk_narrow.py": {
+      "original": "research/aime-regression-20261020/indexer-order-narrow/probe.py",
+      "original_sha256": "48cad209d514e23d0dda9a1a68184f7179d5488cc4e80a0c094facb0c17bd091",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "7d3cabcdf11212b1714fc78052ff58993583a0801c4d035f57a3cc383afe303c"
+    },
+    "replay_orders.py": {
+      "original": "research/aime-regression-20261020/indexer-order/replay_orders.py",
+      "original_sha256": "51060bb858a4e70d109d31095cad6b1617f9a492a188dbf2e846fa953797d95f",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "4f3c519e371ec11919740b459369fd3318810fe8e1ae67011252feedfcb1af08"
+    },
+    "consumer_worker.py": {
+      "original": "research/aime-regression-20261020/consumer-layout/run_worker.py",
+      "original_sha256": "839e84a9ec0ef495c9c8d42085c9b753f7e176b6f33f36cc43b8ba1047ab5f65",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "cb651166dfbdcfa5f2c668d76cb41a663b8b3ad05ff8d60d11ffd4e29f221a40"
+    },
+    "compare_consumers.py": {
+      "original": "research/aime-regression-20261020/consumer-layout/compare.py",
+      "original_sha256": "ff325d90401ff1dc770a0a08678af6d48782f31bd8592ccf7cddc49c5d4dd504",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "57532227eaae5cc72998ee73473e9279517c0191d13fa2d48bbec80a3ee187b3"
+    },
+    "factorial-hooks/cache_control.py": {
+      "original": "research/aime-regression-20261020/paired-repeats/hooks/cache_control.py",
+      "original_sha256": "86ec3ed2474b13710e8a9b67641e6a146801b3f512ffac5f0e3f0c6578898b49",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "030895ecf490ae3d0ace8abb44d6b78545c1cfc1a23754a1573b01fa3aee358a"
+    },
+    "factorial-hooks/sitecustomize.py": {
+      "original": "research/aime-regression-20261020/paired-repeats/hooks/sitecustomize.py",
+      "original_sha256": "ed15f5a2fb2a365e5cedcb64dddec900356527aa7168de1c30fcbd683bc7140a",
+      "transformation": "Portable data/run/source paths and runtime guards; SPDX/style and torch.accelerator compatibility. Numerical algorithms, shapes, seeds and tolerances retained.",
+      "export_sha256": "415e6720e1747793e0e6b100693a85b22c521a802cbcb7ee61bf470e2efdfcae"
+    }
+  },
+  "portable_files": {
+    "README.md": "5a8401f77d016f09b9c11291d5214252d6b9c65bc088f58c3cc2944eb85097e9",
+    "common.py": "937e48b4139b546bf849e55a15a53ffa75640b0d2087f7166278651ac2e1cf74",
+    "compare_consumers.py": "57532227eaae5cc72998ee73473e9279517c0191d13fa2d48bbec80a3ee187b3",
+    "compare_replays.py": "82a0a1fee6dbd01eb02716dc5f9f8aa9a6270d0a0d508e6b646cb2a8e58d9a1c",
+    "consumer_worker.py": "cb651166dfbdcfa5f2c668d76cb41a663b8b3ad05ff8d60d11ffd4e29f221a40",
+    "factorial-hooks/cache_control.py": "030895ecf490ae3d0ace8abb44d6b78545c1cfc1a23754a1573b01fa3aee358a",
+    "factorial-hooks/sitecustomize.py": "415e6720e1747793e0e6b100693a85b22c521a802cbcb7ee61bf470e2efdfcae",
+    "fixtures.json": "48fc1740fc446a41b9e30f4ac4588aa1659fbc8b5605c5ec36bdeaff0c20ef96",
+    "historical_attention.py": "9eafbf931aab4e73a6cd1d587842c67e95a7592eaec060ccb67195441d4e41e6",
+    "prepare_fixtures.py": "68de6f8ac77323a73f095079ecb2edb218849f4ef98b3e304b128d806f68fb66",
+    "replay_attention.py": "4b77bf1d07ec1322015d46a96f9be9760d7c904f9c9d0e1b60219567e4b43ccc",
+    "replay_orders.py": "4f3c519e371ec11919740b459369fd3318810fe8e1ae67011252feedfcb1af08",
+    "run_factorial_arm.sh": "9cdd195666207c357c2095503789b89527453204e36e01b746f171a340e0ac7e",
+    "runtime.json": "6a3694ef195e722570a0eb72e09ce57257550da96fde59fc28af47d6fdc59841",
+    "topk_narrow.py": "7d3cabcdf11212b1714fc78052ff58993583a0801c4d035f57a3cc383afe303c",
+    "topk_order.py": "c16b5d276d94d2377fc62d100a9089afdb53d1a86f6fe0a15fb8b2c0b5aa0c3f",
+    "verify_recorded_results.py": "52c58115365c7186d5f80a8f507604f6831bb9d5d099eaacd57d9fb9a9c067f8"
+  },
+  "validation": {
+    "fixture_files_verified": 400,
+    "recorded_attention_pairs_equal": 60,
+    "recorded_consumer_pairs_equal": 60,
+    "portable_gpu_run_performed": false,
+    "original_topk_runtime_results_available": false
+  }
+}

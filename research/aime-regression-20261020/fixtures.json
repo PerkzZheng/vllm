@@ -1,0 +1,2004 @@
+{
+  "format": "tar.xz",
+  "files": {
+    "consumer-layout/results/group-0/batch3-tokens-32768-layer-00.pt": {
+      "sha256": "2155e5c65fdd9b8ec951956427efd7ddba96e28269c615dca7108a3568e7ca7b",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch3-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/group-0/batch3-tokens-32768-layer-03.pt": {
+      "sha256": "990d05081287a75cf77ce515bf609dade71a8bfec108c77b0908a075b7f9134f",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch3-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/group-0/batch3-tokens-32768-layer-21.pt": {
+      "sha256": "91d6ab583165219605c4747449644cbd771e00601763afc2763f63b8638f24cf",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch3-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/group-0/batch3-tokens-8192-layer-02.pt": {
+      "sha256": "9926514d79164e91d8f93e4ba1709d87ea51b86be6d821a718d8749f749da9a3",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch3-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/group-0/batch3-tokens-8192-layer-20.pt": {
+      "sha256": "b1ab5b4e65a1cc390f1bfe06cc255a8e48d2be5a992361b55cce9448bbcb50a8",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch3-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/group-0/batch30-original-prompts-layer-00.pt": {
+      "sha256": "1ed65726aa8c0ebababf792a236a11d305392ab7d97a706cee2b7bc3f8fc2c24",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch30-original-prompts-layer-00.pt"
+    },
+    "consumer-layout/results/group-0/batch30-original-prompts-layer-03.pt": {
+      "sha256": "5889e192c2f80bb35abfcc20cd0dea2a3c3a5451194d85f2f774faf0a3acb48f",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch30-original-prompts-layer-03.pt"
+    },
+    "consumer-layout/results/group-0/batch30-original-prompts-layer-21.pt": {
+      "sha256": "abd2787e53450ca30f61fa55c0e69f78f37aebfe8f8a10d33b5891aa6b807c9c",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/batch30-original-prompts-layer-21.pt"
+    },
+    "consumer-layout/results/group-0/case-08-tokens-271-layer-02.pt": {
+      "sha256": "19535dfe3059af8dfdf3a73e221886d09d7103ee5c828a7d04b6a2b9d3c66028",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-08-tokens-271-layer-02.pt"
+    },
+    "consumer-layout/results/group-0/case-08-tokens-271-layer-20.pt": {
+      "sha256": "9cac84c2f79bf4af563ea6a82e791a9372d1a0fbad3b568b8a620305608d554e",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-08-tokens-271-layer-20.pt"
+    },
+    "consumer-layout/results/group-0/case-08-tokens-32768-layer-00.pt": {
+      "sha256": "215bcd0f5fba701cb3d13cec55aaeb8d3c672d5c11edc40d8a69536686c50b57",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-08-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/group-0/case-08-tokens-32768-layer-03.pt": {
+      "sha256": "60c94a806504f26fa21efed1074d8d28fee83f46628073e3478118f52e996fab",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-08-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/group-0/case-08-tokens-32768-layer-21.pt": {
+      "sha256": "17fe5b2544fe04fd4463ab0771ceaefcb260fa340cca0751384f8ecad2618336",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-08-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/group-0/case-08-tokens-8192-layer-02.pt": {
+      "sha256": "2cbb6a38ddcab9b367e911329294dfb0099a6d7fb85d4a240452cf19bb3754f8",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-08-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/group-0/case-08-tokens-8192-layer-20.pt": {
+      "sha256": "4ea91080df31bd4f49a67658676ca1fcb2776e2a50f9a408df66ba98d89f18e7",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-08-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-249-layer-00.pt": {
+      "sha256": "fa4c006e02dfc6bbaac74ae80b0908a0dc1f4a3b307f8a7ccd4e415963d4fe75",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-249-layer-00.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-249-layer-03.pt": {
+      "sha256": "257aa1f76585aa9da6c3d9e702dcc651a37934beab0c8cab1012c6dec43df261",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-249-layer-03.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-249-layer-21.pt": {
+      "sha256": "ea36380fa678911381b6a41afc7090656812cbd3452a5cb628ee8a394023bb4e",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-249-layer-21.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-32768-layer-02.pt": {
+      "sha256": "a4dc4a5d3fb9824e97e4d1833ad0155aac9320f08aafdd668b4b268113f32728",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-32768-layer-20.pt": {
+      "sha256": "35ce69b22ae50dde955395c187774c18b96c770b6f1164cd196677bbb564a54a",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-8192-layer-00.pt": {
+      "sha256": "a1f98027607d87263a4ec0ef5924dd2c75c33a6af46295d926f66f5fba3aee43",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-8192-layer-03.pt": {
+      "sha256": "d5114a1d01066f95a0fc1925186b74f9f8962f51b2d5a5b9ff4a3ecb9d3bf19e",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/group-0/case-10-tokens-8192-layer-21.pt": {
+      "sha256": "d41a2972531a3664315c036404449dc8a9dc6a0070229de364cfd02d4d6bfa92",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-10-tokens-8192-layer-21.pt"
+    },
+    "consumer-layout/results/group-0/case-16-tokens-32768-layer-02.pt": {
+      "sha256": "5d4f24b04bbc4220bcea0f30703a96c0d2a26ce531ebe3f26c21e47031ff555d",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-16-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/group-0/case-16-tokens-32768-layer-20.pt": {
+      "sha256": "683b823b0d4706f88952cf59425b7d69387044dbd3002aaf51714759b9423c97",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-16-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/group-0/case-16-tokens-445-layer-00.pt": {
+      "sha256": "506395bcba056946c01b8019c68fe3adf9f19165a86a2ea03fcb603750847d63",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-16-tokens-445-layer-00.pt"
+    },
+    "consumer-layout/results/group-0/case-16-tokens-445-layer-03.pt": {
+      "sha256": "8580bec5b7f802e9685f199dc4c6aa1f69999f3273539e4e6e4d692b4330d3bb",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-16-tokens-445-layer-03.pt"
+    },
+    "consumer-layout/results/group-0/case-16-tokens-445-layer-21.pt": {
+      "sha256": "9dbf1fdd212d5000ead540540f3af7c520858e17a07335a42f884838a65bf285",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-16-tokens-445-layer-21.pt"
+    },
+    "consumer-layout/results/group-0/case-16-tokens-8192-layer-02.pt": {
+      "sha256": "6a73a3801508177e2cd4b5679d916778f17843c6dc653ccf2f5cb6e95f3e5e9a",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-16-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/group-0/case-16-tokens-8192-layer-20.pt": {
+      "sha256": "9cd0c2ad0e986c6f2051bf91f7154f69e827b8d0f257da4d229518ba54c47055",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-0/case-16-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/group-1/batch3-tokens-32768-layer-02.pt": {
+      "sha256": "f4ef9dbb63a36266d69e07063d5876a44c568b083c147c815fb2d8dbd24a0a5d",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/batch3-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/group-1/batch3-tokens-32768-layer-20.pt": {
+      "sha256": "4e935cd3839082960f782c1e503b947d0255301c7323738303f1953665c65518",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/batch3-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/group-1/batch3-tokens-8192-layer-00.pt": {
+      "sha256": "6cef3ad9ad781190dd6822f8f9fc6f55d69a3a95ba895033d4accc9464a74e73",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/batch3-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/group-1/batch3-tokens-8192-layer-03.pt": {
+      "sha256": "b6cf9770db94b22a7d0f718e0bfa4a37f70f3ea8f507fa26aaefb6b9fbf12085",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/batch3-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/group-1/batch3-tokens-8192-layer-21.pt": {
+      "sha256": "22101f96c0b81330d8d36efa2935342b33fb6fe3d8a17577fe05131edc99ebef",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/batch3-tokens-8192-layer-21.pt"
+    },
+    "consumer-layout/results/group-1/batch30-original-prompts-layer-02.pt": {
+      "sha256": "4743221c73bdd2ebdbf00c52d7104b5e45dc6dd9e6053627c1033f6b79a38c97",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/batch30-original-prompts-layer-02.pt"
+    },
+    "consumer-layout/results/group-1/batch30-original-prompts-layer-20.pt": {
+      "sha256": "4683fd9335a9f8a8b7c875ada820f30ec13b9ce4f03fdcc4e8c5818bea913da2",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/batch30-original-prompts-layer-20.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-271-layer-00.pt": {
+      "sha256": "18c090443906be5b5f9badc9daf48159307015ae49f81f5cd27748994d00a49b",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-271-layer-00.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-271-layer-03.pt": {
+      "sha256": "02f5bf79cbf5f37af564953c0b04ecfdb942697113e606824cae32840e032ae4",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-271-layer-03.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-271-layer-21.pt": {
+      "sha256": "91bcbff5a8d845e1681ae97e8e0070db287ac1ad2c8b5225797ab1d6eb1ffbbc",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-271-layer-21.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-32768-layer-02.pt": {
+      "sha256": "cc2f957f4dfe042ac079f6582856b68714bab192930dfcfc95cec7e91b6150a8",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-32768-layer-20.pt": {
+      "sha256": "31c8c04cc23bc9e4c54e7528f08f14934d90186a2fe5ee44f8a3b34c035bb321",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-8192-layer-00.pt": {
+      "sha256": "8c120ca3c004c9106f545731d636fe1a8a1722e0f16581c26d768b8795b89151",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-8192-layer-03.pt": {
+      "sha256": "939e8d06065c8a425de261d108522e6583483d4483ffdb9f5ed6e1e989d47d4e",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/group-1/case-08-tokens-8192-layer-21.pt": {
+      "sha256": "d64383979ef750f6fd38d4df8bd95097207cb49bb775933183363bae76cb796e",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-08-tokens-8192-layer-21.pt"
+    },
+    "consumer-layout/results/group-1/case-10-tokens-249-layer-02.pt": {
+      "sha256": "4ba231de5781e3e204f03802f6623057d1186e0e4bec143ad3ecdca8edf0301c",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-10-tokens-249-layer-02.pt"
+    },
+    "consumer-layout/results/group-1/case-10-tokens-249-layer-20.pt": {
+      "sha256": "f740b352ad6d8bd94dfc190d20a9e0a549ce50513bdca94adfd50c4f072bf2ba",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-10-tokens-249-layer-20.pt"
+    },
+    "consumer-layout/results/group-1/case-10-tokens-32768-layer-00.pt": {
+      "sha256": "836c4568bf1aab3889b0daf5a8824130bbe79b9a33e621fb01a205ed8f67f48d",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-10-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/group-1/case-10-tokens-32768-layer-03.pt": {
+      "sha256": "041a1e3bac10b9b73b7754447538437350d28f731631a0dbc92d453fb3e92f00",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-10-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/group-1/case-10-tokens-32768-layer-21.pt": {
+      "sha256": "c16fe4a731197ada7012906560ac005201e4c56de74c8f1373b2eea222c7dc66",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-10-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/group-1/case-10-tokens-8192-layer-02.pt": {
+      "sha256": "232bff6319aed4fc28cadcf839549b65001cc66db9914cace30b3c35ad2ce298",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-10-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/group-1/case-10-tokens-8192-layer-20.pt": {
+      "sha256": "892a845ebda29940d7c9848d9ec594d7f18036db3c0ca08d80ffb573a7432e86",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-10-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-32768-layer-00.pt": {
+      "sha256": "605defad90aff1c3037685df7a491cf9e795ebbd264f41271667d06e18e7816f",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-32768-layer-03.pt": {
+      "sha256": "b4bebba313481f92a4126904ccfed879c5e15b19132b33656b45a21bfc4b3078",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-32768-layer-21.pt": {
+      "sha256": "fb83aed53d32e281b76e132e637ecf16a03f31969e7b28eeea8c1bd90eb5fa14",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-445-layer-02.pt": {
+      "sha256": "bd45cc610b329764289bd117f1af56d5d7ab7b936852430d9eae087fd6265221",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-445-layer-02.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-445-layer-20.pt": {
+      "sha256": "f76e45bb9033752edccdd76d81a498a8b56f49eb120c95e2a6d0f68fc48557a2",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-445-layer-20.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-8192-layer-00.pt": {
+      "sha256": "87e0c0dc1b3966eef28ed3901b959c6241fb004f821d83694c99cccc52eef4da",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-8192-layer-03.pt": {
+      "sha256": "440cf0179d97979b162d413d563475e17fb53617f6d6c85f3da02676908a88cb",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/group-1/case-16-tokens-8192-layer-21.pt": {
+      "sha256": "2dbfa63cc694a11aafe1de0a5192d75888f7912b0c7debe5cd36201493f56c4d",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/group-1/case-16-tokens-8192-layer-21.pt"
+    },
+    "consumer-layout/results/token-0/batch3-tokens-32768-layer-00.pt": {
+      "sha256": "2155e5c65fdd9b8ec951956427efd7ddba96e28269c615dca7108a3568e7ca7b",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch3-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/token-0/batch3-tokens-32768-layer-03.pt": {
+      "sha256": "990d05081287a75cf77ce515bf609dade71a8bfec108c77b0908a075b7f9134f",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch3-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/token-0/batch3-tokens-32768-layer-21.pt": {
+      "sha256": "91d6ab583165219605c4747449644cbd771e00601763afc2763f63b8638f24cf",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch3-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/token-0/batch3-tokens-8192-layer-02.pt": {
+      "sha256": "9926514d79164e91d8f93e4ba1709d87ea51b86be6d821a718d8749f749da9a3",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch3-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/token-0/batch3-tokens-8192-layer-20.pt": {
+      "sha256": "b1ab5b4e65a1cc390f1bfe06cc255a8e48d2be5a992361b55cce9448bbcb50a8",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch3-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/token-0/batch30-original-prompts-layer-00.pt": {
+      "sha256": "1ed65726aa8c0ebababf792a236a11d305392ab7d97a706cee2b7bc3f8fc2c24",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch30-original-prompts-layer-00.pt"
+    },
+    "consumer-layout/results/token-0/batch30-original-prompts-layer-03.pt": {
+      "sha256": "5889e192c2f80bb35abfcc20cd0dea2a3c3a5451194d85f2f774faf0a3acb48f",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch30-original-prompts-layer-03.pt"
+    },
+    "consumer-layout/results/token-0/batch30-original-prompts-layer-21.pt": {
+      "sha256": "abd2787e53450ca30f61fa55c0e69f78f37aebfe8f8a10d33b5891aa6b807c9c",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/batch30-original-prompts-layer-21.pt"
+    },
+    "consumer-layout/results/token-0/case-08-tokens-271-layer-02.pt": {
+      "sha256": "19535dfe3059af8dfdf3a73e221886d09d7103ee5c828a7d04b6a2b9d3c66028",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-08-tokens-271-layer-02.pt"
+    },
+    "consumer-layout/results/token-0/case-08-tokens-271-layer-20.pt": {
+      "sha256": "9cac84c2f79bf4af563ea6a82e791a9372d1a0fbad3b568b8a620305608d554e",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-08-tokens-271-layer-20.pt"
+    },
+    "consumer-layout/results/token-0/case-08-tokens-32768-layer-00.pt": {
+      "sha256": "215bcd0f5fba701cb3d13cec55aaeb8d3c672d5c11edc40d8a69536686c50b57",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-08-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/token-0/case-08-tokens-32768-layer-03.pt": {
+      "sha256": "60c94a806504f26fa21efed1074d8d28fee83f46628073e3478118f52e996fab",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-08-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/token-0/case-08-tokens-32768-layer-21.pt": {
+      "sha256": "17fe5b2544fe04fd4463ab0771ceaefcb260fa340cca0751384f8ecad2618336",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-08-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/token-0/case-08-tokens-8192-layer-02.pt": {
+      "sha256": "2cbb6a38ddcab9b367e911329294dfb0099a6d7fb85d4a240452cf19bb3754f8",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-08-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/token-0/case-08-tokens-8192-layer-20.pt": {
+      "sha256": "4ea91080df31bd4f49a67658676ca1fcb2776e2a50f9a408df66ba98d89f18e7",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-08-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-249-layer-00.pt": {
+      "sha256": "fa4c006e02dfc6bbaac74ae80b0908a0dc1f4a3b307f8a7ccd4e415963d4fe75",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-249-layer-00.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-249-layer-03.pt": {
+      "sha256": "257aa1f76585aa9da6c3d9e702dcc651a37934beab0c8cab1012c6dec43df261",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-249-layer-03.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-249-layer-21.pt": {
+      "sha256": "ea36380fa678911381b6a41afc7090656812cbd3452a5cb628ee8a394023bb4e",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-249-layer-21.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-32768-layer-02.pt": {
+      "sha256": "a4dc4a5d3fb9824e97e4d1833ad0155aac9320f08aafdd668b4b268113f32728",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-32768-layer-20.pt": {
+      "sha256": "35ce69b22ae50dde955395c187774c18b96c770b6f1164cd196677bbb564a54a",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-8192-layer-00.pt": {
+      "sha256": "a1f98027607d87263a4ec0ef5924dd2c75c33a6af46295d926f66f5fba3aee43",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-8192-layer-03.pt": {
+      "sha256": "d5114a1d01066f95a0fc1925186b74f9f8962f51b2d5a5b9ff4a3ecb9d3bf19e",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/token-0/case-10-tokens-8192-layer-21.pt": {
+      "sha256": "d41a2972531a3664315c036404449dc8a9dc6a0070229de364cfd02d4d6bfa92",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-10-tokens-8192-layer-21.pt"
+    },
+    "consumer-layout/results/token-0/case-16-tokens-32768-layer-02.pt": {
+      "sha256": "5d4f24b04bbc4220bcea0f30703a96c0d2a26ce531ebe3f26c21e47031ff555d",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-16-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/token-0/case-16-tokens-32768-layer-20.pt": {
+      "sha256": "683b823b0d4706f88952cf59425b7d69387044dbd3002aaf51714759b9423c97",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-16-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/token-0/case-16-tokens-445-layer-00.pt": {
+      "sha256": "506395bcba056946c01b8019c68fe3adf9f19165a86a2ea03fcb603750847d63",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-16-tokens-445-layer-00.pt"
+    },
+    "consumer-layout/results/token-0/case-16-tokens-445-layer-03.pt": {
+      "sha256": "8580bec5b7f802e9685f199dc4c6aa1f69999f3273539e4e6e4d692b4330d3bb",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-16-tokens-445-layer-03.pt"
+    },
+    "consumer-layout/results/token-0/case-16-tokens-445-layer-21.pt": {
+      "sha256": "9dbf1fdd212d5000ead540540f3af7c520858e17a07335a42f884838a65bf285",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-16-tokens-445-layer-21.pt"
+    },
+    "consumer-layout/results/token-0/case-16-tokens-8192-layer-02.pt": {
+      "sha256": "6a73a3801508177e2cd4b5679d916778f17843c6dc653ccf2f5cb6e95f3e5e9a",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-16-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/token-0/case-16-tokens-8192-layer-20.pt": {
+      "sha256": "9cd0c2ad0e986c6f2051bf91f7154f69e827b8d0f257da4d229518ba54c47055",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-0/case-16-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/token-1/batch3-tokens-32768-layer-02.pt": {
+      "sha256": "f4ef9dbb63a36266d69e07063d5876a44c568b083c147c815fb2d8dbd24a0a5d",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/batch3-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/token-1/batch3-tokens-32768-layer-20.pt": {
+      "sha256": "4e935cd3839082960f782c1e503b947d0255301c7323738303f1953665c65518",
+      "bytes": 51004,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/batch3-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/token-1/batch3-tokens-8192-layer-00.pt": {
+      "sha256": "6cef3ad9ad781190dd6822f8f9fc6f55d69a3a95ba895033d4accc9464a74e73",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/batch3-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/token-1/batch3-tokens-8192-layer-03.pt": {
+      "sha256": "b6cf9770db94b22a7d0f718e0bfa4a37f70f3ea8f507fa26aaefb6b9fbf12085",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/batch3-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/token-1/batch3-tokens-8192-layer-21.pt": {
+      "sha256": "22101f96c0b81330d8d36efa2935342b33fb6fe3d8a17577fe05131edc99ebef",
+      "bytes": 50997,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/batch3-tokens-8192-layer-21.pt"
+    },
+    "consumer-layout/results/token-1/batch30-original-prompts-layer-02.pt": {
+      "sha256": "4743221c73bdd2ebdbf00c52d7104b5e45dc6dd9e6053627c1033f6b79a38c97",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/batch30-original-prompts-layer-02.pt"
+    },
+    "consumer-layout/results/token-1/batch30-original-prompts-layer-20.pt": {
+      "sha256": "4683fd9335a9f8a8b7c875ada820f30ec13b9ce4f03fdcc4e8c5818bea913da2",
+      "bytes": 493407,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/batch30-original-prompts-layer-20.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-271-layer-00.pt": {
+      "sha256": "18c090443906be5b5f9badc9daf48159307015ae49f81f5cd27748994d00a49b",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-271-layer-00.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-271-layer-03.pt": {
+      "sha256": "02f5bf79cbf5f37af564953c0b04ecfdb942697113e606824cae32840e032ae4",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-271-layer-03.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-271-layer-21.pt": {
+      "sha256": "91bcbff5a8d845e1681ae97e8e0070db287ac1ad2c8b5225797ab1d6eb1ffbbc",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-271-layer-21.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-32768-layer-02.pt": {
+      "sha256": "cc2f957f4dfe042ac079f6582856b68714bab192930dfcfc95cec7e91b6150a8",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-32768-layer-02.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-32768-layer-20.pt": {
+      "sha256": "31c8c04cc23bc9e4c54e7528f08f14934d90186a2fe5ee44f8a3b34c035bb321",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-32768-layer-20.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-8192-layer-00.pt": {
+      "sha256": "8c120ca3c004c9106f545731d636fe1a8a1722e0f16581c26d768b8795b89151",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-8192-layer-03.pt": {
+      "sha256": "939e8d06065c8a425de261d108522e6583483d4483ffdb9f5ed6e1e989d47d4e",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/token-1/case-08-tokens-8192-layer-21.pt": {
+      "sha256": "d64383979ef750f6fd38d4df8bd95097207cb49bb775933183363bae76cb796e",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-08-tokens-8192-layer-21.pt"
+    },
+    "consumer-layout/results/token-1/case-10-tokens-249-layer-02.pt": {
+      "sha256": "4ba231de5781e3e204f03802f6623057d1186e0e4bec143ad3ecdca8edf0301c",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-10-tokens-249-layer-02.pt"
+    },
+    "consumer-layout/results/token-1/case-10-tokens-249-layer-20.pt": {
+      "sha256": "f740b352ad6d8bd94dfc190d20a9e0a549ce50513bdca94adfd50c4f072bf2ba",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-10-tokens-249-layer-20.pt"
+    },
+    "consumer-layout/results/token-1/case-10-tokens-32768-layer-00.pt": {
+      "sha256": "836c4568bf1aab3889b0daf5a8824130bbe79b9a33e621fb01a205ed8f67f48d",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-10-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/token-1/case-10-tokens-32768-layer-03.pt": {
+      "sha256": "041a1e3bac10b9b73b7754447538437350d28f731631a0dbc92d453fb3e92f00",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-10-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/token-1/case-10-tokens-32768-layer-21.pt": {
+      "sha256": "c16fe4a731197ada7012906560ac005201e4c56de74c8f1373b2eea222c7dc66",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-10-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/token-1/case-10-tokens-8192-layer-02.pt": {
+      "sha256": "232bff6319aed4fc28cadcf839549b65001cc66db9914cace30b3c35ad2ce298",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-10-tokens-8192-layer-02.pt"
+    },
+    "consumer-layout/results/token-1/case-10-tokens-8192-layer-20.pt": {
+      "sha256": "892a845ebda29940d7c9848d9ec594d7f18036db3c0ca08d80ffb573a7432e86",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-10-tokens-8192-layer-20.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-32768-layer-00.pt": {
+      "sha256": "605defad90aff1c3037685df7a491cf9e795ebbd264f41271667d06e18e7816f",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-32768-layer-00.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-32768-layer-03.pt": {
+      "sha256": "b4bebba313481f92a4126904ccfed879c5e15b19132b33656b45a21bfc4b3078",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-32768-layer-03.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-32768-layer-21.pt": {
+      "sha256": "fb83aed53d32e281b76e132e637ecf16a03f31969e7b28eeea8c1bd90eb5fa14",
+      "bytes": 18243,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-32768-layer-21.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-445-layer-02.pt": {
+      "sha256": "bd45cc610b329764289bd117f1af56d5d7ab7b936852430d9eae087fd6265221",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-445-layer-02.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-445-layer-20.pt": {
+      "sha256": "f76e45bb9033752edccdd76d81a498a8b56f49eb120c95e2a6d0f68fc48557a2",
+      "bytes": 18229,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-445-layer-20.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-8192-layer-00.pt": {
+      "sha256": "87e0c0dc1b3966eef28ed3901b959c6241fb004f821d83694c99cccc52eef4da",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-8192-layer-00.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-8192-layer-03.pt": {
+      "sha256": "440cf0179d97979b162d413d563475e17fb53617f6d6c85f3da02676908a88cb",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-8192-layer-03.pt"
+    },
+    "consumer-layout/results/token-1/case-16-tokens-8192-layer-21.pt": {
+      "sha256": "2dbfa63cc694a11aafe1de0a5192d75888f7912b0c7debe5cd36201493f56c4d",
+      "bytes": 18236,
+      "original": "research/aime-regression-20261020/consumer-layout/results/token-1/case-16-tokens-8192-layer-21.pt"
+    },
+    "replays/current/batch3-tokens-32768-layer-00.pt": {
+      "sha256": "cbeea08c1a60a6e17f6a693093a211bfd71f9109d23cfc9f7e5ce78923816400",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-32768-layer-00.pt"
+    },
+    "replays/current/batch3-tokens-32768-layer-02.pt": {
+      "sha256": "68b04d5c9c65ce331ebcd80c4c2214750964844e1b4421e0837ff41b7e74e3a6",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-32768-layer-02.pt"
+    },
+    "replays/current/batch3-tokens-32768-layer-03.pt": {
+      "sha256": "a6e6b2087d3dd8712714efd80aa2eea772c056715798c1e6683d3dc3f112e7e6",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-32768-layer-03.pt"
+    },
+    "replays/current/batch3-tokens-32768-layer-20.pt": {
+      "sha256": "1062d90c7a082ec5620a9b6863ac01769ec6c403e3118c2f0958c69b15bc6c94",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-32768-layer-20.pt"
+    },
+    "replays/current/batch3-tokens-32768-layer-21.pt": {
+      "sha256": "7a4987b848e5253fb5387c34282749d257149cd17ed928ed6ea4e8f4f53cec50",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-32768-layer-21.pt"
+    },
+    "replays/current/batch3-tokens-8192-layer-00.pt": {
+      "sha256": "78e5648ada66d3accf06a8ed07c03bc53b69c47cd7631b811f80483dcfd63f4d",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-8192-layer-00.pt"
+    },
+    "replays/current/batch3-tokens-8192-layer-02.pt": {
+      "sha256": "1b17507c71eab2b850b1a009fda7f6ec5936d2cd9a6fa0281580c73ff2bfe140",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-8192-layer-02.pt"
+    },
+    "replays/current/batch3-tokens-8192-layer-03.pt": {
+      "sha256": "beff4bae4e3da5b1dabd2ad278bfce79e89dc0f0c49e731aa61b8480f4a35683",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-8192-layer-03.pt"
+    },
+    "replays/current/batch3-tokens-8192-layer-20.pt": {
+      "sha256": "575fb2689f0d20feae663f1a33d844ea0b5d5619c9f432f9c5b0256212b55f59",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-8192-layer-20.pt"
+    },
+    "replays/current/batch3-tokens-8192-layer-21.pt": {
+      "sha256": "f769134b1e8f32d88cfe6a877ca995fab0b21c2dc3643d414a97c814b355a620",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/current/batch3-tokens-8192-layer-21.pt"
+    },
+    "replays/current/batch30-original-prompts-layer-00.pt": {
+      "sha256": "69453fea17a3bcd6f5865af30a3bbaf63294546a9aac1ac19226c6036d748258",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/current/batch30-original-prompts-layer-00.pt"
+    },
+    "replays/current/batch30-original-prompts-layer-02.pt": {
+      "sha256": "354fe9b0020be53abed88bff304de0123fa7e55734f047cbfba794c444af0648",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/current/batch30-original-prompts-layer-02.pt"
+    },
+    "replays/current/batch30-original-prompts-layer-03.pt": {
+      "sha256": "08f2bb84914b88d0b291d4b0ae4f1a4cc1efc1dbd2419d574dbe613532e40538",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/current/batch30-original-prompts-layer-03.pt"
+    },
+    "replays/current/batch30-original-prompts-layer-20.pt": {
+      "sha256": "0a9c8a716019881ea680dce982f4e8afb32b21bbc0bb571aa9dea05410030228",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/current/batch30-original-prompts-layer-20.pt"
+    },
+    "replays/current/batch30-original-prompts-layer-21.pt": {
+      "sha256": "a07424b96a1a83dcb664437b86171dee8f65f71a07b40a33964cdeff2932e40d",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/current/batch30-original-prompts-layer-21.pt"
+    },
+    "replays/current/case-08-tokens-271-layer-00.pt": {
+      "sha256": "92fef5d3b777ec2b32af59b9af1b6d66a4497bb838bf3b122b41238c1d88db40",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-271-layer-00.pt"
+    },
+    "replays/current/case-08-tokens-271-layer-02.pt": {
+      "sha256": "1b198e4c2e2c27990924b7b4b964ceb45c32b498274b8ab210c2c28a0776dc34",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-271-layer-02.pt"
+    },
+    "replays/current/case-08-tokens-271-layer-03.pt": {
+      "sha256": "31a0b8a82598ba1cc0949213017d318ec9b25be90a17b4e2be4dc08e03bdecba",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-271-layer-03.pt"
+    },
+    "replays/current/case-08-tokens-271-layer-20.pt": {
+      "sha256": "256df4e3317dd5fcca69b58140fe52ca58f09a626e8d2198c7ad29792f283a5b",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-271-layer-20.pt"
+    },
+    "replays/current/case-08-tokens-271-layer-21.pt": {
+      "sha256": "059dbf5efc27a47355e622b8eb506c9a53b3170e5f2b03933ca68540d158e9b2",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-271-layer-21.pt"
+    },
+    "replays/current/case-08-tokens-32768-layer-00.pt": {
+      "sha256": "a960a72050b307e23ec8009953e848e13b0573b90be827d2c14d438211179e86",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-32768-layer-00.pt"
+    },
+    "replays/current/case-08-tokens-32768-layer-02.pt": {
+      "sha256": "f5d5eca6107ad51fc2f6d057baa7da720c02c598439137479dcf3cf73c770905",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-32768-layer-02.pt"
+    },
+    "replays/current/case-08-tokens-32768-layer-03.pt": {
+      "sha256": "3e568fd1d98b75b4568864cd6fe9db9a508a484fa73714f7b4cf664aea487c40",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-32768-layer-03.pt"
+    },
+    "replays/current/case-08-tokens-32768-layer-20.pt": {
+      "sha256": "71f40b060e35a46441e130fd3f94bf1c54c35c1fa67c319138d86f8d650fc742",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-32768-layer-20.pt"
+    },
+    "replays/current/case-08-tokens-32768-layer-21.pt": {
+      "sha256": "761cf23fbbf0e447f7dbc87eb00e067b654b0e523ce176caeb499c519c1422b0",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-32768-layer-21.pt"
+    },
+    "replays/current/case-08-tokens-8192-layer-00.pt": {
+      "sha256": "41312b8c19602ed4770b9bf98128a4f460eaed8136b9eb9a3fe9e9818926d25a",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-8192-layer-00.pt"
+    },
+    "replays/current/case-08-tokens-8192-layer-02.pt": {
+      "sha256": "3c14dce6505ddc8b4e8b0c2109e0d8154eaf1f4aa0e4bf183bec6ff4d08394ea",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-8192-layer-02.pt"
+    },
+    "replays/current/case-08-tokens-8192-layer-03.pt": {
+      "sha256": "f801db90a24d8424e5b4472faae63bfa0149acde32e1eae39fa40635503aee0b",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-8192-layer-03.pt"
+    },
+    "replays/current/case-08-tokens-8192-layer-20.pt": {
+      "sha256": "70ce4a635fa32063cd9ea0620742f51fc8bfaab586c4a5c57a43879a0a826733",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-8192-layer-20.pt"
+    },
+    "replays/current/case-08-tokens-8192-layer-21.pt": {
+      "sha256": "bd06e8f316b1947a8ae9f69a02a146cba540b345a9775f021353266355dae020",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-08-tokens-8192-layer-21.pt"
+    },
+    "replays/current/case-10-tokens-249-layer-00.pt": {
+      "sha256": "d2377ea666322eac8e06ae9ad80b3644b71bd438f1227b4a840f446352e44542",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-249-layer-00.pt"
+    },
+    "replays/current/case-10-tokens-249-layer-02.pt": {
+      "sha256": "18722e9f8488295f33fca5634b91fdcf3761d587bd9719c59f170095a1970003",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-249-layer-02.pt"
+    },
+    "replays/current/case-10-tokens-249-layer-03.pt": {
+      "sha256": "07edabdee0a5e47f5336b78897570c50a39560c00a965c24b70495b68a47ac92",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-249-layer-03.pt"
+    },
+    "replays/current/case-10-tokens-249-layer-20.pt": {
+      "sha256": "efdc5543cf080bb373b31b6988972ed98a92b8ab458c82d09948022bb0ee41a5",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-249-layer-20.pt"
+    },
+    "replays/current/case-10-tokens-249-layer-21.pt": {
+      "sha256": "5f080db458e2e07b82ddeb07051c6654aab072bfff7113250c39dab2223316d8",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-249-layer-21.pt"
+    },
+    "replays/current/case-10-tokens-32768-layer-00.pt": {
+      "sha256": "e9a6204af1a8fccb8cf892ad8acfbca7191dbffd3745c7059b2e4969bafa98b2",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-32768-layer-00.pt"
+    },
+    "replays/current/case-10-tokens-32768-layer-02.pt": {
+      "sha256": "648752a15a4eafef0d02cc5262700ee3dfb6f5f8d458f40c3e0d001ceeed7d35",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-32768-layer-02.pt"
+    },
+    "replays/current/case-10-tokens-32768-layer-03.pt": {
+      "sha256": "567851531dabae3e2a14f069576e0c25ea820bf341af0604bf9ca6101bd4f0d2",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-32768-layer-03.pt"
+    },
+    "replays/current/case-10-tokens-32768-layer-20.pt": {
+      "sha256": "6d3e27095de8815103d3a044e5085db1ad5df0aafadf6fee81b0ad09d46ad1ee",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-32768-layer-20.pt"
+    },
+    "replays/current/case-10-tokens-32768-layer-21.pt": {
+      "sha256": "a45423886d9e2d98f5d63781c74294008492a0c91e22862a41d9428ff5269beb",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-32768-layer-21.pt"
+    },
+    "replays/current/case-10-tokens-8192-layer-00.pt": {
+      "sha256": "b24212f3a0080dbc870b9e71e23c71b4ef0ac0a920551654d583b47b0d7cd487",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-8192-layer-00.pt"
+    },
+    "replays/current/case-10-tokens-8192-layer-02.pt": {
+      "sha256": "dd38bc5907000123225415621677a010e104fbe1d9d682e45c4ba89d101074a5",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-8192-layer-02.pt"
+    },
+    "replays/current/case-10-tokens-8192-layer-03.pt": {
+      "sha256": "853d63f9b9c3097f23b518d02f1c2bee6dbb051c361791cf555fd7e2c9803237",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-8192-layer-03.pt"
+    },
+    "replays/current/case-10-tokens-8192-layer-20.pt": {
+      "sha256": "32b6eba990a4fb6d86e9ec62d3fea6ec379a09336e6d163d038d0480756a2dcd",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-8192-layer-20.pt"
+    },
+    "replays/current/case-10-tokens-8192-layer-21.pt": {
+      "sha256": "3d9e143dbb8e9935ebe231dda040d7583eaaabf9c5823f0e2a7286de99261571",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-10-tokens-8192-layer-21.pt"
+    },
+    "replays/current/case-16-tokens-32768-layer-00.pt": {
+      "sha256": "c5c45c7002352349e9d073dc18700687ff479c79be5cb4ee2559d5966b4f633d",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-32768-layer-00.pt"
+    },
+    "replays/current/case-16-tokens-32768-layer-02.pt": {
+      "sha256": "0aad7c6e63641bffd44048d19dc73d5c2c5eb0f71461ab42216b77ac088cdb22",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-32768-layer-02.pt"
+    },
+    "replays/current/case-16-tokens-32768-layer-03.pt": {
+      "sha256": "4501298e27b108649dbb010fefc7b3638bd335118911a5c1c714d458e1697fa3",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-32768-layer-03.pt"
+    },
+    "replays/current/case-16-tokens-32768-layer-20.pt": {
+      "sha256": "9d9e2aaf77910a66f1649b742a4a8831e80b324f2a368de133152718d49a330c",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-32768-layer-20.pt"
+    },
+    "replays/current/case-16-tokens-32768-layer-21.pt": {
+      "sha256": "0784fb9b28dc7a08d114f114856a88c6517a9b500f504aa0498a744a3840b1c2",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-32768-layer-21.pt"
+    },
+    "replays/current/case-16-tokens-445-layer-00.pt": {
+      "sha256": "9e450a079d79a02174f74f0007745e2e53a554a9762f3b8ad610cec3becbc563",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-445-layer-00.pt"
+    },
+    "replays/current/case-16-tokens-445-layer-02.pt": {
+      "sha256": "f50f40f2b90243333062f7a9c7c13786cac8032de8939a31499e9f580ba7dbff",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-445-layer-02.pt"
+    },
+    "replays/current/case-16-tokens-445-layer-03.pt": {
+      "sha256": "7a857521c50d8f127854465efc12d19adeba11a973094e9db661b618ab2090d4",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-445-layer-03.pt"
+    },
+    "replays/current/case-16-tokens-445-layer-20.pt": {
+      "sha256": "4da02c0a8a69d8690bf508e63b7e53312a4d4fe96b4166d93a942368d87063e6",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-445-layer-20.pt"
+    },
+    "replays/current/case-16-tokens-445-layer-21.pt": {
+      "sha256": "3e74a025198f6b501840ede3d2b294d647250cc8462a39434f20ae6b4d5e9231",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-445-layer-21.pt"
+    },
+    "replays/current/case-16-tokens-8192-layer-00.pt": {
+      "sha256": "3a91796f998999d49ea1ca80fc796bc265009385c6b7eac48a3eb2f3f2cd5b4d",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-8192-layer-00.pt"
+    },
+    "replays/current/case-16-tokens-8192-layer-02.pt": {
+      "sha256": "1b0f88968382c41471bfdd4b4a307a33c41eed5cd84984ba76acf80559bbbe01",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-8192-layer-02.pt"
+    },
+    "replays/current/case-16-tokens-8192-layer-03.pt": {
+      "sha256": "6dac5ae75c4f79a5c935b6f10b77e5247f5fcd34bad7f3ff08896ab879241352",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-8192-layer-03.pt"
+    },
+    "replays/current/case-16-tokens-8192-layer-20.pt": {
+      "sha256": "1c121c8e32f322b94c39ce1e44fb0877b55f4d3cec45d5dad0ff80e36b87f37c",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-8192-layer-20.pt"
+    },
+    "replays/current/case-16-tokens-8192-layer-21.pt": {
+      "sha256": "eef8d54af7ce0fb493f2233ededbdeca6d31edadd71a3bb2e24fdf9ae4d0ae56",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/current/case-16-tokens-8192-layer-21.pt"
+    },
+    "replays/historical/batch3-tokens-32768-layer-00.pt": {
+      "sha256": "cbeea08c1a60a6e17f6a693093a211bfd71f9109d23cfc9f7e5ce78923816400",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-32768-layer-00.pt"
+    },
+    "replays/historical/batch3-tokens-32768-layer-02.pt": {
+      "sha256": "68b04d5c9c65ce331ebcd80c4c2214750964844e1b4421e0837ff41b7e74e3a6",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-32768-layer-02.pt"
+    },
+    "replays/historical/batch3-tokens-32768-layer-03.pt": {
+      "sha256": "a6e6b2087d3dd8712714efd80aa2eea772c056715798c1e6683d3dc3f112e7e6",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-32768-layer-03.pt"
+    },
+    "replays/historical/batch3-tokens-32768-layer-20.pt": {
+      "sha256": "1062d90c7a082ec5620a9b6863ac01769ec6c403e3118c2f0958c69b15bc6c94",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-32768-layer-20.pt"
+    },
+    "replays/historical/batch3-tokens-32768-layer-21.pt": {
+      "sha256": "7a4987b848e5253fb5387c34282749d257149cd17ed928ed6ea4e8f4f53cec50",
+      "bytes": 299247,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-32768-layer-21.pt"
+    },
+    "replays/historical/batch3-tokens-8192-layer-00.pt": {
+      "sha256": "78e5648ada66d3accf06a8ed07c03bc53b69c47cd7631b811f80483dcfd63f4d",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-8192-layer-00.pt"
+    },
+    "replays/historical/batch3-tokens-8192-layer-02.pt": {
+      "sha256": "1b17507c71eab2b850b1a009fda7f6ec5936d2cd9a6fa0281580c73ff2bfe140",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-8192-layer-02.pt"
+    },
+    "replays/historical/batch3-tokens-8192-layer-03.pt": {
+      "sha256": "beff4bae4e3da5b1dabd2ad278bfce79e89dc0f0c49e731aa61b8480f4a35683",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-8192-layer-03.pt"
+    },
+    "replays/historical/batch3-tokens-8192-layer-20.pt": {
+      "sha256": "575fb2689f0d20feae663f1a33d844ea0b5d5619c9f432f9c5b0256212b55f59",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-8192-layer-20.pt"
+    },
+    "replays/historical/batch3-tokens-8192-layer-21.pt": {
+      "sha256": "f769134b1e8f32d88cfe6a877ca995fab0b21c2dc3643d414a97c814b355a620",
+      "bytes": 299237,
+      "original": "research/aime-regression-20261020/replays/historical/batch3-tokens-8192-layer-21.pt"
+    },
+    "replays/historical/batch30-original-prompts-layer-00.pt": {
+      "sha256": "69453fea17a3bcd6f5865af30a3bbaf63294546a9aac1ac19226c6036d748258",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/historical/batch30-original-prompts-layer-00.pt"
+    },
+    "replays/historical/batch30-original-prompts-layer-02.pt": {
+      "sha256": "354fe9b0020be53abed88bff304de0123fa7e55734f047cbfba794c444af0648",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/historical/batch30-original-prompts-layer-02.pt"
+    },
+    "replays/historical/batch30-original-prompts-layer-03.pt": {
+      "sha256": "08f2bb84914b88d0b291d4b0ae4f1a4cc1efc1dbd2419d574dbe613532e40538",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/historical/batch30-original-prompts-layer-03.pt"
+    },
+    "replays/historical/batch30-original-prompts-layer-20.pt": {
+      "sha256": "0a9c8a716019881ea680dce982f4e8afb32b21bbc0bb571aa9dea05410030228",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/historical/batch30-original-prompts-layer-20.pt"
+    },
+    "replays/historical/batch30-original-prompts-layer-21.pt": {
+      "sha256": "a07424b96a1a83dcb664437b86171dee8f65f71a07b40a33964cdeff2932e40d",
+      "bytes": 2967393,
+      "original": "research/aime-regression-20261020/replays/historical/batch30-original-prompts-layer-21.pt"
+    },
+    "replays/historical/case-08-tokens-271-layer-00.pt": {
+      "sha256": "92fef5d3b777ec2b32af59b9af1b6d66a4497bb838bf3b122b41238c1d88db40",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-271-layer-00.pt"
+    },
+    "replays/historical/case-08-tokens-271-layer-02.pt": {
+      "sha256": "1b198e4c2e2c27990924b7b4b964ceb45c32b498274b8ab210c2c28a0776dc34",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-271-layer-02.pt"
+    },
+    "replays/historical/case-08-tokens-271-layer-03.pt": {
+      "sha256": "31a0b8a82598ba1cc0949213017d318ec9b25be90a17b4e2be4dc08e03bdecba",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-271-layer-03.pt"
+    },
+    "replays/historical/case-08-tokens-271-layer-20.pt": {
+      "sha256": "256df4e3317dd5fcca69b58140fe52ca58f09a626e8d2198c7ad29792f283a5b",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-271-layer-20.pt"
+    },
+    "replays/historical/case-08-tokens-271-layer-21.pt": {
+      "sha256": "059dbf5efc27a47355e622b8eb506c9a53b3170e5f2b03933ca68540d158e9b2",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-271-layer-21.pt"
+    },
+    "replays/historical/case-08-tokens-32768-layer-00.pt": {
+      "sha256": "a960a72050b307e23ec8009953e848e13b0573b90be827d2c14d438211179e86",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-32768-layer-00.pt"
+    },
+    "replays/historical/case-08-tokens-32768-layer-02.pt": {
+      "sha256": "f5d5eca6107ad51fc2f6d057baa7da720c02c598439137479dcf3cf73c770905",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-32768-layer-02.pt"
+    },
+    "replays/historical/case-08-tokens-32768-layer-03.pt": {
+      "sha256": "3e568fd1d98b75b4568864cd6fe9db9a508a484fa73714f7b4cf664aea487c40",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-32768-layer-03.pt"
+    },
+    "replays/historical/case-08-tokens-32768-layer-20.pt": {
+      "sha256": "71f40b060e35a46441e130fd3f94bf1c54c35c1fa67c319138d86f8d650fc742",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-32768-layer-20.pt"
+    },
+    "replays/historical/case-08-tokens-32768-layer-21.pt": {
+      "sha256": "761cf23fbbf0e447f7dbc87eb00e067b654b0e523ce176caeb499c519c1422b0",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-32768-layer-21.pt"
+    },
+    "replays/historical/case-08-tokens-8192-layer-00.pt": {
+      "sha256": "41312b8c19602ed4770b9bf98128a4f460eaed8136b9eb9a3fe9e9818926d25a",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-8192-layer-00.pt"
+    },
+    "replays/historical/case-08-tokens-8192-layer-02.pt": {
+      "sha256": "3c14dce6505ddc8b4e8b0c2109e0d8154eaf1f4aa0e4bf183bec6ff4d08394ea",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-8192-layer-02.pt"
+    },
+    "replays/historical/case-08-tokens-8192-layer-03.pt": {
+      "sha256": "f801db90a24d8424e5b4472faae63bfa0149acde32e1eae39fa40635503aee0b",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-8192-layer-03.pt"
+    },
+    "replays/historical/case-08-tokens-8192-layer-20.pt": {
+      "sha256": "70ce4a635fa32063cd9ea0620742f51fc8bfaab586c4a5c57a43879a0a826733",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-8192-layer-20.pt"
+    },
+    "replays/historical/case-08-tokens-8192-layer-21.pt": {
+      "sha256": "bd06e8f316b1947a8ae9f69a02a146cba540b345a9775f021353266355dae020",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-08-tokens-8192-layer-21.pt"
+    },
+    "replays/historical/case-10-tokens-249-layer-00.pt": {
+      "sha256": "d2377ea666322eac8e06ae9ad80b3644b71bd438f1227b4a840f446352e44542",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-249-layer-00.pt"
+    },
+    "replays/historical/case-10-tokens-249-layer-02.pt": {
+      "sha256": "18722e9f8488295f33fca5634b91fdcf3761d587bd9719c59f170095a1970003",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-249-layer-02.pt"
+    },
+    "replays/historical/case-10-tokens-249-layer-03.pt": {
+      "sha256": "07edabdee0a5e47f5336b78897570c50a39560c00a965c24b70495b68a47ac92",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-249-layer-03.pt"
+    },
+    "replays/historical/case-10-tokens-249-layer-20.pt": {
+      "sha256": "efdc5543cf080bb373b31b6988972ed98a92b8ab458c82d09948022bb0ee41a5",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-249-layer-20.pt"
+    },
+    "replays/historical/case-10-tokens-249-layer-21.pt": {
+      "sha256": "5f080db458e2e07b82ddeb07051c6654aab072bfff7113250c39dab2223316d8",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-249-layer-21.pt"
+    },
+    "replays/historical/case-10-tokens-32768-layer-00.pt": {
+      "sha256": "e9a6204af1a8fccb8cf892ad8acfbca7191dbffd3745c7059b2e4969bafa98b2",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-32768-layer-00.pt"
+    },
+    "replays/historical/case-10-tokens-32768-layer-02.pt": {
+      "sha256": "648752a15a4eafef0d02cc5262700ee3dfb6f5f8d458f40c3e0d001ceeed7d35",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-32768-layer-02.pt"
+    },
+    "replays/historical/case-10-tokens-32768-layer-03.pt": {
+      "sha256": "567851531dabae3e2a14f069576e0c25ea820bf341af0604bf9ca6101bd4f0d2",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-32768-layer-03.pt"
+    },
+    "replays/historical/case-10-tokens-32768-layer-20.pt": {
+      "sha256": "6d3e27095de8815103d3a044e5085db1ad5df0aafadf6fee81b0ad09d46ad1ee",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-32768-layer-20.pt"
+    },
+    "replays/historical/case-10-tokens-32768-layer-21.pt": {
+      "sha256": "a45423886d9e2d98f5d63781c74294008492a0c91e22862a41d9428ff5269beb",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-32768-layer-21.pt"
+    },
+    "replays/historical/case-10-tokens-8192-layer-00.pt": {
+      "sha256": "b24212f3a0080dbc870b9e71e23c71b4ef0ac0a920551654d583b47b0d7cd487",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-8192-layer-00.pt"
+    },
+    "replays/historical/case-10-tokens-8192-layer-02.pt": {
+      "sha256": "dd38bc5907000123225415621677a010e104fbe1d9d682e45c4ba89d101074a5",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-8192-layer-02.pt"
+    },
+    "replays/historical/case-10-tokens-8192-layer-03.pt": {
+      "sha256": "853d63f9b9c3097f23b518d02f1c2bee6dbb051c361791cf555fd7e2c9803237",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-8192-layer-03.pt"
+    },
+    "replays/historical/case-10-tokens-8192-layer-20.pt": {
+      "sha256": "32b6eba990a4fb6d86e9ec62d3fea6ec379a09336e6d163d038d0480756a2dcd",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-8192-layer-20.pt"
+    },
+    "replays/historical/case-10-tokens-8192-layer-21.pt": {
+      "sha256": "3d9e143dbb8e9935ebe231dda040d7583eaaabf9c5823f0e2a7286de99261571",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-10-tokens-8192-layer-21.pt"
+    },
+    "replays/historical/case-16-tokens-32768-layer-00.pt": {
+      "sha256": "c5c45c7002352349e9d073dc18700687ff479c79be5cb4ee2559d5966b4f633d",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-32768-layer-00.pt"
+    },
+    "replays/historical/case-16-tokens-32768-layer-02.pt": {
+      "sha256": "0aad7c6e63641bffd44048d19dc73d5c2c5eb0f71461ab42216b77ac088cdb22",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-32768-layer-02.pt"
+    },
+    "replays/historical/case-16-tokens-32768-layer-03.pt": {
+      "sha256": "4501298e27b108649dbb010fefc7b3638bd335118911a5c1c714d458e1697fa3",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-32768-layer-03.pt"
+    },
+    "replays/historical/case-16-tokens-32768-layer-20.pt": {
+      "sha256": "9d9e2aaf77910a66f1649b742a4a8831e80b324f2a368de133152718d49a330c",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-32768-layer-20.pt"
+    },
+    "replays/historical/case-16-tokens-32768-layer-21.pt": {
+      "sha256": "0784fb9b28dc7a08d114f114856a88c6517a9b500f504aa0498a744a3840b1c2",
+      "bytes": 101625,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-32768-layer-21.pt"
+    },
+    "replays/historical/case-16-tokens-445-layer-00.pt": {
+      "sha256": "9e450a079d79a02174f74f0007745e2e53a554a9762f3b8ad610cec3becbc563",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-445-layer-00.pt"
+    },
+    "replays/historical/case-16-tokens-445-layer-02.pt": {
+      "sha256": "f50f40f2b90243333062f7a9c7c13786cac8032de8939a31499e9f580ba7dbff",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-445-layer-02.pt"
+    },
+    "replays/historical/case-16-tokens-445-layer-03.pt": {
+      "sha256": "7a857521c50d8f127854465efc12d19adeba11a973094e9db661b618ab2090d4",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-445-layer-03.pt"
+    },
+    "replays/historical/case-16-tokens-445-layer-20.pt": {
+      "sha256": "4da02c0a8a69d8690bf508e63b7e53312a4d4fe96b4166d93a942368d87063e6",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-445-layer-20.pt"
+    },
+    "replays/historical/case-16-tokens-445-layer-21.pt": {
+      "sha256": "3e74a025198f6b501840ede3d2b294d647250cc8462a39434f20ae6b4d5e9231",
+      "bytes": 101605,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-445-layer-21.pt"
+    },
+    "replays/historical/case-16-tokens-8192-layer-00.pt": {
+      "sha256": "3a91796f998999d49ea1ca80fc796bc265009385c6b7eac48a3eb2f3f2cd5b4d",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-8192-layer-00.pt"
+    },
+    "replays/historical/case-16-tokens-8192-layer-02.pt": {
+      "sha256": "1b0f88968382c41471bfdd4b4a307a33c41eed5cd84984ba76acf80559bbbe01",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-8192-layer-02.pt"
+    },
+    "replays/historical/case-16-tokens-8192-layer-03.pt": {
+      "sha256": "6dac5ae75c4f79a5c935b6f10b77e5247f5fcd34bad7f3ff08896ab879241352",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-8192-layer-03.pt"
+    },
+    "replays/historical/case-16-tokens-8192-layer-20.pt": {
+      "sha256": "1c121c8e32f322b94c39ce1e44fb0877b55f4d3cec45d5dad0ff80e36b87f37c",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-8192-layer-20.pt"
+    },
+    "replays/historical/case-16-tokens-8192-layer-21.pt": {
+      "sha256": "eef8d54af7ce0fb493f2233ededbdeca6d31edadd71a3bb2e24fdf9ae4d0ae56",
+      "bytes": 101615,
+      "original": "research/aime-regression-20261020/replays/historical/case-16-tokens-8192-layer-21.pt"
+    },
+    "snapshots/batch3-tokens-32768/layer-00.pt": {
+      "sha256": "d7568369f3527a09a4bf216b1f2209561d290ee50bc3758099dfdc05f1ae3793",
+      "bytes": 8792533,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-32768/layer-00.pt"
+    },
+    "snapshots/batch3-tokens-32768/layer-02.pt": {
+      "sha256": "db488a1351ee5a15d29d190db9c201a6c8c5485f8ef28a8e3559806a84ec0539",
+      "bytes": 9598477,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-32768/layer-02.pt"
+    },
+    "snapshots/batch3-tokens-32768/layer-03.pt": {
+      "sha256": "4c3dafa65518dfe95afb25fd7b04f52bb726ee58da34de3341a14631d55e7ba1",
+      "bytes": 9196045,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-32768/layer-03.pt"
+    },
+    "snapshots/batch3-tokens-32768/layer-20.pt": {
+      "sha256": "511c966113fcf6a3ed0a9ee02f9d8d08dcc2947a0e6b4ed6040bf5f3cf239b1d",
+      "bytes": 9598477,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-32768/layer-20.pt"
+    },
+    "snapshots/batch3-tokens-32768/layer-21.pt": {
+      "sha256": "9fce645e33d7664520c815b5f279fd75154c8b03e38f96cc62693894e355ca45",
+      "bytes": 9196045,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-32768/layer-21.pt"
+    },
+    "snapshots/batch3-tokens-8192/layer-00.pt": {
+      "sha256": "312f21c160b819a9d1e706b650e5d8662d43bcf2a19731154b586662d02c8430",
+      "bytes": 2501077,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-8192/layer-00.pt"
+    },
+    "snapshots/batch3-tokens-8192/layer-02.pt": {
+      "sha256": "98979c9fb4813674e659e029ca0669e88671a8fac5d1e2cff3335b68b9810fbe",
+      "bytes": 3307021,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-8192/layer-02.pt"
+    },
+    "snapshots/batch3-tokens-8192/layer-03.pt": {
+      "sha256": "b51cb95a02578adae46e9aeeeddce2114139ae5bbd4c4bb697fce251f439c864",
+      "bytes": 2603533,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-8192/layer-03.pt"
+    },
+    "snapshots/batch3-tokens-8192/layer-20.pt": {
+      "sha256": "c8e5ce1615511aaaebd0c7d86edea8fe07282cc3425d7127ffefd46f2dc4d48e",
+      "bytes": 3307021,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-8192/layer-20.pt"
+    },
+    "snapshots/batch3-tokens-8192/layer-21.pt": {
+      "sha256": "adae71e4f52dc86a31cd83c8dfe92bed84623e6eb4f1783f40095962a68cf842",
+      "bytes": 2603533,
+      "original": "research/aime-regression-20261020/snapshots/batch3-tokens-8192/layer-21.pt"
+    },
+    "snapshots/batch30-original-prompts/layer-00.pt": {
+      "sha256": "75a529a88171993252cdfeb5e30e2e9caeed57b939eb37a9df4a9733ed88d561",
+      "bytes": 4105429,
+      "original": "research/aime-regression-20261020/snapshots/batch30-original-prompts/layer-00.pt"
+    },
+    "snapshots/batch30-original-prompts/layer-02.pt": {
+      "sha256": "228fc15a7a02a98273601fb24b3d86ca8b90a99bd81430ec8f73da7ec3ebefd6",
+      "bytes": 5011917,
+      "original": "research/aime-regression-20261020/snapshots/batch30-original-prompts/layer-02.pt"
+    },
+    "snapshots/batch30-original-prompts/layer-03.pt": {
+      "sha256": "0ce5ec5487cfe8a1f67eda5466bbf256a0c6efad69b240657ef616c376f21ba9",
+      "bytes": 4141133,
+      "original": "research/aime-regression-20261020/snapshots/batch30-original-prompts/layer-03.pt"
+    },
+    "snapshots/batch30-original-prompts/layer-20.pt": {
+      "sha256": "cca607199c8d1e397657bc8f582ba47f8b9864fd88f1b05202fbeaa94e9374db",
+      "bytes": 5011917,
+      "original": "research/aime-regression-20261020/snapshots/batch30-original-prompts/layer-20.pt"
+    },
+    "snapshots/batch30-original-prompts/layer-21.pt": {
+      "sha256": "33bf64fb92e7ee140d81251cc3592baa2e5d73e884b18080254a20236486d364",
+      "bytes": 4141133,
+      "original": "research/aime-regression-20261020/snapshots/batch30-original-prompts/layer-21.pt"
+    },
+    "snapshots/case-08-tokens-271/layer-00.pt": {
+      "sha256": "b0e24e24d09126d49c5ceeb6c2c18b64dc0050e8d8653e87a286fd06789c5c0f",
+      "bytes": 207317,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-271/layer-00.pt"
+    },
+    "snapshots/case-08-tokens-271/layer-02.pt": {
+      "sha256": "2b70f55a25ca8fa04a78eeeba06d632022516ac0d4f406dcb73f141003d4f3f7",
+      "bytes": 245709,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-271/layer-02.pt"
+    },
+    "snapshots/case-08-tokens-271/layer-03.pt": {
+      "sha256": "d5147cb67c7ab87e5467232fb7f6bfce2864a443e57bfd04b32224764558202e",
+      "bytes": 209869,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-271/layer-03.pt"
+    },
+    "snapshots/case-08-tokens-271/layer-20.pt": {
+      "sha256": "e9baaf1f7ce60dcad6f449ab8aca103ec9feb797c7f34ecb6d847e9dbf7e8f47",
+      "bytes": 245709,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-271/layer-20.pt"
+    },
+    "snapshots/case-08-tokens-271/layer-21.pt": {
+      "sha256": "4dae8683a9841ad25648d4f41fe529ef8c0eed6f41dd572206068b23c6baf7e4",
+      "bytes": 209869,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-271/layer-21.pt"
+    },
+    "snapshots/case-08-tokens-32768/layer-00.pt": {
+      "sha256": "83a9b4450829fcf092877f4e2db2adefd02d7e3752d2c6c58fee5621b280e317",
+      "bytes": 8526549,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-32768/layer-00.pt"
+    },
+    "snapshots/case-08-tokens-32768/layer-02.pt": {
+      "sha256": "2ca98f08a7917f79482020ae3b7f4cde276dce044eef34487164da705f387754",
+      "bytes": 8795917,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-32768/layer-02.pt"
+    },
+    "snapshots/case-08-tokens-32768/layer-03.pt": {
+      "sha256": "6802607af5f1738bb79107f645f936aadd0bbf6b36dac162ca4bac20fe0034d1",
+      "bytes": 8661773,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-32768/layer-03.pt"
+    },
+    "snapshots/case-08-tokens-32768/layer-20.pt": {
+      "sha256": "7b453b2870fb44486a77ac384d4a166cba847548a68fe139caf731f960e1c47c",
+      "bytes": 8795917,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-32768/layer-20.pt"
+    },
+    "snapshots/case-08-tokens-32768/layer-21.pt": {
+      "sha256": "aef99e64c84dc6f4cb8404e0904177434dd20b38d1b2ae948ecbd159cda50fb9",
+      "bytes": 8661773,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-32768/layer-21.pt"
+    },
+    "snapshots/case-08-tokens-8192/layer-00.pt": {
+      "sha256": "e7f48933c183118ab34fadd5e288e0baeff3a2ae5684f01ba8090e5c99349cd9",
+      "bytes": 2235093,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-8192/layer-00.pt"
+    },
+    "snapshots/case-08-tokens-8192/layer-02.pt": {
+      "sha256": "74fa37c89964c448d5b27c37084868d788906af74aa7db7675abc39eeb37bf54",
+      "bytes": 2504461,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-8192/layer-02.pt"
+    },
+    "snapshots/case-08-tokens-8192/layer-03.pt": {
+      "sha256": "cee78d541b89b72dfe0c90ed6dc8f4e577df990249ea11e3f4b9035af01a63ec",
+      "bytes": 2269901,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-8192/layer-03.pt"
+    },
+    "snapshots/case-08-tokens-8192/layer-20.pt": {
+      "sha256": "60a39103f1c0211f506c3846d078883ae46f871f714d206abb4742c04bd47127",
+      "bytes": 2504461,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-8192/layer-20.pt"
+    },
+    "snapshots/case-08-tokens-8192/layer-21.pt": {
+      "sha256": "98a91e600adb835fb16849852e4d38a24117e703a0226621f6916ebf50359f65",
+      "bytes": 2269901,
+      "original": "research/aime-regression-20261020/snapshots/case-08-tokens-8192/layer-21.pt"
+    },
+    "snapshots/case-10-tokens-249/layer-00.pt": {
+      "sha256": "34e202e58ced39a87d0884d93ae2f49b33fff16b06d4c55566f8e2d1d619ce63",
+      "bytes": 201685,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-249/layer-00.pt"
+    },
+    "snapshots/case-10-tokens-249/layer-02.pt": {
+      "sha256": "e40cf658f3c18a59241a01f3ff616c39ff9d8068e8649cc72d65021375dca17b",
+      "bytes": 236941,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-249/layer-02.pt"
+    },
+    "snapshots/case-10-tokens-249/layer-03.pt": {
+      "sha256": "ca2a1b37a4884c55f4b111be28756c14362aae35176d0207a92e2b245c8f9a4b",
+      "bytes": 203725,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-249/layer-03.pt"
+    },
+    "snapshots/case-10-tokens-249/layer-20.pt": {
+      "sha256": "40a6ba040ea3e2107ef3a06986aecacb57dbf7c4aed94549a7831da7528fde64",
+      "bytes": 236941,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-249/layer-20.pt"
+    },
+    "snapshots/case-10-tokens-249/layer-21.pt": {
+      "sha256": "ad62cff7eb9ab4da52673f9269f3af0cf156af1d25bd2db74d5ffebbe7e92096",
+      "bytes": 203725,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-249/layer-21.pt"
+    },
+    "snapshots/case-10-tokens-32768/layer-00.pt": {
+      "sha256": "b31660b1ba771d40ed4e6fe34e91eef66bb5fb5e3455cef1782dbf62c1d98c98",
+      "bytes": 8526549,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-32768/layer-00.pt"
+    },
+    "snapshots/case-10-tokens-32768/layer-02.pt": {
+      "sha256": "d32805dd50e516961bb09b3254c6a2d5f295d108cec9cc52e3093eb449e3d882",
+      "bytes": 8795917,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-32768/layer-02.pt"
+    },
+    "snapshots/case-10-tokens-32768/layer-03.pt": {
+      "sha256": "2036e902065aada1536804775b9c202b05a2cdb309b1655a60433769bdaa8a6b",
+      "bytes": 8661773,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-32768/layer-03.pt"
+    },
+    "snapshots/case-10-tokens-32768/layer-20.pt": {
+      "sha256": "a532ed1ea4627957422d8c776b10d78a9b004cef3d2e3abe226fdd84b9dd452b",
+      "bytes": 8795917,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-32768/layer-20.pt"
+    },
+    "snapshots/case-10-tokens-32768/layer-21.pt": {
+      "sha256": "2bf7373ae2544f716557e15645c61f90b937d7e7fcf737afc3f43b431a048c92",
+      "bytes": 8661773,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-32768/layer-21.pt"
+    },
+    "snapshots/case-10-tokens-8192/layer-00.pt": {
+      "sha256": "8f168ec72198beea08ba33183bfecd3ca5a1221698f591458d16980b5200423c",
+      "bytes": 2235093,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-8192/layer-00.pt"
+    },
+    "snapshots/case-10-tokens-8192/layer-02.pt": {
+      "sha256": "d9fae447bc0e303de466c0e1eb74209e86a446c6194e6828ef78e575434bb227",
+      "bytes": 2504461,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-8192/layer-02.pt"
+    },
+    "snapshots/case-10-tokens-8192/layer-03.pt": {
+      "sha256": "5078fd7f46bad39e7b868978ebb12f9a51fef12c7fb6cd00785983074992e431",
+      "bytes": 2269901,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-8192/layer-03.pt"
+    },
+    "snapshots/case-10-tokens-8192/layer-20.pt": {
+      "sha256": "fb8c417120bd7b4888a859103f8488a79dd27de197022bf2bce40c0adec4dcaa",
+      "bytes": 2504461,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-8192/layer-20.pt"
+    },
+    "snapshots/case-10-tokens-8192/layer-21.pt": {
+      "sha256": "42035f2347a63569cfab079fb8f310bf3e6706397e23e7fe0e765303bf99b184",
+      "bytes": 2269901,
+      "original": "research/aime-regression-20261020/snapshots/case-10-tokens-8192/layer-21.pt"
+    },
+    "snapshots/case-16-tokens-32768/layer-00.pt": {
+      "sha256": "6716d932c7315ebec477947ecd54ef9c1e115eb9375019fa5e3172596c82887c",
+      "bytes": 8526549,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-32768/layer-00.pt"
+    },
+    "snapshots/case-16-tokens-32768/layer-02.pt": {
+      "sha256": "9d0dd6bf41c6b6d6f645635b901dbb22c181f7d95f2bb12acb2129c5aed3ed3d",
+      "bytes": 8795917,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-32768/layer-02.pt"
+    },
+    "snapshots/case-16-tokens-32768/layer-03.pt": {
+      "sha256": "8756615ce35fbb1afdf331446457bfe1ccd8e42f8d119f09fbe01569272097fe",
+      "bytes": 8661773,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-32768/layer-03.pt"
+    },
+    "snapshots/case-16-tokens-32768/layer-20.pt": {
+      "sha256": "b49db79c7c50d7b85152128eaeda4bd0618259159bcf8bd04d3cedd7ddc45f6e",
+      "bytes": 8795917,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-32768/layer-20.pt"
+    },
+    "snapshots/case-16-tokens-32768/layer-21.pt": {
+      "sha256": "dccde6c154b63e5a1d0bc9418cdb162dfaeafcd3aee23e27df6a7058df8a655a",
+      "bytes": 8661773,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-32768/layer-21.pt"
+    },
+    "snapshots/case-16-tokens-445/layer-00.pt": {
+      "sha256": "29eee9a0aba0e4c1fda9d839c40e83cc9abf72400def82242a099f6f25821b3e",
+      "bytes": 251861,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-445/layer-00.pt"
+    },
+    "snapshots/case-16-tokens-445/layer-02.pt": {
+      "sha256": "ffb9b958eee319e6d45149c644187464e2d1f43a295b928dcf972d5cc933f4ce",
+      "bytes": 312589,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-445/layer-02.pt"
+    },
+    "snapshots/case-16-tokens-445/layer-03.pt": {
+      "sha256": "914f8a229df8199457440d2a76670944636c69b72a0347b814794696a4ab5a0d",
+      "bytes": 254925,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-445/layer-03.pt"
+    },
+    "snapshots/case-16-tokens-445/layer-20.pt": {
+      "sha256": "fa46d23d2d7110b75ab39a6d1c0d872ab98c742963fe1b34eb0bb617cb070651",
+      "bytes": 312589,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-445/layer-20.pt"
+    },
+    "snapshots/case-16-tokens-445/layer-21.pt": {
+      "sha256": "30261467fbe7db4436425ce8b14ceb24c0d5843ad37fb0961f2215cd56002bf3",
+      "bytes": 254925,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-445/layer-21.pt"
+    },
+    "snapshots/case-16-tokens-8192/layer-00.pt": {
+      "sha256": "93f6a1d4917420a5794107549fb9b97a42c5c694c3cccbbfc60b92d7aa02970e",
+      "bytes": 2235093,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-8192/layer-00.pt"
+    },
+    "snapshots/case-16-tokens-8192/layer-02.pt": {
+      "sha256": "4b585f123e6942424e9e148ad4d3bc2ae0c1422b427c9d5f609aa455ab024c9f",
+      "bytes": 2504461,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-8192/layer-02.pt"
+    },
+    "snapshots/case-16-tokens-8192/layer-03.pt": {
+      "sha256": "f571d9de45acbada07c130b0bf9dedeb913525e6c561a7da34e44bae5a4689b5",
+      "bytes": 2269901,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-8192/layer-03.pt"
+    },
+    "snapshots/case-16-tokens-8192/layer-20.pt": {
+      "sha256": "9b937e06e6b7aa73f45e15402c96a1a72166fd4b7f9def8f3edb9dd62d91e75f",
+      "bytes": 2504461,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-8192/layer-20.pt"
+    },
+    "snapshots/case-16-tokens-8192/layer-21.pt": {
+      "sha256": "1b37c51c190b001d5f48ffdbf963fa2bd813e99cce4b82df73efe0f330e6b036",
+      "bytes": 2269901,
+      "original": "research/aime-regression-20261020/snapshots/case-16-tokens-8192/layer-21.pt"
+    },
+    "source-controls/old-attention/attention/prims_ts/__init__.py": {
+      "sha256": "690bf61a33c74705f28df22355011f2734b343d2ea702b1fdd416a7491c2b0a4",
+      "bytes": 3034,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/__init__.py": {
+      "sha256": "945d9e7555ce343fe84856e2c5dfd89a9476e3fae343ca171923e5d49a3921e9",
+      "bytes": 658,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/common.py": {
+      "sha256": "0416df7a4228b555ac61274a367e1e7d4db836f630bf53206b36b9242baca16a",
+      "bytes": 7075,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/common.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/compiler.py": {
+      "sha256": "6aeb16e5739561256512dd412a95e8a27a88b5731d7f5b34194707c679741753",
+      "bytes": 20259,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/compiler.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/config.py": {
+      "sha256": "fa9400c1ea52c4184254bd42e57e12f456064e68c0dc0f6d774f919024092235",
+      "bytes": 26000,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/config.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/inspection.py": {
+      "sha256": "0f8d6b42086d2f0131995d177104e4f2c1b5a07080fc6024e0ea2e8fdde8522b",
+      "bytes": 7354,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/inspection.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/plan.py": {
+      "sha256": "be835eddb9b827a0483a28f424512ef7a02e5c44c771c6a3beb1fa6d335391c2",
+      "bytes": 14093,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/plan.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/prepared.py": {
+      "sha256": "8d2d8f52af23d4c3bc109fefa67d99fa2bd140441f525a7de337621033ce02bf",
+      "bytes": 10268,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/prepared.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_block_sparse/runtime.py": {
+      "sha256": "9175c8015280eea9fec31293e835c356a56130fb9543b6c0358841b4f3e0fa02",
+      "bytes": 23375,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_block_sparse/runtime.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/_q_token_kv_block_sparse_policy.py": {
+      "sha256": "7f7bbeb9a631dfc7a250eb6b02739de68b912a58a466b6c2a698e6c0f0fc671e",
+      "bytes": 8696,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/_q_token_kv_block_sparse_policy.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/block_sparse.py": {
+      "sha256": "4c78245524feda25a6154f2fbb9cde6c7f5f577e713bb47dea8021d35445a24b",
+      "bytes": 44966,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/block_sparse.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/context.py": {
+      "sha256": "fbde59544f6b1a805a3d41f22f5ab10627d59775a0ec0c65589d4dc3c4cad84c",
+      "bytes": 130463,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/context.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/decode.py": {
+      "sha256": "7c4dc3e44cd5e920f3b927d006f4289ecfa0850076a1ac00f8b8d931b37c7ec0",
+      "bytes": 170014,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/decode.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/__init__.py": {
+      "sha256": "c820f788aa373be29e6d81493bce5511229c4fd272a666d31ec63e7d5ff64488",
+      "bytes": 803,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_context/__init__.py": {
+      "sha256": "12fe1c2a369b11eadd02daa10305b69b238a466caa5ecf4b55af2f09f176e016",
+      "bytes": 585,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_context/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_context/fmha_kernel.py": {
+      "sha256": "b843e861c2ae105cc523f47cc9eb7d862d82c7dc3488c774fdad876a04f068d9",
+      "bytes": 150398,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_context/fmha_kernel.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_context/fmha_resources.py": {
+      "sha256": "cb793d2f4efcec8807a063c36104e0e128ad857c4f10be9fc09040816b4fde75",
+      "bytes": 243920,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_context/fmha_resources.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_context/fmha_tasks.py": {
+      "sha256": "c84bfcad1b331159ce939d07eaaeba0a6c32ec0b4dc2cfdb316406001abd74fe",
+      "bytes": 134912,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_context/fmha_tasks.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_context/helpers.py": {
+      "sha256": "c020d17ec583d732f715050d17bd34bbea0584e51ffb9d03d8a85e6a474b0636",
+      "bytes": 3765,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_context/helpers.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_context/helpers_paged.py": {
+      "sha256": "614c27f910588765126895678138e9214213c6b9209f9735e370b29faff8a2ed",
+      "bytes": 2647,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_context/helpers_paged.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/__init__.py": {
+      "sha256": "393f2cb66e05260459836830017d76c66826c5d695bab284f85706741a94f22e",
+      "bytes": 649,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/block_sparse_inspect.py": {
+      "sha256": "e99a3021f8f96678a450d963354b27d994188013a78ff503e31b9b64b2b94be6",
+      "bytes": 18939,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/block_sparse_inspect.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/block_sparse_prepare.py": {
+      "sha256": "87d97601ea2cada80fa7cb9cddb4eb348eef29ce9454fc553c3b80458b8aceac",
+      "bytes": 42934,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/block_sparse_prepare.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/direct_sparse_metadata.py": {
+      "sha256": "f43acb9c324c7a3e4df7779407872bb449d28274dfa5246521c668c3533c46d5",
+      "bytes": 7307,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/direct_sparse_metadata.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_config.py": {
+      "sha256": "ea3e438f23032cc3a65faf93d2eba77ca7daa349f8cdaa9267ea74c421e44693",
+      "bytes": 212693,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_config.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_constants.py": {
+      "sha256": "719ccb31e89a13ead40acf1e05b3032b6945d685e8ef5c378b53211a89a70020",
+      "bytes": 9930,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_constants.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_kernel.py": {
+      "sha256": "83d760b494450e1e35d48b5c8e83fe1b3449d91e21eb4451cf62e4fd7f8d87e2",
+      "bytes": 168038,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_kernel.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/__init__.py": {
+      "sha256": "c6dae65c233a4fd8414e9768e18523a6f3e115bd17cda961a6abbef0b2d56c79",
+      "bytes": 8339,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_common.py": {
+      "sha256": "72fcc889c273bf64726a154f9f27171db67f1dcb52feed091b28efc3986c00a2",
+      "bytes": 30586,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_common.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_kv_tile_idx.py": {
+      "sha256": "4f90a4407883fc59d497b5a9d3587c03ba0b82d2b2be9fc1877d2c780b3df569",
+      "bytes": 15091,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_kv_tile_idx.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_output.py": {
+      "sha256": "d356a199a1097db8389b3433ec1b2d9f73a1b0bfc4fe5daea06d743de0a3c7dc",
+      "bytes": 16831,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_output.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_softmax.py": {
+      "sha256": "7b59ef81d0399b4b0f4e73661ce52c3580ea0622ff3009d7b0dd8bbf46c2b257",
+      "bytes": 14619,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/helpers_softmax.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/sage_scales.py": {
+      "sha256": "ec02710289b32e6b0560f8030cd9a827b701b6f6c1d2f972770a0ad53380797d",
+      "bytes": 32341,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/sage_scales.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_block_sparse_metadata.py": {
+      "sha256": "ce99091b3c1f5c99b8af1d9677598ad93234da1eb3ef0bf199640d3d9a75d8e5",
+      "bytes": 61428,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_block_sparse_metadata.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_p.py": {
+      "sha256": "7d1ad5139da25379546cff2025b6aab98cabcd561688cb05f6c63041ee32e8d2",
+      "bytes": 69496,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_p.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_resources.py": {
+      "sha256": "e9b98091bb4ce695f0c083f4c08a2e6e3b812fd5e44018e72304fd06a7ef0fa0",
+      "bytes": 144332,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_resources.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_transformed_kv.py": {
+      "sha256": "61a6409f8375e489241099dc05276ddc4e93e9c0f8744fcbf14cc7921c5782f3",
+      "bytes": 23371,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/smem_transformed_kv.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_corr.py": {
+      "sha256": "b4ad382c5945ec5ea3226b20a350e70e1b90e886e81b30e777270ab9b8310e95",
+      "bytes": 206486,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_corr.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_o.py": {
+      "sha256": "cb2b94a52c604d42377c986c8ad011c0b554a98e179cb39bbcc40be53ab3d62e",
+      "bytes": 22653,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_o.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_s.py": {
+      "sha256": "629c778114e2274616e6fa7c1679e71649fe48202f4285ebb89f9d4555019408",
+      "bytes": 138403,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_s.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_softmax_stats.py": {
+      "sha256": "04698161cfc5ff18a7931aa76cc63e1360452d006c3f411ab56d3dd8f0ecf160",
+      "bytes": 32312,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_softmax_stats.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_transformed_kv.py": {
+      "sha256": "45cb2958f603fe0796a67bb257506aed0d1471950d1734858dae5c2f78539cb1",
+      "bytes": 16783,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_resources/tmem_transformed_kv.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_tasks.py": {
+      "sha256": "3bbb0b0e712c780f96f3f041407e9201be0b18b840e41a8a3e2d10ee97ce9935",
+      "bytes": 156070,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/fmha_decode_tasks.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/reduction.py": {
+      "sha256": "82f50ab7d4d89edcce71f1686226645fe5453f8b3af7980818e43fda87c7915b",
+      "bytes": 36819,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/fmha_decode/reduction.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mask.py": {
+      "sha256": "9917088ae59acd14bda98ae2c5eaa8b54effc1c9904b628cc0f0620e91b820f2",
+      "bytes": 1298,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mask.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/__init__.py": {
+      "sha256": "04642d15e1f8e2769caa4918895b737b28cf94d8b9b4e303798aae534ee65145",
+      "bytes": 627,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/__init__.py": {
+      "sha256": "e97278feef5fb701309477bc4762efcff20bef627738c90fd5e972e7eccf50af",
+      "bytes": 646,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/constants.py": {
+      "sha256": "b8ae60a28b063c04f9494b6ef9ef66e44462689f64c09976017faf0934624aad",
+      "bytes": 5250,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/constants.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/gather.py": {
+      "sha256": "62e93660a8c1ee9ba72aeb9282630554c6451825e6269935cf08a8c1858288b0",
+      "bytes": 14808,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/gather.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/layout.py": {
+      "sha256": "83a0a829a1eef5a9a6a2ba17ddb6da2e5400e72838c688b23736764fcedfd915",
+      "bytes": 12584,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/layout.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/mask.py": {
+      "sha256": "122b4f1908c8104cb9f017bbe769c0a23a281dce0e3dadca08668133a14689cb",
+      "bytes": 1964,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/mask.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/math.py": {
+      "sha256": "2bf4e7c40d0a98f7f87d9d86160d246bac5c7186b53961e3ebd75cc3eead021d",
+      "bytes": 6948,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/math.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/ops.py": {
+      "sha256": "8bee8ee2bdde670611e64b140d8800320682f350531ad6a1a0ec36c0f64855fe",
+      "bytes": 12814,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/ops.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/output_quant.py": {
+      "sha256": "2511305bdf7e5155141f0426a49d3447772b81a547525fe386b31d8e2e40b320",
+      "bytes": 10787,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/output_quant.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/query.py": {
+      "sha256": "693eed7eef969d72caffc262d0634a1afaf22f98ff7fafd98f933ad6f31f9e02",
+      "bytes": 7933,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/query.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/schedule.py": {
+      "sha256": "a10aa20cb521d0dd1df941e9c07f52a993141d36feffde0edd7d48db2c297c4f",
+      "bytes": 10852,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/schedule.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/stage.py": {
+      "sha256": "146d5d65784e775911e910fb2a76e476dd2b46dae64522595c02a7b578f6607c",
+      "bytes": 1150,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/stage.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/tile.py": {
+      "sha256": "d07f1cfb4d02c9ab2f1e5c68116ebed1809bf02b9f16fdbc04d041d826803af2",
+      "bytes": 14318,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/tile.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/tile_scheduler.py": {
+      "sha256": "0a4e3ae1d94aa9e8f30a7195f6a95e7efe5369e8c4c6bfdb394cc8fd6ad74bca",
+      "bytes": 11968,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/helpers/tile_scheduler.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/kernel_policy.py": {
+      "sha256": "de7e583231d5374c34935d769e368e04133cd10c463c2a7c11b311bd7a8bae06",
+      "bytes": 11996,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/kernel_policy.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/parallel_reduction_topology.py": {
+      "sha256": "c6ed8c5888c947e2c68610cd76d82ce9c901e7cb9f7c0efab17e413e4c08b232",
+      "bytes": 10779,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/parallel_reduction_topology.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/sparse_policy.py": {
+      "sha256": "c5bb7ab2c0bbae0506ef5b9d389d5bcb8d4eb670be00b66254a32b8fa04637b2",
+      "bytes": 20267,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/sparse_policy.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/sparse_views.py": {
+      "sha256": "ee7fea868406d042f87784d0886784291f62d41d0b54111607b4e8dc685c5513",
+      "bytes": 11574,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/sparse_views.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/__init__.py": {
+      "sha256": "57554ccb682f27e8cae5ff85a13312adedecc09b5bcdce0abe2684758a7f3a3a",
+      "bytes": 649,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/config.py": {
+      "sha256": "c397feb4b81c9979e790fec51e3266991d678f77bde5c7995302ac80c5b954f4",
+      "bytes": 27335,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/config.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/kernel.py": {
+      "sha256": "5bfdfc235c72b4b0d50bc72fb7cfee83dd3099450204fab265e5a87d09076785",
+      "bytes": 91911,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/kernel.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/parallel_reduction.py": {
+      "sha256": "6039a276091b4c66d8a8ece85695f0a7aa3448aee927f20f3ca36cf9665baf07",
+      "bytes": 19913,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/parallel_reduction.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/reduction.py": {
+      "sha256": "c0e69cb7b75dd0d93293f367bf86c779593a00ff4116f7df801b5dfa683c9f39",
+      "bytes": 11988,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/reduction.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/resources.py": {
+      "sha256": "379542823e01afcf170054de6a77c9fae6b89287ccb3f5fbd55c9fb9e4860ad7",
+      "bytes": 178356,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/resources.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/tasks.py": {
+      "sha256": "2b8d97e2f6694d611125032eb6056cfebea4b95e9a7f5e5c4117316c404bc8cc",
+      "bytes": 50339,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/tasks.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/work_partition.py": {
+      "sha256": "541c8a496ecd1e1656f47ac05f5a3ac179cb866c7f939c6ad68146d6d5ea4e4e",
+      "bytes": 5292,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_2cta/work_partition.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/__init__.py": {
+      "sha256": "c5ad48673206349a79f3ef21da764b4c53f0b3086540554703ef10dcf8d8b383",
+      "bytes": 654,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/config.py": {
+      "sha256": "fbe84002b549c916ffd948ae04c3234bf98d71da62d7b0bd1468a25c95ac5756",
+      "bytes": 67049,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/config.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/kernel.py": {
+      "sha256": "b9d068c9bf30ba6dc29e244fae99a4c0c0a035b61491996edcf3bac9d71dbd66",
+      "bytes": 98938,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/kernel.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/parallel_reduction.py": {
+      "sha256": "66a689bd8820f3c6897d55e71ce5dc1b772e8ff55d34d990ccb044bdbb1ef957",
+      "bytes": 32457,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/parallel_reduction.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/reduction.py": {
+      "sha256": "e838c055882615d344ce172d1162eeb694fb224891915dbc5b450f01a643e631",
+      "bytes": 32724,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/reduction.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/__init__.py": {
+      "sha256": "180903fd8c18c8a9ab2550ac000a22b243df2a9ecb96fb1567bd11b2e8804c88",
+      "bytes": 1534,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/__init__.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/common.py": {
+      "sha256": "ddd619d8ecb6c0750fbb51307eac472608ece2b71527ae63616cd2f14d38f82e",
+      "bytes": 4544,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/common.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/smem_p.py": {
+      "sha256": "97e7636d683f86989ba3737226d883f7394becb782faa158368a3b0c89211331",
+      "bytes": 15120,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/smem_p.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/smem_resources.py": {
+      "sha256": "4fae2b1e935a0fd07bcb352e9710a02f2bae1b67afed5d3de6e946f032971d05",
+      "bytes": 58279,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/smem_resources.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_corr.py": {
+      "sha256": "69893f586252b9af472f471c9202314e577bcf6f3c7da5dea6c7298335bded8a",
+      "bytes": 96607,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_corr.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_o.py": {
+      "sha256": "add2cfd1a22f14d2a402470e7d217aadff438132f6b96c4e17078ded18561089",
+      "bytes": 15350,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_o.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_p.py": {
+      "sha256": "83b0f0f64b8c797d01b783714c998157a35635f202b654613e475974a2813527",
+      "bytes": 15462,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_p.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_s.py": {
+      "sha256": "bd02a178f055c8e2169af48c211ff0a6916af7f77703855a0ca5368c0daf14fc",
+      "bytes": 40577,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_s.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_softmax_stats.py": {
+      "sha256": "cf6b92a8748dac26ed4b8fb9bd499440190343be155adef3bbbb54f1e3e1bfa4",
+      "bytes": 21113,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/resources/tmem_softmax_stats.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/tasks.py": {
+      "sha256": "b3c7ee629d8894ffc4ed149d3239eae82afdc67ee80b409eb1895e1afbc3ee9d",
+      "bytes": 66758,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/mla_decode/throughput_latency_1cta/tasks.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/placeholder_helpers.py": {
+      "sha256": "bda3a721391b57266750b0c1f8e2352a18ae3f75b806422f259b87ea64a4161a",
+      "bytes": 2163,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/placeholder_helpers.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/separate_reduction.py": {
+      "sha256": "997de5ca1f6ce7c53c2ff76c6b6078fa4556dbc8061bab53650b81fca141e73c",
+      "bytes": 7867,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/separate_reduction.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/stage.py": {
+      "sha256": "f82cf11b1acad155888bb171efd75ec11b0cd6b848c8f95728c89293b7e4fd4e",
+      "bytes": 1194,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/stage.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/task_compat.py": {
+      "sha256": "25ab188157a09523d6a555a01b948eb6124f9fea59f533a34102d2893f711449",
+      "bytes": 1460,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/task_compat.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/tcgen05_compat.py": {
+      "sha256": "1dd7e50986a5744989e21ff8b5d52d6da259c2e3fdc1f3468c981f68ed5ff82c",
+      "bytes": 2153,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/tcgen05_compat.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/kernels/tensor_map.py": {
+      "sha256": "4e6ad554dce0bcff855232f5f5820c5ff1dbe7a73d57dd113754230ee2d16041",
+      "bytes": 24216,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/kernels/tensor_map.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/mla_decode.py": {
+      "sha256": "c60a68bb7d1d65cf31338be133bb28972e4513ec1d0f26a0c5377542231719d6",
+      "bytes": 116534,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/mla_decode.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/q_token_kv_block_sparse_metadata.py": {
+      "sha256": "61b0d418aa7f8d68841cea1c83281b4e33f97773aadf9491e715ce7e1c609a7c",
+      "bytes": 91797,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/q_token_kv_block_sparse_metadata.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/sage.py": {
+      "sha256": "906b4987322e9148ba43d74ba4f6a9d3da2e13df85085c447ac02243811a6546",
+      "bytes": 7826,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/sage.py"
+    },
+    "source-controls/old-attention/attention/prims_ts/split_kv_mode_policy.py": {
+      "sha256": "dd2fbbbeda36d769e7221c70112a418256d69242b9d74ddbb2cb30b22d073c98",
+      "bytes": 3672,
+      "original": "research/aime-regression-20261020/source-controls/old-attention/attention/prims_ts/split_kv_mode_policy.py"
+    },
+    "source-controls/old_prims_ts_utils.py": {
+      "sha256": "ff2ce7abb3907c848c23a8433c75c8e79b8d688ffd083628a54092018ac26b8f",
+      "bytes": 9509,
+      "original": "research/aime-regression-20261020/source-controls/old_prims_ts_utils.py"
+    },
+    "source-controls/manifest.json": {
+      "sha256": "8b429eb0c7d217cbb808d19cf5e01b52ee317525d073f9a4714c9b47f64292b0",
+      "bytes": 26186
+    },
+    "source-controls/FLASHINFER-LICENSE": {
+      "sha256": "cb67c224f503e0a063908950b12f89a7280c6e527dcffac972aa114e4bf3c5de",
+      "bytes": 12332
+    },
+    "source-controls/VLLM-LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357
+    }
+  },
+  "archive_sha256": "b79cd363e604d71c1a1a9a1c848bcdb8d887461375f304bff635ed9fe24e8a80",
+  "archive_bytes": 75905612
+}

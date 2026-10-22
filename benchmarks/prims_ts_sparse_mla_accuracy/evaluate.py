@@ -24,6 +24,7 @@ parser.add_argument("--seed", type=int, default=1234)
 parser.add_argument("--top-p", type=float, required=True)
 parser.add_argument("--max-tokens", type=int, required=True)
 parser.add_argument("--concurrency", type=int, default=4)
+parser.add_argument("--return-token-ids", action="store_true")
 parser.add_argument("--limit", type=int)
 parser.add_argument("--start", type=int, default=0)
 parser.add_argument("--output", type=Path, required=True)
@@ -37,6 +38,7 @@ arguments = json.dumps(vars(args), default=str, indent=2)
 arguments_path = args.output / "arguments.json"
 if arguments_path.exists():
     previous, current = json.loads(arguments_path.read_text()), json.loads(arguments)
+    previous.setdefault("return_token_ids", False)
     if any(
         previous.get(key) != value
         for key, value in current.items()
@@ -137,6 +139,7 @@ results = evaluator.simple_evaluate(
         "reasoning_effort": "high",
         "chat_template_kwargs": {"reasoning_effort": "high"},
         "until": [],
+        **({"return_token_ids": True} if args.return_token_ids else {}),
     },
     bootstrap_iters=1000,
 )

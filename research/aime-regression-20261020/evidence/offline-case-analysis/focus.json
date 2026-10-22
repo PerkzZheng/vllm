@@ -1,0 +1,295 @@
+{
+  "trajectory_file": "trajectories.json",
+  "focus": [
+    {
+      "model": "v4-flash",
+      "phase": "default",
+      "doc_id": 8,
+      "trajectory_json_pointer": "/records/8"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "default",
+      "doc_id": 10,
+      "trajectory_json_pointer": "/records/10"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "default",
+      "doc_id": 16,
+      "trajectory_json_pointer": "/records/16"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "old-native",
+      "doc_id": 8,
+      "trajectory_json_pointer": "/records/38"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "old-native",
+      "doc_id": 10,
+      "trajectory_json_pointer": "/records/40"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "old-native",
+      "doc_id": 16,
+      "trajectory_json_pointer": "/records/46"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "new-native",
+      "doc_id": 8,
+      "trajectory_json_pointer": "/records/68"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "new-native",
+      "doc_id": 10,
+      "trajectory_json_pointer": "/records/70"
+    },
+    {
+      "model": "v4-flash",
+      "phase": "new-native",
+      "doc_id": 16,
+      "trajectory_json_pointer": "/records/76"
+    },
+    {
+      "model": "v41-flash",
+      "phase": "default",
+      "doc_id": 3,
+      "trajectory_json_pointer": "/records/93"
+    },
+    {
+      "model": "v41-flash",
+      "phase": "default",
+      "doc_id": 29,
+      "trajectory_json_pointer": "/records/119"
+    },
+    {
+      "model": "v41-flash",
+      "phase": "old-native",
+      "doc_id": 3,
+      "trajectory_json_pointer": "/records/123"
+    },
+    {
+      "model": "v41-flash",
+      "phase": "old-native",
+      "doc_id": 29,
+      "trajectory_json_pointer": "/records/149"
+    },
+    {
+      "model": "v41-flash",
+      "phase": "new-native",
+      "doc_id": 3,
+      "trajectory_json_pointer": "/records/153"
+    },
+    {
+      "model": "v41-flash",
+      "phase": "new-native",
+      "doc_id": 29,
+      "trajectory_json_pointer": "/records/179"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "default",
+      "doc_id": 10,
+      "trajectory_json_pointer": "/records/190"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "default",
+      "doc_id": 11,
+      "trajectory_json_pointer": "/records/191"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "default",
+      "doc_id": 29,
+      "trajectory_json_pointer": "/records/209"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "old-native",
+      "doc_id": 10,
+      "trajectory_json_pointer": "/records/220"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "old-native",
+      "doc_id": 11,
+      "trajectory_json_pointer": "/records/221"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "old-native",
+      "doc_id": 29,
+      "trajectory_json_pointer": "/records/239"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "new-native",
+      "doc_id": 10,
+      "trajectory_json_pointer": "/records/250"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "new-native",
+      "doc_id": 11,
+      "trajectory_json_pointer": "/records/251"
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "new-native",
+      "doc_id": 29,
+      "trajectory_json_pointer": "/records/269"
+    }
+  ],
+  "common_prefixes": [
+    {
+      "model": "v4-flash",
+      "doc_id": 8,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 7647,
+      "left_chars": 172409,
+      "right_chars": 1323203
+    },
+    {
+      "model": "v4-flash",
+      "doc_id": 8,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 304,
+      "left_chars": 193148,
+      "right_chars": 1323203
+    },
+    {
+      "model": "v4-flash",
+      "doc_id": 10,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 41,
+      "left_chars": 215554,
+      "right_chars": 1660112
+    },
+    {
+      "model": "v4-flash",
+      "doc_id": 10,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 41,
+      "left_chars": 1155259,
+      "right_chars": 1660112
+    },
+    {
+      "model": "v4-flash",
+      "doc_id": 16,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 6898,
+      "left_chars": 196862,
+      "right_chars": 2044792
+    },
+    {
+      "model": "v4-flash",
+      "doc_id": 16,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 261,
+      "left_chars": 1722018,
+      "right_chars": 2044792
+    },
+    {
+      "model": "v41-flash",
+      "doc_id": 3,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 15,
+      "left_chars": 9115,
+      "right_chars": 4997
+    },
+    {
+      "model": "v41-flash",
+      "doc_id": 3,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 246,
+      "left_chars": 8505,
+      "right_chars": 4997
+    },
+    {
+      "model": "v41-flash",
+      "doc_id": 29,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 20,
+      "left_chars": 48497,
+      "right_chars": 421617
+    },
+    {
+      "model": "v41-flash",
+      "doc_id": 29,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 53,
+      "left_chars": 62118,
+      "right_chars": 421617
+    },
+    {
+      "model": "glm53-flash",
+      "doc_id": 10,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 121,
+      "left_chars": 1940,
+      "right_chars": 175711
+    },
+    {
+      "model": "glm53-flash",
+      "doc_id": 10,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 104,
+      "left_chars": 97743,
+      "right_chars": 175711
+    },
+    {
+      "model": "glm53-flash",
+      "doc_id": 11,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 3559,
+      "left_chars": 4832,
+      "right_chars": 6067
+    },
+    {
+      "model": "glm53-flash",
+      "doc_id": 11,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 28,
+      "left_chars": 39520,
+      "right_chars": 6067
+    },
+    {
+      "model": "glm53-flash",
+      "doc_id": 29,
+      "left": "old-native",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 16,
+      "left_chars": 51336,
+      "right_chars": 289163
+    },
+    {
+      "model": "glm53-flash",
+      "doc_id": 29,
+      "left": "default",
+      "right": "new-native",
+      "exact_common_reasoning_prefix_chars": 135,
+      "left_chars": 72224,
+      "right_chars": 289163
+    }
+  ]
+}

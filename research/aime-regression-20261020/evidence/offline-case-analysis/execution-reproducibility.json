@@ -1,0 +1,853 @@
+{
+  "cohort": [
+    {
+      "model": "v4-flash",
+      "phase": "default",
+      "arguments_reference": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/default-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "b2950717e9a0ccd0edc6134c945ecd9a91bf3b2f9c0cbcb2e2dc69c2a192faf9",
+      "arguments": {
+        "model": "v4-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 1.0,
+        "max_tokens": 393216,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "735e1f4f33f8d112d47e0ab38adc5ab7b9272abd",
+        "vllm-integration": "b285cbfb6cd0bc17e5c957a3c8f57c1d7598448d"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1791824980,
+          "questions": 30
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/default-fp8/aime2026/1234/0000/run.log",
+          "sha256": "cade574b2c85e391da0179829fddff026916b5cce63dc19a2c5914062568bca9",
+          "resumption_lines": [
+            {
+              "line": 5,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/default-fp8/server-1791798687760074097.log",
+          "sha256": "137d6b0f20d9e113f131808a165d31b70665873de5d9024998f743c9f4b4874b",
+          "attempt_epoch": 1791798687.760074,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/default-fp8/server-1791820815395117329.log",
+          "sha256": "267e6923b028fe189219134a2f6e21e9c6eb5e872bd032de0654eae3ff2f6b54",
+          "attempt_epoch": 1791820815.3951173,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "v4-flash",
+      "phase": "old-native",
+      "arguments_reference": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "2e59ec16a4be1c59f91456263f156bf5c13fcdd6ddf66deb51c579c03ad89cc0",
+      "arguments": {
+        "model": "v4-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 1.0,
+        "max_tokens": 393216,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "735e1f4f33f8d112d47e0ab38adc5ab7b9272abd",
+        "vllm-integration": "b285cbfb6cd0bc17e5c957a3c8f57c1d7598448d"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1791834349,
+          "questions": 23
+        },
+        {
+          "epoch": 1791969122,
+          "questions": 7
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/aime2026/1234/0000/run-incomplete-1791969114462078838.log",
+          "sha256": "7eb9533d88dce0dbf08e5bf7985a01ab08c82d22c422dfb6e0f9130e882a0158",
+          "resumption_lines": [
+            {
+              "line": 5,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/aime2026/1234/0000/run.log",
+          "sha256": "5271342184f50fc5e37f6a8d2861ccdcc65745cd9a1f308f59bbe3c15d3ff1c8",
+          "resumption_lines": [
+            {
+              "line": 8,
+              "text": "Resuming 23 requests; generating 7"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/server-1791798687764302865.log",
+          "sha256": "1dc61a2f99dde4135860d74ca7b019594b897d24f941a1b78c4907c4753ed7f3",
+          "attempt_epoch": 1791798687.7643027,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/server-1791820815391745969.log",
+          "sha256": "e941e9666ae97237c3016a4ba22f4ddf62debc8015fab28dd11d0b5378d8f0a9",
+          "attempt_epoch": 1791820815.391746,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/server-1791965065445793800.log",
+          "sha256": "53a0d600454e8a46f062b49b4ae63a53e482034fff04473b2e23329120756a3d",
+          "attempt_epoch": 1791965065.4457939,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/server-1791966058706146685.log",
+          "sha256": "7fc8f387c13c0db79a33d10f81de27ab94fcafeddeac02eb6be5052fb538bc1a",
+          "attempt_epoch": 1791966058.7061465,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "v4-flash",
+      "phase": "new-native",
+      "arguments_reference": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "dbf180a5d1675132cb78105b82d8447d72cc5b9e8645a9c17c85a769dcd75e58",
+      "arguments": {
+        "model": "v4-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 1.0,
+        "max_tokens": 393216,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92",
+        "vllm-integration": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1792496723,
+          "questions": 30
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/aime2026/1234/0000/run.log",
+          "sha256": "49765033612945a3eb8ed13581b02755e7ddc579f09562d39d7523bb5be28540",
+          "resumption_lines": [
+            {
+              "line": 8,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/server-1792396644363550813.log",
+          "sha256": "15199d257e0db843638f595abaf0f4db52c9c12c64f75670a8985b9cc6cd31ff",
+          "attempt_epoch": 1792396644.3635507,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/server-1792411608065244437.log",
+          "sha256": "219bfbfecb90d8a0165b048e776ad5afdd9bf9664462cc21e465b161e14a2cc9",
+          "attempt_epoch": 1792411608.0652444,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/results/full/v4-flash/prims-fp8/server-1792488315800727249.log",
+          "sha256": "bde24a794ae3c8f28057cf4bbe927657e63657ef105ed85863da4d0a9896c928",
+          "attempt_epoch": 1792488315.8007274,
+          "configurations": [
+            {
+              "line": 21,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "1",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "v41-flash",
+      "phase": "default",
+      "arguments_reference": "workspace/research/vllm-accuracy/model-jobs/v41-flash/results/full/v41-flash/default-auto/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "6620a989fe39970aae385bed21e3dada6c7becbc13e1e32656a37504ee52749b",
+      "arguments": {
+        "model": "v41-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 0.95,
+        "max_tokens": 262144,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "33f55648f59d951373ff738c4975fbeb8d887460",
+        "vllm-integration": "b285cbfb6cd0bc17e5c957a3c8f57c1d7598448d"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1791834741,
+          "questions": 30
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v41-flash/results/full/v41-flash/default-auto/aime2026/1234/0000/run.log",
+          "sha256": "1d7592ef56bc8323f52d77a7e1f11fa1f19b95c9013ebcd35ab8bd73f8d9d34e",
+          "resumption_lines": [
+            {
+              "line": 5,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v41-flash/results/full/v41-flash/default-auto/server-1791828926624726801.log",
+          "sha256": "b9a58dcb7d1d17aa66d696f5bf155ef4a232c2c9a1f0dbb7f60bb3c084ef7247",
+          "attempt_epoch": 1791828926.6247268,
+          "configurations": [
+            {
+              "line": 24,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "v41-flash",
+      "phase": "old-native",
+      "arguments_reference": "workspace/research/vllm-accuracy/model-jobs/v41-flash/results/full/v41-flash/prims-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "950914bf5bd05c2546a80f57adb267cf31b84c48719f2d4b8e5fb825af12d71e",
+      "arguments": {
+        "model": "v41-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 0.95,
+        "max_tokens": 262144,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "33f55648f59d951373ff738c4975fbeb8d887460",
+        "vllm-integration": "b285cbfb6cd0bc17e5c957a3c8f57c1d7598448d"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1791974154,
+          "questions": 30
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v41-flash/results/full/v41-flash/prims-fp8/aime2026/1234/0000/run.log",
+          "sha256": "65be00f436f279b866f72bbfe207d3db73af522feedbf2ba1b2f3a7f7525d9f5",
+          "resumption_lines": [
+            {
+              "line": 8,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/v41-flash/results/full/v41-flash/prims-fp8/server-1791965071874570917.log",
+          "sha256": "16110f06925ce9ac56be72f1c5818a8f77a9a51b925442b12342100c18a44725",
+          "attempt_epoch": 1791965071.874571,
+          "configurations": [
+            {
+              "line": 25,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "v41-flash",
+      "phase": "new-native",
+      "arguments_reference": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v41-flash/results/full/v41-flash/prims-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "f2021d01623e938ada2d72e9763f41cac29f8479753f2ff3a0de9bd02fc6c9d8",
+      "arguments": {
+        "model": "v41-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 0.95,
+        "max_tokens": 262144,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92",
+        "vllm-integration": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1792404536,
+          "questions": 30
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v41-flash/results/full/v41-flash/prims-fp8/aime2026/1234/0000/run.log",
+          "sha256": "7005a08d9491cf55a5c1b24c5f1adc081a88b590bd5334d93195521a74eb667d",
+          "resumption_lines": [
+            {
+              "line": 8,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v41-flash/results/full/v41-flash/prims-fp8/server-1792397425606402635.log",
+          "sha256": "cab6f4f2db492c6a1fb20c226dcdc1b84d43aadd658d65d7b68f6b5db137a697",
+          "attempt_epoch": 1792397425.6064026,
+          "configurations": [
+            {
+              "line": 25,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "default",
+      "arguments_reference": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/default-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "b081144211e0c961e6fc5bef6bbf49b0b9fc30a5a2983ffdaf7f3eb91f034665",
+      "arguments": {
+        "model": "glm53-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 0.95,
+        "max_tokens": 163840,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "33f55648f59d951373ff738c4975fbeb8d887460",
+        "vllm-integration": "b285cbfb6cd0bc17e5c957a3c8f57c1d7598448d"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1791970675,
+          "questions": 30
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/default-fp8/aime2026/1234/0000/run.log",
+          "sha256": "03ece285b834431974971a573c1144fd6aba88776393477cfdc4e4a2d273ba44",
+          "resumption_lines": [
+            {
+              "line": 8,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/default-fp8/server-1791965067624814972.log",
+          "sha256": "ffc978c09d169d9b55314ea294207880eeb216cd5996b23df4529417969ae23a",
+          "attempt_epoch": 1791965067.6248147,
+          "configurations": [
+            {
+              "line": 24,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/default-fp8/server-1791965833655468686.log",
+          "sha256": "ab11d17149d44fd3ab9bf1663db80f1489a0e514a9aae03c6af7772de0e138e9",
+          "attempt_epoch": 1791965833.6554687,
+          "configurations": [
+            {
+              "line": 24,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "old-native",
+      "arguments_reference": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "a6ba2621d8de6018c8b9615c7a091642bf4b9f06a8d8599235c5b78d819bf3c2",
+      "arguments": {
+        "model": "glm53-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 0.95,
+        "max_tokens": 163840,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "33f55648f59d951373ff738c4975fbeb8d887460",
+        "vllm-integration": "b285cbfb6cd0bc17e5c957a3c8f57c1d7598448d"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1791978970,
+          "questions": 27
+        },
+        {
+          "epoch": 1792234418,
+          "questions": 3
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/aime2026/1234/0000/run-incomplete-1792234411071962141.log",
+          "sha256": "27d9b3327e4a759848f75c927d726dadee99f9a4c98173a4e741ef56ebd39da2",
+          "resumption_lines": [
+            {
+              "line": 8,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/aime2026/1234/0000/run.log",
+          "sha256": "710dcfb0aee865300d3b62e4df7416c21a425087b86d31219ef1108f06ab4e1d",
+          "resumption_lines": [
+            {
+              "line": 5,
+              "text": "Resuming 27 requests; generating 3"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/server-1791965288672270224.log",
+          "sha256": "f8306bfdd743085ccdb13165f8022308303087f60437133bbf39449fac2fa682",
+          "attempt_epoch": 1791965288.6722703,
+          "configurations": [
+            {
+              "line": 24,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/server-1791972333310532232.log",
+          "sha256": "c13be960169c39f9af6b70cef52bd8aef3fb623973f64df646c57a6c06751f8d",
+          "attempt_epoch": 1791972333.3105323,
+          "configurations": [
+            {
+              "line": 24,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        },
+        {
+          "file": "workspace/research/vllm-accuracy/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/server-1792233495559777313.log",
+          "sha256": "1282163bb681746af1abeaa8c1c3aea743c055860e6708ebfb5675066fdfefbe",
+          "attempt_epoch": 1792233495.5597773,
+          "configurations": [
+            {
+              "line": 24,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "glm53-flash",
+      "phase": "new-native",
+      "arguments_reference": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/aime2026/1234/0000/arguments.json",
+      "arguments_sha256": "8cc79ad3cf7f3c94291d825b5b82d6ada3e1c107fb53fecacbfc61a6b34b03cf",
+      "arguments": {
+        "model": "glm53-flash",
+        "task": "aime2026",
+        "seed": 1234,
+        "top_p": 0.95,
+        "max_tokens": 163840,
+        "concurrency": 32,
+        "limit": 30,
+        "start": 0
+      },
+      "source_revisions": {
+        "flashinfer-rebase": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92",
+        "vllm-integration": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0"
+      },
+      "response_creation_groups": [
+        {
+          "epoch": 1792404683,
+          "questions": 30
+        }
+      ],
+      "resumption_logs": [
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/aime2026/1234/0000/run.log",
+          "sha256": "cb0941dc7d2a2cbefecfeb98debcfe270f6e51db77671444f2b645ada9436b9a",
+          "resumption_lines": [
+            {
+              "line": 8,
+              "text": "Resuming 0 requests; generating 30"
+            }
+          ]
+        }
+      ],
+      "server_config_evidence": [
+        {
+          "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/glm53-flash/results/full/glm53-flash/prims-fp8/server-1792398691043091476.log",
+          "sha256": "b51bdcfc2be7be0b894cb86c13b36c9f87205e918d75fad1917dd28e3cd41d0e",
+          "attempt_epoch": 1792398691.0430915,
+          "configurations": [
+            {
+              "line": 24,
+              "seed": "0",
+              "enable_prefix_caching": "True",
+              "enable_chunked_prefill": "True",
+              "enforce_eager": "False",
+              "tensor_parallel_size": "2",
+              "cudagraph_mode": "FULL_AND_PIECEWISE"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "seed_path_source_evidence": [
+    {
+      "file": "workspace/research/vllm-accuracy-latest-20261019/baseline/assets/harness/lm_eval/models/openai_completions.py",
+      "sha256": "0afb2771209f9261a2ec0146cbd01928f22747e994a25225c24fd046c5c138ff",
+      "evidence": [
+        {
+          "line": 84,
+          "code": "\"seed\": seed,"
+        },
+        {
+          "line": 94,
+          "code": "\"seed\": seed,"
+        },
+        {
+          "line": 210,
+          "code": "\"seed\": seed,"
+        },
+        {
+          "line": 356,
+          "code": "\"seed\": seed,"
+        }
+      ]
+    },
+    {
+      "file": "workspace/research/vllm-accuracy-latest-20261019/baseline/assets/harness/lm_eval/models/api_models.py",
+      "sha256": "8da25fde90c9a14ee7c603177a08814a3ac57aed7f18f6a00e040771335212cf",
+      "evidence": [
+        {
+          "line": 470,
+          "code": "seed=self._seed,"
+        },
+        {
+          "line": 493,
+          "code": "sem: asyncio.Semaphore,"
+        },
+        {
+          "line": 508,
+          "code": "seed=self._seed,"
+        },
+        {
+          "line": 599,
+          "code": "sem = asyncio.Semaphore(self._concurrent)"
+        },
+        {
+          "line": 703,
+          "code": "def _collate_gen(_requests):"
+        },
+        {
+          "line": 745,
+          "code": "sort_fn=_collate_gen,"
+        }
+      ]
+    },
+    {
+      "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration/vllm/v1/worker/gpu_model_runner.py",
+      "sha256": "fb585601fc0d596ac8b439da962262383f4c38c6aa8b4e197602998bb7b73e94",
+      "evidence": [
+        {
+          "line": 1272,
+          "code": "generator.manual_seed(sampling_params.seed)"
+        }
+      ]
+    },
+    {
+      "file": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration/vllm/v1/sample/ops/topk_topp_sampler.py",
+      "sha256": "970afd0e8565ddfdcf50dc99892d893b20cb186214cc35e15aeb97d1dba90bd0",
+      "evidence": [
+        {
+          "line": 297,
+          "code": "if (k is None and p is None) or generators:"
+        },
+        {
+          "line": 304,
+          "code": "return self.forward_native(logits, generators, k, p)"
+        },
+        {
+          "line": 306,
+          "code": "return self.forward_native(logits, generators, k, p)"
+        },
+        {
+          "line": 340,
+          "code": "q[i].exponential_(generator=generator)"
+        },
+        {
+          "line": 379,
+          "code": "if (k is None and p is None) or generators:"
+        },
+        {
+          "line": 385,
+          "code": "return self.forward_native(logits, generators, k, p)"
+        },
+        {
+          "line": 387,
+          "code": "return self.forward_native(logits, generators, k, p)"
+        },
+        {
+          "line": 392,
+          "code": "return self.forward_native(logits, generators, k, p)"
+        },
+        {
+          "line": 446,
+          "code": "return self.forward_native(logits, generators, k, p)"
+        },
+        {
+          "line": 576,
+          "code": "q[i].exponential_(generator=generator)"
+        }
+      ]
+    }
+  ],
+  "vllm_sampler_and_runner_code_comparison": [
+    {
+      "relative": "vllm/v1/sample/sampler.py",
+      "old": "workspace/research/vllm-accuracy/model-jobs/v4-flash/vllm-integration/vllm/v1/sample/sampler.py",
+      "new": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration/vllm/v1/sample/sampler.py",
+      "old_sha256": "a67286eb78aac98185b6922ac33d8c754ca5ff9788d893965ba52f2b5a0e18d1",
+      "new_sha256": "a67286eb78aac98185b6922ac33d8c754ca5ff9788d893965ba52f2b5a0e18d1",
+      "byte_identical": true
+    },
+    {
+      "relative": "vllm/v1/sample/ops/topk_topp_sampler.py",
+      "old": "workspace/research/vllm-accuracy/model-jobs/v4-flash/vllm-integration/vllm/v1/sample/ops/topk_topp_sampler.py",
+      "new": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration/vllm/v1/sample/ops/topk_topp_sampler.py",
+      "old_sha256": "970afd0e8565ddfdcf50dc99892d893b20cb186214cc35e15aeb97d1dba90bd0",
+      "new_sha256": "970afd0e8565ddfdcf50dc99892d893b20cb186214cc35e15aeb97d1dba90bd0",
+      "byte_identical": true
+    },
+    {
+      "relative": "vllm/v1/worker/gpu_model_runner.py",
+      "old": "workspace/research/vllm-accuracy/model-jobs/v4-flash/vllm-integration/vllm/v1/worker/gpu_model_runner.py",
+      "new": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration/vllm/v1/worker/gpu_model_runner.py",
+      "old_sha256": "fb585601fc0d596ac8b439da962262383f4c38c6aa8b4e197602998bb7b73e94",
+      "new_sha256": "fb585601fc0d596ac8b439da962262383f4c38c6aa8b4e197602998bb7b73e94",
+      "byte_identical": true
+    },
+    {
+      "relative": "vllm/v1/worker/gpu_input_batch.py",
+      "old": "workspace/research/vllm-accuracy/model-jobs/v4-flash/vllm-integration/vllm/v1/worker/gpu_input_batch.py",
+      "new": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration/vllm/v1/worker/gpu_input_batch.py",
+      "old_sha256": "79f1dad9d093f404ad84d8e94906227d69620d356175654e4e8dd1377b55f388",
+      "new_sha256": "79f1dad9d093f404ad84d8e94906227d69620d356175654e4e8dd1377b55f388",
+      "byte_identical": true
+    }
+  ],
+  "reasoning_parser_source_comparison": [
+    {
+      "relative": "vllm/reasoning/deepseek_v4_engine_reasoning_parser.py",
+      "old_sha256": "10e0989e12888d4a37ef9d2474a002a6b30f459be552bd621b541feb7a2606f0",
+      "new_sha256": "10e0989e12888d4a37ef9d2474a002a6b30f459be552bd621b541feb7a2606f0",
+      "byte_identical": true
+    },
+    {
+      "relative": "vllm/reasoning/deepseek_v41_engine_reasoning_parser.py",
+      "old_sha256": "483ab75009234bb16487f5f4425dd2ade554f889ee414cd17357f1af87d932a6",
+      "new_sha256": "483ab75009234bb16487f5f4425dd2ade554f889ee414cd17357f1af87d932a6",
+      "byte_identical": true
+    },
+    {
+      "relative": "vllm/reasoning/glm47_moe_reasoning_parser.py",
+      "old_sha256": "f1124342a23bb4c00754fc5117dc46115adff4b8cfbdc3d3e748ebe95883bdbb",
+      "new_sha256": "f1124342a23bb4c00754fc5117dc46115adff4b8cfbdc3d3e748ebe95883bdbb",
+      "byte_identical": true
+    }
+  ],
+  "findings": [
+    "Every chat request carries seed1234; seeded requests have their own Generator, not a shared server RNG stream.",
+    "Engine seed0 is separate; per-request seed sets the sampling-generator seed.",
+    "Seeded requests use native top-k/top-p sampler; FlashInfer fused sampler is bypassed by nonempty generators.",
+    "Same-seed RNG isolation does not prove identical floating-point logits or schedule; batch/prefix-cache/autotune/reduction/graph differences need controlled tests.",
+    "API creation groups and resumption logs are not GPU scheduling traces. Per-step batch composition/cache hits/block tables and sampled token IDs were not retained.",
+    "All focus-model AIME tasks use one shard of30, concurrency32. Pro continuous versus32-chunk harness is not a direct confounder for these three models.",
+    "Prefix cache enabled/chunked prefill4096/maxseqs32/graphs match configured flags; actual cache contents and active batch shapes can differ with prior tasks, completions and resumptions."
+  ]
+}

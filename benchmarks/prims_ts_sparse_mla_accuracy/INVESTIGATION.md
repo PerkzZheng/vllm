@@ -71,7 +71,7 @@ Separately, the historical Pro integration had post-readiness CuTe JIT misses. R
 
 ## Retained local evidence
 
-These paths are relative to the original workspace's `research/` directory, not files bundled in this Git branch. They intentionally exclude raw model reasoning and licensed dataset content from publication.
+These paths identify the original workspace artifacts. A [portable diagnostic package](../../research/aime-regression-20261020/README.md) now bundles all numerical replay fixtures, historical attention sources, saved MoE profiles, runnable probes and deidentified report exports. Exported reports make workspace paths relative; their original/exported hashes are recorded separately. Raw reasoning, token streams and licensed dataset content remain excluded.
 
 | Artifact | SHA256 / purpose |
 | --- | --- |

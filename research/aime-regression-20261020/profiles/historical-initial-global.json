@@ -1,0 +1,272 @@
+{
+  "_metadata": {
+    "flashinfer_version": "0.7.2",
+    "cuda_version": "13.0",
+    "cublas_version": "13.1.1",
+    "cudnn_version": "92000",
+    "cudnn_frontend_version": "1.31.0",
+    "cutlass_dsl_version": "nvidia-cutlass-dsl-libs-base==4.8.0;nvidia-cutlass-dsl-libs-core==4.8.0;nvidia-cutlass-dsl-libs-cu12==4.8.0;nvidia-cutlass-dsl-libs-cu13==4.8.0;nvidia-cutlass-dsl==4.8.0",
+    "gpu": "NVIDIA GB300"
+  },
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((1, 4096), (0,), (1, 6), (1, 6), (1, 4096), (1, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      8,
+      871
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((1024, 4096), (0,), (1024, 6), (1024, 6), (1024, 4096), (1024, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      32,
+      449
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((128, 4096), (0,), (128, 6), (128, 6), (128, 4096), (128, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      8,
+      860
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((1280, 4096), (0,), (1280, 6), (1280, 6), (1280, 4096), (1280, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      64,
+      0
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((1536, 4096), (0,), (1536, 6), (1536, 6), (1536, 4096), (1536, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      64,
+      0
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((16, 4096), (0,), (16, 6), (16, 6), (16, 4096), (16, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      8,
+      50
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((1792, 4096), (0,), (1792, 6), (1792, 6), (1792, 4096), (1792, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      64,
+      0
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((2, 4096), (0,), (2, 6), (2, 6), (2, 4096), (2, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      8,
+      71
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((2048, 4096), (0,), (2048, 6), (2048, 6), (2048, 4096), (2048, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      64,
+      0
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((256, 4096), (0,), (256, 6), (256, 6), (256, 4096), (256, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      16,
+      377
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((2560, 4096), (0,), (2560, 6), (2560, 6), (2560, 4096), (2560, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      128,
+      8
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((3072, 4096), (0,), (3072, 6), (3072, 6), (3072, 4096), (3072, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      128,
+      8
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((32, 4096), (0,), (32, 6), (32, 6), (32, 4096), (32, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      16,
+      377
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((3584, 4096), (0,), (3584, 6), (3584, 6), (3584, 4096), (3584, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      128,
+      8
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((4, 4096), (0,), (4, 6), (4, 6), (4, 4096), (4, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      8,
+      71
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((4096, 4096), (0,), (4096, 6), (4096, 6), (4096, 4096), (4096, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      128,
+      8
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((512, 4096), (0,), (512, 6), (512, 6), (512, 4096), (512, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      32,
+      455
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((64, 4096), (0,), (64, 6), (64, 6), (64, 4096), (64, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      8,
+      41
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((768, 4096), (0,), (768, 6), (768, 6), (768, 4096), (768, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      32,
+      455
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "('flashinfer::trtllm_fp4_block_scale_moe', 'MoERunner', ((8, 4096), (0,), (8, 6), (8, 6), (8, 4096), (8, 128), (0,), (0,)), ('Module', 6, 256, 256, 0, 17827853, 17826828, 0, 4096, 4096, 2048, 3, True, 0, False, False))": [
+    "MoERunner",
+    [
+      8,
+      41
+    ],
+    [
+      "cuda_graph_profile_replays",
+      1,
+      "l2_cache_policy",
+      "cold"
+    ]
+  ],
+  "_generation": "b0f1754ac837a147b72d823800f0363654fbde91670c03f82e39bb1eaf5a0eda"
+}

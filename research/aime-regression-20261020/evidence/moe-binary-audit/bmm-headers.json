@@ -1,0 +1,118 @@
+{
+  "old_count": 18,
+  "new_count": 18,
+  "common": 18,
+  "old_only": [],
+  "new_only": [],
+  "differences": [],
+  "records": [
+    {
+      "file": "flashinferMetaInfo.h",
+      "old_sha256": "8e3f9a5fa470a1b9612ec2f590739ee6e63e6564e4b06114c7d83703fa390f62",
+      "new_sha256": "8e3f9a5fa470a1b9612ec2f590739ee6e63e6564e4b06114c7d83703fa390f62",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/BatchedGemmEnums.h",
+      "old_sha256": "7f98e312d92f24fbdddda72fa6539c667ac614e58d7ebbd3a37bd5afef97ef4d",
+      "new_sha256": "7f98e312d92f24fbdddda72fa6539c667ac614e58d7ebbd3a37bd5afef97ef4d",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/BatchedGemmInterface.h",
+      "old_sha256": "9e2b1c10cc265d2d2c66039c4dc506e3f4e5185c8e3dc8f533f2ef76cb7babf2",
+      "new_sha256": "9e2b1c10cc265d2d2c66039c4dc506e3f4e5185c8e3dc8f533f2ef76cb7babf2",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/BatchedGemmOptions.h",
+      "old_sha256": "88e81d1e04850f58f506e0a112bb2439253840e758146843b71fde504150caa1",
+      "new_sha256": "88e81d1e04850f58f506e0a112bb2439253840e758146843b71fde504150caa1",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/Enums.h",
+      "old_sha256": "1c946127eda8a5da66520d6d5433583659135ec7b09765189adb7ba6c4f171b9",
+      "new_sha256": "1c946127eda8a5da66520d6d5433583659135ec7b09765189adb7ba6c4f171b9",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/GemmGatedActOptions.h",
+      "old_sha256": "f6798b8426642c2b4a55fa1f75a623690b46979f110da871f1db02b17086963a",
+      "new_sha256": "f6798b8426642c2b4a55fa1f75a623690b46979f110da871f1db02b17086963a",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/GemmOptions.h",
+      "old_sha256": "60b5f26de86c68657eb55e09af297deaaaaa21f73d34c06d47332c1f5fc9b0a8",
+      "new_sha256": "60b5f26de86c68657eb55e09af297deaaaaa21f73d34c06d47332c1f5fc9b0a8",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/KernelParams.h",
+      "old_sha256": "529bd0c68ce51fa5797239e57cd930f87d6c832051d3754c54b167a118d04aa9",
+      "new_sha256": "529bd0c68ce51fa5797239e57cd930f87d6c832051d3754c54b167a118d04aa9",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/KernelParamsDecl.h",
+      "old_sha256": "6c32b9043f831c53410c4d89d81715eb5d55eb77c94e4ecdf0f5e0a794c00ad1",
+      "new_sha256": "6c32b9043f831c53410c4d89d81715eb5d55eb77c94e4ecdf0f5e0a794c00ad1",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/KernelTraits.h",
+      "old_sha256": "fc061482bb4a845eae48f8897d239e0dd20d05a6369acab013554f1f7254b67a",
+      "new_sha256": "fc061482bb4a845eae48f8897d239e0dd20d05a6369acab013554f1f7254b67a",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/TmaDescriptor.h",
+      "old_sha256": "d453f62c88a951f43cc012e256ed547bbd9b58f753cd8ef8ca0d623a66cb8a93",
+      "new_sha256": "d453f62c88a951f43cc012e256ed547bbd9b58f753cd8ef8ca0d623a66cb8a93",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/trtllm/gen/CommonUtils.h",
+      "old_sha256": "df88f6473302e3015f026077a9282882d4a0308e4e3cfbd839f77c68f0fd7b32",
+      "new_sha256": "df88f6473302e3015f026077a9282882d4a0308e4e3cfbd839f77c68f0fd7b32",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/trtllm/gen/CudaArchDecl.h",
+      "old_sha256": "3b212477300e65b8c0eceab533ee0086381187a31132f12ea3a64bed84d48392",
+      "new_sha256": "3b212477300e65b8c0eceab533ee0086381187a31132f12ea3a64bed84d48392",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/trtllm/gen/CudaKernelLauncher.h",
+      "old_sha256": "523268d53dc4db4f6bd615a68d5b79b9e94f04287f741907473c338905523214",
+      "new_sha256": "523268d53dc4db4f6bd615a68d5b79b9e94f04287f741907473c338905523214",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/trtllm/gen/DtypeDecl.h",
+      "old_sha256": "15ae1fca7d1bd0b85decb42b28920b8882c93da2c09669d490ca01019a574009",
+      "new_sha256": "15ae1fca7d1bd0b85decb42b28920b8882c93da2c09669d490ca01019a574009",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/trtllm/gen/MmaDecl.h",
+      "old_sha256": "335573ee5ba020e94e852dcad40f7e0e21f506640c98ca316fd3c10e472771f5",
+      "new_sha256": "335573ee5ba020e94e852dcad40f7e0e21f506640c98ca316fd3c10e472771f5",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/trtllm/gen/SfLayoutDecl.h",
+      "old_sha256": "0c33699c7c40a3569a6ba87b313c1206bf1cb9293814c8d5d926c339e3bf6369",
+      "new_sha256": "0c33699c7c40a3569a6ba87b313c1206bf1cb9293814c8d5d926c339e3bf6369",
+      "equal": true
+    },
+    {
+      "file": "trtllmGen_bmm_export/trtllm/gen/SparsityDecl.h",
+      "old_sha256": "22eddbf8b0b4d27265d33a33a41f8724f8a8e20e27e2c2ce2c631496c9bd6bf3",
+      "new_sha256": "22eddbf8b0b4d27265d33a33a41f8724f8a8e20e27e2c2ce2c631496c9bd6bf3",
+      "equal": true
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "normalization": "Only the 8-hex-digit _GLOBAL__N__ compiler source identifier in section names; section payload bytes are never modified.",
+  "records": [
+    {
+      "file": "fused_moe_trtllm_sm100.1.sm_103a.cubin",
+      "text_sections": 567,
+      "constant_sections": 668,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.10.sm_103a.cubin",
+      "text_sections": 111,
+      "constant_sections": 112,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.11.sm_103a.cubin",
+      "text_sections": 333,
+      "constant_sections": 334,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.12.sm_103a.cubin",
+      "text_sections": 16,
+      "constant_sections": 17,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.13.sm_103a.cubin",
+      "text_sections": 156,
+      "constant_sections": 157,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.14.sm_103a.cubin",
+      "text_sections": 0,
+      "constant_sections": 0,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.2.sm_103a.cubin",
+      "text_sections": 88,
+      "constant_sections": 91,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.3.sm_103a.cubin",
+      "text_sections": 4,
+      "constant_sections": 5,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.4.sm_103a.cubin",
+      "text_sections": 0,
+      "constant_sections": 0,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.5.sm_103a.cubin",
+      "text_sections": 0,
+      "constant_sections": 0,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.6.sm_103a.cubin",
+      "text_sections": 288,
+      "constant_sections": 289,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.7.sm_103a.cubin",
+      "text_sections": 18,
+      "constant_sections": 19,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.8.sm_103a.cubin",
+      "text_sections": 222,
+      "constant_sections": 223,
+      "changed": []
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.9.sm_103a.cubin",
+      "text_sections": 210,
+      "constant_sections": 211,
+      "changed": []
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "checked_at": "2026-10-21T09:52:38.716983+00:00",
+  "status": "passed_captured_attention_cohort",
+  "job": {
+    "id": 1357419,
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "elapsed": "00:53:47",
+    "node": "nvl72d040-T17",
+    "allocated_gpus": 4,
+    "queue_empty": true,
+    "resources_released": true,
+    "additional_agent_allocations": false
+  },
+  "source_revisions": {
+    "old_flashinfer": {
+      "repository": "workspace/research/vllm-accuracy/model-jobs/v4-flash/flashinfer-rebase",
+      "commit": "735e1f4f33f8d112d47e0ab38adc5ab7b9272abd"
+    },
+    "old_vllm": {
+      "repository": "workspace/research/vllm-accuracy/model-jobs/v4-flash/vllm-integration",
+      "commit": "b285cbfb6cd0bc17e5c957a3c8f57c1d7598448d"
+    },
+    "new_flashinfer": {
+      "repository": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/flashinfer-rebase",
+      "commit": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92"
+    },
+    "new_vllm": {
+      "repository": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration",
+      "commit": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0"
+    }
+  },
+  "runtime": {
+    "job": "1357419",
+    "gpu": "NVIDIA GB300",
+    "allocated_gpus": 4,
+    "torch": "2.13.0+cu130",
+    "cuda": "13.0",
+    "dsl": "4.8.0",
+    "sources": {
+      "flashinfer-rebase": {
+        "module": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/flashinfer-rebase/flashinfer/__init__.py",
+        "revision": "6fdd402bf2d2d7ea18264e86bb3a8815c56c3b92"
+      },
+      "vllm-integration": {
+        "module": "workspace/research/vllm-accuracy-latest-20261019/model-jobs/v4-flash/vllm-integration/vllm/__init__.py",
+        "revision": "84cb2c036be25c76a58947b9ebc036f8e8f76bb0"
+      }
+    },
+    "adapter_sha256": "1445ddd79a82b3401e787e0c5f12e7c9fb6bc88eb3b9c6d89270325635d22d77"
+  },
+  "cohort": {
+    "snapshots": 60,
+    "diagnostic_cohorts": 12,
+    "query_shapes": [
+      [
+        1,
+        64,
+        512
+      ],
+      [
+        3,
+        64,
+        512
+      ],
+      [
+        30,
+        64,
+        512
+      ]
+    ],
+    "prefixes": "original prompts plus8192/32768-token reconstructed historical continuations; batch3 andbatch30",
+    "output": "block128 UE8M0, current group-major values for both controls",
+    "source_types": "SWA-only andSWA+compressed ratios4/128"
+  },
+  "checks": {
+    "each_variant_plain_repeat_equal": 60,
+    "each_variant_oracle_bound_violations": 0,
+    "capture_current_raw_fp8_and_scale_equal": 60,
+    "old_current_exact_tensor_metadata_and_all4storage_payloads_equal": 60,
+    "old_current_plain_and_dequant_fused_max_abs": 0.0,
+    "all_outputs_finite": true
+  },
+  "oracle_error": {
+    "current": {
+      "plain": {
+        "max_abs": 0.17293244757849902,
+        "relative_rmse": 0.009670075553387076
+      },
+      "fused": {
+        "max_abs": 0.3706541497857794,
+        "relative_rmse": 0.029059018932450824
+      },
+      "lse": {
+        "max_abs": 1.142606054216344e-06,
+        "relative_rmse": 8.728261900624803e-08
+      }
+    },
+    "historical": {
+      "plain": {
+        "max_abs": 0.17293244757849902,
+        "relative_rmse": 0.009670075553387076
+      },
+      "fused": {
+        "max_abs": 0.3706541497857794,
+        "relative_rmse": 0.029059018932450824
+      },
+      "lse": {
+        "max_abs": 1.142606054216344e-06,
+        "relative_rmse": 8.728261900624803e-08
+      }
+    }
+  },
+  "limits": [
+    "Component replay, not a new accuracy suite or causal explanation of AIME drops.",
+    "Historical attention+metadata on the current FI/vLLM/runtime base; historical physical FP8 values are copied bitwise into current group-major output before comparison.",
+    "No real historical-layout W_o_a consumer execution or logit comparison in this probe.",
+    "Prompt/prefix cohorts longer than32768, original unavailable sampled token IDs, CUDA Graph execution and unrestricted full-generation trajectories were not validated.",
+    "Observed historical whole-revision binary/tactic/batch differences remain documented separately.",
+    "No source, reference, tolerance, completed campaign result or grader changed."
+  ],
+  "artifact_sha256": {
+    "runtime.json": "edaa578c5df46f1aaae8830e33cee2d50be58c77017031cede30ce95207e9424",
+    "replay-comparison.json": "487fd460cb4a0e8e69eb734d0ba7e35575dc1837d6d5c8eb408cb248f3b4d5e9",
+    "capture-hooks/sitecustomize.py": "96718d2bbd4d36942696c1c3f5e5a71f913d59f5be2851eb55b092bfec01981a",
+    "probe_client.py": "a5e65de878c22124febf1731f6b92d88e66ceb7e235e82502bc70e713d9f3c3a",
+    "replay_attention.py": "50b14c25ab9cc0a829a0a82e326c88f670358970fdf43ca008b3152fcaaa787d",
+    "compare_replays.py": "9e027e4525ae43375b9166f2ab59952f7ac8eba645159bb737db2bdcd86b40f7",
+    "container-probe.sh": "4d0d9b3aa213f982a00054afb7527ba6f91b8503d0792a477acf6a37d282fa44",
+    "batch-probe.sh": "36ef07e3319cc194c879db5f0a05c9c22460b274890af410b830f6b1e1681d28",
+    "source-controls/old_attention.py": "50d3f82c8ba51252dda00aadd00e77acc6a02c8484cfbe555a989fd36aa8a40f",
+    "source-controls/manifest.json": "93d9c935e15b047e13d61e861184b171ffe738b0fbe2cd6fa44915786ccecfe2",
+    "source-controls/exact-replay-bytes.json": "bccc854cb1725dc7c24899b0c54a36d016457cc25c149042b9346746a08201f0",
+    "logs/client.log": "e49b71e021776337629501461d907cfac11ba9626532dd56ee059e96dc40013a",
+    "logs/replay-current.log": "1e5394dc9e9469f36d5df74ee3b2a211a1358239ad6f401f5d24977014dcbd24",
+    "logs/replay-historical.log": "dd7e158520ff98ee2b20ce9b63da9464fa785b5394017a4dd2dd3591d45e7b59",
+    "logs/replay-comparison.log": "533097a7f84ea0c41a073738cbca862eb140a4aed76444ef4113a38757590f1b"
+  }
+}

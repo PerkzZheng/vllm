@@ -1,0 +1,146 @@
+{
+  "method": "Replace exactly eight hex digits after _GLOBAL__N__ or _INTERNAL_ only inside SHT_STRTAB sections; replacement is length-preserving. No executable/data/launch metadata bytes modified. Compare entire resulting ELF bytes.",
+  "all_equal": true,
+  "records": [
+    {
+      "file": "fused_moe_trtllm_sm100.1.sm_103a.cubin",
+      "old_bytes": 14071984,
+      "new_bytes": 14071984,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "95241c734b93361998f65fbb035087b66ae85195eece3b8f4d1c47ea2b805b1a",
+      "new_normalized_sha256": "95241c734b93361998f65fbb035087b66ae85195eece3b8f4d1c47ea2b805b1a"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.10.sm_103a.cubin",
+      "old_bytes": 23142296,
+      "new_bytes": 23142296,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "137d21beeac00cde56bff0c3046bc5af2279584091ae1e8ad12de921d5c80a85",
+      "new_normalized_sha256": "137d21beeac00cde56bff0c3046bc5af2279584091ae1e8ad12de921d5c80a85"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.11.sm_103a.cubin",
+      "old_bytes": 17622992,
+      "new_bytes": 17622992,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "081be6d8093563932accb2f30eb6666d7c200be34705a331e218cb9420b497f4",
+      "new_normalized_sha256": "081be6d8093563932accb2f30eb6666d7c200be34705a331e218cb9420b497f4"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.12.sm_103a.cubin",
+      "old_bytes": 706280,
+      "new_bytes": 706280,
+      "old_identifier_occurrences": 328,
+      "new_identifier_occurrences": 328,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "323bfdd9480bd0fb7fe4c7e74c7aaa0b7cdf4be4a6b28618a76827d61684072b",
+      "new_normalized_sha256": "323bfdd9480bd0fb7fe4c7e74c7aaa0b7cdf4be4a6b28618a76827d61684072b"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.13.sm_103a.cubin",
+      "old_bytes": 2609080,
+      "new_bytes": 2609080,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "5a026a50522bb2f978654e19cae3a8f787a9ebe42550e629ccbb59137a7290bb",
+      "new_normalized_sha256": "5a026a50522bb2f978654e19cae3a8f787a9ebe42550e629ccbb59137a7290bb"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.14.sm_103a.cubin",
+      "old_bytes": 2256,
+      "new_bytes": 2256,
+      "old_identifier_occurrences": 0,
+      "new_identifier_occurrences": 0,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "52ffa20ff0601fb4ff28786d3fd721e3e30177e87c2113ec23013be8b136fd99",
+      "new_normalized_sha256": "52ffa20ff0601fb4ff28786d3fd721e3e30177e87c2113ec23013be8b136fd99"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.2.sm_103a.cubin",
+      "old_bytes": 747624,
+      "new_bytes": 747624,
+      "old_identifier_occurrences": 0,
+      "new_identifier_occurrences": 0,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "c617be559feaff48d7e9adaa12fd787d1422fce5b25b07e5cd56ba2a451ba090",
+      "new_normalized_sha256": "c617be559feaff48d7e9adaa12fd787d1422fce5b25b07e5cd56ba2a451ba090"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.3.sm_103a.cubin",
+      "old_bytes": 90392,
+      "new_bytes": 90392,
+      "old_identifier_occurrences": 38,
+      "new_identifier_occurrences": 38,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "380b81663ce6f6f2e2d72ba89fd555fd323ccd09cae88e0b61626d9189eb6d68",
+      "new_normalized_sha256": "380b81663ce6f6f2e2d72ba89fd555fd323ccd09cae88e0b61626d9189eb6d68"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.4.sm_103a.cubin",
+      "old_bytes": 2256,
+      "new_bytes": 2256,
+      "old_identifier_occurrences": 0,
+      "new_identifier_occurrences": 0,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "52ffa20ff0601fb4ff28786d3fd721e3e30177e87c2113ec23013be8b136fd99",
+      "new_normalized_sha256": "52ffa20ff0601fb4ff28786d3fd721e3e30177e87c2113ec23013be8b136fd99"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.5.sm_103a.cubin",
+      "old_bytes": 2256,
+      "new_bytes": 2256,
+      "old_identifier_occurrences": 0,
+      "new_identifier_occurrences": 0,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "52ffa20ff0601fb4ff28786d3fd721e3e30177e87c2113ec23013be8b136fd99",
+      "new_normalized_sha256": "52ffa20ff0601fb4ff28786d3fd721e3e30177e87c2113ec23013be8b136fd99"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.6.sm_103a.cubin",
+      "old_bytes": 13785632,
+      "new_bytes": 13785632,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "6e5ac98e60ee70a63a875a717c55b2a60b32983c0207807d286408a6e55f332c",
+      "new_normalized_sha256": "6e5ac98e60ee70a63a875a717c55b2a60b32983c0207807d286408a6e55f332c"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.7.sm_103a.cubin",
+      "old_bytes": 674896,
+      "new_bytes": 674896,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "68335e89ce28a935014c7279a1fedc7cf393d5fc743cad8ec3aa693afb353b3c",
+      "new_normalized_sha256": "68335e89ce28a935014c7279a1fedc7cf393d5fc743cad8ec3aa693afb353b3c"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.8.sm_103a.cubin",
+      "old_bytes": 13629016,
+      "new_bytes": 13629016,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "d50d0cec1cdcc870ac63c8ade4f7e8c9ccee0213f75d47dd1c1e5e4ac2ca8de1",
+      "new_normalized_sha256": "d50d0cec1cdcc870ac63c8ade4f7e8c9ccee0213f75d47dd1c1e5e4ac2ca8de1"
+    },
+    {
+      "file": "fused_moe_trtllm_sm100.9.sm_103a.cubin",
+      "old_bytes": 41826792,
+      "new_bytes": 41826792,
+      "old_identifier_occurrences": 72,
+      "new_identifier_occurrences": 72,
+      "normalized_entire_elf_equal": true,
+      "old_normalized_sha256": "0c013fff7d4ef198378ffa53cc760adefa30150e92bd1cfafb2c05dd9abeba64",
+      "new_normalized_sha256": "0c013fff7d4ef198378ffa53cc760adefa30150e92bd1cfafb2c05dd9abeba64"
+    }
+  ]
+}

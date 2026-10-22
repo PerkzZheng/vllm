@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "job_id": 1363832,
+  "state": "COMPLETED",
+  "exit_code": "0:0",
+  "elapsed": "00:01:23",
+  "node": "nvl72d043-T18",
+  "allocation_released": true,
+  "reviewed_manifest_unchanged": true,
+  "manifest_sha256": "6325e4a7a0b84af8ccc628be7e9324b373413356478a8054139b3c0074521069",
+  "logical_fixture_pairs": 60,
+  "layout_fixture_runs": 120,
+  "bitwise_equal_pairs": 60,
+  "row_counts_per_layout": {
+    "3": 10,
+    "30": 5,
+    "1": 45
+  },
+  "oracle_gate": {
+    "rtol": 0.008,
+    "atol": 0.001,
+    "max_abs": 0.007809191942214966,
+    "max_relative_rmse": 0.00169184138105153
+  },
+  "sealed_at_utc": "2026-10-21T13:56:33.739861+00:00",
+  "limits": "Consumer layout control only; AIME cause remains unresolved."
+}

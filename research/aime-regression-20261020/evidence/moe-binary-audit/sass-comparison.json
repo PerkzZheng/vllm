@@ -1,0 +1,9 @@
+{
+  "tool": "CUDA13.0.85 cuobjdump and pinned-nightly Triton nvdisasm, CPU-only",
+  "lines": 10691257,
+  "old_bytes": 1322095527,
+  "new_bytes": 1322095527,
+  "raw_differing_lines": 17,
+  "differing_lines_after_compiler_identifier_normalization": 0,
+  "normalization": "Only 8 hex digits after _GLOBAL__N__ or _INTERNAL_; no instructions/operands altered."
+}

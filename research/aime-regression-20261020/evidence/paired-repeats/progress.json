@@ -1,0 +1,49 @@
+{
+  "checked_utc": "2026-10-21T16:54:45.227591+00:00",
+  "job": 1364941,
+  "state": "COMPLETED",
+  "exit_code": "0:0",
+  "allocation_released": true,
+  "arms": {
+    "attention-current__moe-current": {
+      "completed_responses": 30,
+      "graded": true,
+      "correct": 21,
+      "length_stops": 8,
+      "empty_contents": 8,
+      "generation_tracebacks": 0,
+      "shutdown_tracebacks": 1,
+      "evaluate_tracebacks": 0
+    },
+    "attention-current__moe-historical": {
+      "completed_responses": 30,
+      "graded": true,
+      "correct": 22,
+      "length_stops": 8,
+      "empty_contents": 8,
+      "generation_tracebacks": 0,
+      "shutdown_tracebacks": 1,
+      "evaluate_tracebacks": 0
+    },
+    "attention-historical__moe-current": {
+      "completed_responses": 30,
+      "graded": true,
+      "correct": 23,
+      "length_stops": 7,
+      "empty_contents": 7,
+      "generation_tracebacks": 0,
+      "shutdown_tracebacks": 1,
+      "evaluate_tracebacks": 0
+    },
+    "attention-historical__moe-historical": {
+      "completed_responses": 30,
+      "graded": true,
+      "correct": 22,
+      "length_stops": 8,
+      "empty_contents": 7,
+      "generation_tracebacks": 0,
+      "shutdown_tracebacks": 0,
+      "evaluate_tracebacks": 0
+    }
+  }
+}

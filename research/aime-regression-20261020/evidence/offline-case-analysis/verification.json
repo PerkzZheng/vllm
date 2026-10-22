@@ -1,0 +1,9 @@
+{
+  "pre_finalization_records_sha256": "a66a1110d504660e52ef1be8c97cfbdb86f4fa4d68b592da75968b1cf4828efe",
+  "metric_sanity": "Unique256lexicalunits produce0 repeated32grams; fourcopies produce737/993 repeats; emptyinputhandled.",
+  "notes": "Only new offline analysis scripts changed; frozen campaign inputs remain readonly.",
+  "post_finalization_records_match_initial_after_definition_prose_normalization": true,
+  "method": "Re-executed all270 trajectories after final script formatting/prefix indexing; exact record hashes agree when one explanatory definition string is normalized to its initial spelling.",
+  "trajectories": 270,
+  "prefix_references": 67
+}
